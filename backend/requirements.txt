@@ -1,0 +1,12 @@
+# Pinned per step.md 0.2. Install the Tesseract binary separately —
+# this is only the Python wrapper (apt install tesseract-ocr).
+opencv-python-headless==5.0.0.93
+pytesseract==0.3.13
+google-genai==2.20.0
+python-dotenv==1.2.3
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+python-multipart==0.0.32
+pydantic==2.13.4
+pytest==9.1.1
+httpx==0.28.1

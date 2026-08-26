@@ -282,6 +282,11 @@ reports success is a defect; a genuinely unusable photo that returns
 | Database | None | Session lives in IndexedDB until export. |
 | Hosting | None — both halves run on the instructor's laptop for the pilot | No account, no deploy step, no cold start. See "Running locally" in section 9. |
 
+This table is the baseline (Gemini + Tesseract) stack and stays accurate for
+the `RemoteRecognizer` path. Section 16 adds a second, optional local path
+(a small CNN via ONNX Runtime) behind the same interface — additive, not a
+replacement of anything in this table.
+
 ## 8. Data models
 
 ```typescript
@@ -538,7 +543,11 @@ Deferred:
 - Roster import for range validation and coverage checking. Skipped
   deliberately to avoid file-upload complexity.
 - Local digit classifier for marks too (TFLite/ONNX) — only if Gemini
-  accuracy or quota becomes a real constraint.
+  accuracy or quota becomes a real constraint. **Update:** both conditions
+  were hit for real during steps 2–3 (Tesseract measured at 58.9%
+  per-digit on real photos; a genuine `rate_limited` response during live
+  phone testing) — see section 16, which picks this item back up as an
+  additive, optional path rather than a required rewrite.
 - Server-side database and multi-quiz history.
 - Multi-user auth.
 
@@ -570,6 +579,13 @@ The ordering is deliberate: everything before step 4 runs as a script
 against a folder of images, which is a far faster loop than anything
 involving a camera, an upload, and a browser. Do not build the app
 scaffolding first and discover the detector's limits through it.
+
+Section 16 adds an optional parallel track (`step.md` steps 2r.0, 2r, 3r,
+3r.6) that slots in after step 3 is done — it extracts the existing
+recognition code behind a shared interface, then adds a local CNN behind
+that same interface as a second, selectable implementation. It does not
+renumber or replace steps 4–10 above; those proceed the same regardless of
+whether the CNN track is picked up.
 
 ## 15. Resolved decisions
 
@@ -619,4 +635,385 @@ scaffolding first and discover the detector's limits through it.
 - Everything in the stack is open source except the Gemini API, which is a
   proprietary hosted service with a free tier. That is the project's one
   external dependency, and section 13's deferred local mark classifier is
-  what would remove it.
+  what would remove it. Section 16 is that classifier, built additively
+  once the deferral's own trigger condition (real accuracy or quota
+  pressure) actually happened.
+- The local CNN path (section 16) is added *beside* the Gemini+Tesseract
+  path, not in place of it, behind a shared `Recognizer` interface,
+  selectable via an environment variable. Both paths stay in the repo
+  indefinitely — the existing path is the only independent check available
+  on the local model's output, and reverting to it costs nothing.
+
+## 16. Local CNN recognizer (optional, alongside Gemini)
+
+Adds a local CNN recognition path **beside** the existing Gemini +
+Tesseract path, behind a common interface, with the CNN eventually the
+default once it earns that. Nothing already built gets deleted. Detection
+(section 5/6) is untouched — it works, and none of this affects it.
+
+Originally drafted as a standalone note (`Cnn migration.md`) after steps 2
+and 3 were both in progress and step 7 was done; folded in here once that
+draft was reviewed. Section 13's MVP scope already deferred a local mark
+classifier "only if Gemini accuracy or quota becomes a real constraint" —
+this section exists because that trigger condition was hit for real, not
+speculatively:
+
+- **Cost and quota.** The Gemini free tier rate-limited during actual live
+  phone testing (`step.md` step 3's Progress note) — not a hypothetical,
+  a real `rate_limited` response mid-session. A local model has no ceiling
+  and no bill.
+- **Tesseract is measurably the wrong tool for this, not just imperfect.**
+  58.9% per-digit accuracy, 0-of-8 whole-ID exact match, after two real
+  rounds of tuning (`step.md` step 2's Progress note). The diagnosis
+  matters more than the number: Tesseract's LSTM engine read a handwritten
+  `0` as the letter `D` at 86% confidence and a `1` as `l` at 90% — it is a
+  text engine, and letters are always in its output space. A 10-class
+  digit classifier cannot make that specific error at all.
+- **Latency.** Tesseract runs roughly 50–100ms per digit — around 700ms
+  for one 7-digit ID. A small CNN reads all seven in one batched forward
+  pass, under 5ms on CPU.
+
+When the CNN path is selected: section 12's privacy argument becomes
+trivially true (nothing leaves the machine at all, not even the serial and
+marks), `rate_limited` is unreachable, and `marks_ocr.py`'s degraded
+rate-limit fallback (added after the live `rate_limited` hit — see
+`step.md` step 3) has nothing to fall back *from*. These properties are
+per-path, not global: the Gemini path keeps its existing behavior and its
+existing caveats whenever it's the one selected.
+
+### Architecture: one model, ten classes, used three ways
+
+```
+                          ┌──────────────────┐
+   ID cells (7)  ────────►│                  │──►  7 digits, batched
+                          │   digit CNN      │
+   Serial cell   ──seg──► │   10 classes     │──►  glyph probabilities
+                          │   ~150KB ONNX    │        │
+   Mark cells    ──seg──► │                  │──►     │
+                          └──────────────────┘        ▼
+                                                constrained decode
+                                                against legal values
+```
+
+**ID** needs no segmentation — the template already gives one digit per
+box (section 3), which is exactly why those boxes exist. Seven crops go
+through as one batch.
+
+**Serial and marks** hold multiple glyphs in one cell, so they need
+segmentation first (below), then constrained decoding to assemble a legal
+value.
+
+**The decimal point is not a CNN class.** There is no training data for a
+handwritten decimal point and no need for any — it is a connected
+component with tiny area sitting low in the glyph band, pure geometry, no
+model. Keeping the model at ten classes means a standard digit dataset
+(EMNIST) works as-is with no relabelling.
+
+### Two paths behind one interface
+
+Neither path is special-cased in `main.py`. Both implement the same
+protocol and the pipeline calls whichever is selected:
+
+```python
+# app/recognizers/base.py
+from typing import Protocol
+
+class Recognizer(Protocol):
+    name: str
+
+    def read_id(self, id_crops: list[np.ndarray]) -> IdResult:
+        """Seven single-digit crops → digits + confidence per position."""
+
+    def read_marks(
+        self, serial_crop: np.ndarray,
+        mark_crops: list[np.ndarray],
+        total_crop: np.ndarray,
+        config: QuizConfig,
+    ) -> MarksResult:
+        """Cell crops → serial, per-question values, total."""
+```
+
+Two implementations:
+
+- `recognizers/remote.py` — `RemoteRecognizer`, wrapping the existing
+  `id_ocr.py` (Tesseract) and `marks.py` (Gemini), including `marks_ocr.py`
+  as its internal rate-limit fallback. **Moved, not rewritten** — the
+  logic inside is already tested and tuned; this is an import-path change
+  plus a thin adapter.
+- `recognizers/local.py` — `CNNRecognizer`, the segmentation + constrained
+  decoding below.
+
+Selection by environment variable:
+
+```python
+RECOGNIZER = os.getenv("RECOGNIZER", "remote")   # "cnn" | "remote" | "both"
+```
+
+Default stays `"remote"` until the comparison run (below) says otherwise —
+this section adds the option, it doesn't flip the default on arrival.
+`main.py` resolves it once at startup and holds the instance. The
+pipeline's existing early exits are unchanged: no recognizer is called
+after `table_not_found` or `column_count_mismatch`, whichever is selected
+(section 9 step 2, unchanged).
+
+**Comparison mode.** `RECOGNIZER=both` runs both paths and returns the
+CNN's result, while logging every field where they disagree:
+
+```json
+{
+  "image": "phone_003.jpeg",
+  "field": "q3",
+  "cnn": {"value": 4.5, "confidence": 0.71},
+  "remote": {"value": 4.0, "confidence": null},
+  "confirmed": 4.5
+}
+```
+
+This is worth more than it looks: the labelled set is thin (`testset/
+labels.json` — see step 0/2's own repeated caveat about sample size), so
+accuracy numbers alone are noisy, but disagreements are self-selecting
+hard cases, and the instructor's confirmation on the review screen (step
+7, unchanged) resolves each one into a labelled sample. Running `both` for
+a full quiz gives a targeted error analysis and a batch of training labels
+from the same session. Don't run `both` in normal use — it costs Gemini
+quota for no benefit once the CNN is ahead.
+
+`rate_limited` stays in the failure-reason enum (section 8) — unreachable
+under the CNN path, still reachable under the remote one, and removing it
+would break the path this section deliberately keeps.
+
+### Segmentation (serial and mark cells only)
+
+Per cell, after the 12% inset already established in `id_ocr.py` (step 2):
+
+1. Otsu binarize.
+2. `cv2.connectedComponentsWithStats`.
+3. Drop components below a noise-area floor (a fraction of cell area).
+4. **Merge horizontally-overlapping components.** A `4` or `5` written with
+   a disconnected stroke produces two components that are really one
+   glyph. If two components' x-ranges overlap by more than ~50% of the
+   narrower one, merge them — the single most common segmentation failure,
+   and cheap to fix.
+5. Sort remaining components left to right by centroid x.
+6. **Classify each as digit or decimal point:** a component whose height
+   is below ~35% of the median component height *and* whose centroid sits
+   in the lower third of the glyph band is a decimal point; everything
+   else is a digit.
+
+Blank detection happens before any of this — count ink pixels after
+binarizing and return empty below a threshold. A classifier always outputs
+*something*; feed it a blank cell and it returns a confident wrong digit.
+This is already the right behavior in `id_ocr.py`; the CNN path keeps it.
+
+### Constrained decoding
+
+This is what makes local recognition beat the Gemini path rather than
+merely match it — and it's where the constrained-value-set design from
+section 5/9 (the legal-value enumeration Gemini's prompt already relies
+on) pays off again on a different recognizer.
+
+Don't parse the CNN's output into a string and validate afterward. Score
+every legal value directly against the per-glyph probabilities:
+
+```python
+def decode_cell(glyph_probs, has_decimal_at, legal_values):
+    """
+    glyph_probs: list of (10,) probability vectors, left to right
+    has_decimal_at: index where a decimal point was found, or None
+    legal_values: e.g. [0, 0.5, 1, 1.5, ... 5] for a 5-mark question
+    Returns (value, confidence) or (None, confidence) to flag.
+    """
+    best, best_score = None, 0.0
+    for value in legal_values:
+        digits = [int(c) for c in f"{value}".replace(".", "")]
+        expects_decimal = "." in f"{value}"
+
+        if len(digits) != len(glyph_probs):
+            continue
+        if expects_decimal != (has_decimal_at is not None):
+            continue
+
+        score = 1.0
+        for d, probs in zip(digits, glyph_probs):
+            score *= probs[d]
+
+        if score > best_score:
+            best, best_score = value, score
+
+    if best_score < DECODE_FLOOR:
+        return None, best_score
+    return best, best_score
+```
+
+For a 5-mark question that's eleven candidates — trivial to enumerate.
+`45` can never be returned, because it isn't a candidate. A smudged `4.5`
+that a free-form parser would read as `45` resolves correctly by
+construction, not by validation after the fact — the same principle
+section 9 step 8 already applies to Gemini's output, pushed one layer
+earlier.
+
+Same mechanism for serial (legal set: every integer the class could
+plausibly use — `2` and `02` both decode to 2, mirroring the leading-zero
+stripping already in `StudentRecord.serial`) and for total (legal set:
+multiples of 0.5 in `0..totalMax`).
+
+`DECODE_FLOOR` starts around 0.3 and gets calibrated on real data — treat
+it exactly as provisionally as `id_ocr.py`'s own `CONFIDENCE_FLOOR` is
+already annotated in code.
+
+### Confidence, and when to flag
+
+Two signals, both needed: **max probability** (the top class's score) and
+**margin** (top-1 minus top-2 — a `4` at 0.51 with `9` at 0.47 close
+behind is worse than a `4` at 0.70 with nothing close, even though the max
+is lower in the second case). Below either threshold, add the field to
+`low_confidence_fields` and leave it blank — the existing review screen
+(step 7) already renders these with an amber border, so no frontend change
+is needed for this path at all.
+
+The bias here is the one already established and validated in step 2's
+own notes: **0 confidently wrong matters more than raw accuracy**, because
+a flagged blank costs the instructor one second and a confident wrong
+digit costs a student their marks.
+
+### Model and training
+
+Deliberately small — this is MNIST-class difficulty, and a large model
+buys nothing but latency:
+
+```
+Conv(1→32, 3x3) → BN → ReLU → Conv(32→32, 3x3) → BN → ReLU → MaxPool → Dropout(0.25)
+Conv(32→64, 3x3) → BN → ReLU → Conv(64→64, 3x3) → BN → ReLU → MaxPool → Dropout(0.25)
+Flatten → Linear(→128) → BN → ReLU → Dropout(0.5) → Linear(→10)
+```
+
+~150KB as ONNX, sub-millisecond per batch on CPU.
+
+**Data: EMNIST Digits, not MNIST** — 240k training samples versus MNIST's
+60k, and considerably more writer variety. Same 28×28 format, so
+preprocessing is identical. EMNIST ships transposed relative to MNIST;
+images need `.transpose(1, 2)` or the model trains on rotated digits —
+this bites everyone once.
+
+**Preprocessing must match MNIST's normalization exactly** — worth more
+than any architecture change, and getting it wrong is the most common
+reason a model scoring 99% on test data performs badly on real crops. Per
+digit crop: inset 12% (already in `id_ocr.py` — the same fix that stopped
+the cell border reading as extra ink), Otsu binarize (white ink on black),
+crop tight to the ink bounding box, scale so the longest side is 20px
+preserving aspect ratio, then paste onto a 28×28 black canvas **centered
+by centre of mass, not by bounding-box centre** — that last detail is
+exactly how MNIST itself was built, and centering by bounding box instead
+looks correct while costing several points of accuracy, because the
+training distribution the model learned is centre-of-mass centered.
+
+**Augmentation:** rotation ±10°, translation ±2px, scale 0.9–1.1, slight
+elastic distortion — real photographed digits have residual skew that
+deskewing doesn't fully remove.
+
+**Test-time augmentation:** since inference is ~1ms, run each crop at 3–5
+small perturbations and average the probability vectors. Almost nobody
+does this because it's normally too expensive; at this scale it's free and
+measurably helps borderline cases. Apply it to the ID especially, which
+has no arithmetic guard the way marks do (section 10's sum check).
+
+### Collecting real handwriting samples
+
+EMNIST is American handwriting from the 1990s. Local handwriting
+conventions differ in exactly the places that matter — a crossed `7`, a
+closed `4`, a `1` with or without a base serif. A cold EMNIST model
+systematically misreads whichever conventions the actual writers use, and
+no amount of augmentation fixes a style mismatch. Hand-collected samples
+fix it — but *whose* hand matters, and the answer differs by field:
+
+- **Marks are written by one person, every time, forever** — the
+  instructor grading the quiz. Training on that one person's handwriting
+  for the marks field isn't overfitting, it's targeting the exact
+  distribution production will see. A few hundred of their own samples is
+  close to ideal here.
+- **IDs and serials are written by students** — many writers, changing
+  every semester, most never seen in advance. The instructor's own samples
+  are nearly useless for this field. What helps is writer *variety*:
+  fifteen different hands beats three thousand samples of one.
+
+Collect both, tagged by writer so they can be weighted differently during
+fine-tuning — heavily toward the instructor's hand for marks, evenly
+across writers for the ID.
+
+**The collection sheet** reuses the existing detector rather than needing
+new infrastructure: a `.docx` variant of the marks-grid template (section
+3), one row per digit 0–9, ~20 empty cells across. The labels come from
+row position, so there is no manual annotation at all. ~200 samples per
+sheet; six or seven sheets gets ~150 per digit, enough to fine-tune well —
+an evening's work, not a project. Same pen and paper as real quizzes,
+written at normal speed (not carefully formed), including genuinely messy
+variants — the point is covering the cases that fail, not the ones that
+already work.
+
+**Harvesting labels from real use.** The review screen (step 7) is already
+a labelling machine: every digit the instructor confirms or corrects is a
+labelled crop of exactly the handwriting that matters, including student
+handwriting that could never be collected in advance. On Confirm, POST the
+cell crops alongside the confirmed values to `training_data/harvested/`,
+tagging corrections separately from confirmations — corrections are the
+model's actual failures and worth oversampling; confirmations mostly
+re-teach what it already knows. Build this collection path as part of the
+CNN work even though nothing consumes it immediately; retrofitting later
+means discarding every label from the pilot, which is the period these
+labels matter most. One 30-student class yields roughly 210 labelled ID
+digits — three or four quizzes is enough to fine-tune meaningfully.
+
+**Fine-tuning:** freeze the conv layers, retrain the classifier head at a
+low learning rate (~1e-4), hold out a real, unseen-writer photo set to
+measure against. Two separate fine-tuned heads on the same base model —
+one weighted toward the instructor's hand for marks, one weighted across
+writers for the ID.
+
+### Serving
+
+Train in PyTorch, export to ONNX, serve with `onnxruntime`:
+
+```bash
+pip install onnxruntime numpy opencv-python   # runtime
+pip install torch torchvision                 # training only, not in requirements.txt
+```
+
+`onnxruntime` is ~15MB against PyTorch's ~800MB, and the backend only ever
+does inference — keep `torch` in a separate `requirements-train.txt` so
+the deployed backend doesn't carry it. Load the session once at module
+import, not per request (same statelessness rule as section 9, applied to
+model loading rather than request data).
+
+### Open risks
+
+**Segmentation is the new fragile part** — it's doing work Gemini did
+invisibly. Touching digits and disconnected strokes are the two failure
+modes; the overlap-merge rule addresses the second, the constrained
+decoder absorbs some of the first. Watch it specifically in the accuracy
+harness, not just in aggregate numbers.
+
+**Cold-start accuracy on real handwriting is unknown.** EMNIST gives a
+strong prior, not a guarantee. The honest expectation is a large
+improvement over 58.9% per-digit but whole-ID exact match still poor until
+fine-tuning — plan around the review screen catching it, which it already
+does, and keep `RECOGNIZER=remote` available as the fallback while that's
+still true.
+
+**Self-collected samples can narrow the model rather than widen it.** If
+every sheet is the instructor's own handwriting, fine-tuning makes the ID
+model worse on students, not better. Per-writer tagging exists so this is
+measurable rather than a surprise: hold out an unseen writer entirely and
+measure against them, not against a random split of samples collected
+together.
+
+**A stray pen dot could read as a decimal point.** The sum check (section
+10) catches it — a `4` read as `4.5` throws the total off by exactly
+enough to be visible. This is precisely the failure the sum check was
+designed for, now protecting a second recognizer instead of one.
+
+### Migration steps
+
+The concrete build order (Recognizer extraction → train the CNN →
+segmentation/decoding → real-sample collection and comparison run) is
+`step.md` steps 2r.0, 2r, 3r, and 3r.6 — slotted in after step 3, before
+step 4, without renumbering anything already built.

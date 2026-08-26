@@ -7,6 +7,7 @@ __pycache__/
 # Node
 node_modules/
 dist/
+dev-dist/
 
 # Secrets
 .env
@@ -14,6 +15,14 @@ dist/
 
 # Detection harness output — regenerated on every run
 debug/
+
+# Dev-only self-signed certs — regenerated per machine (gen_dev_cert.py)
+certs/
+
+# TEMPORARY step 6 debugging only — real phone captures saved for
+# inspection since the backend is otherwise stateless. Remove this and the
+# save code in app/main.py once step 6 is confirmed working.
+debug_uploads/
 
 # Claude Code setup (solo project)
 .claude/

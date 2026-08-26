@@ -1,0 +1,6 @@
+{
+  "_note": "Real Gemini response for testset/images/filled_file.jpeg, cached per step.md 3.6 so step 4's FastAPI tests can mock the SDK call without spending API quota. Captured against MODEL='gemini-3.6-flash'. This is the parsed ScanPayload shape, not a raw HTTP response.",
+  "serial": "07",
+  "questions": [3.0, 2.5, 1.0, 0.0, 4.5],
+  "total": 11.0
+}

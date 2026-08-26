@@ -14,22 +14,22 @@ export.
 
 ## Current state — read this first
 
-**No code exists yet.** The repo holds specifications only:
+Specs first, then check `step.md`'s **Progress table** at the bottom — it is
+the project's actual status of record and is kept current as steps
+complete. Do not assume "not started" from this file; the table is the
+source of truth.
 
 | File | What it is |
 |---|---|
 | [plan.md](plan.md) | Architecture, data models, screens, API contract, resolved decisions |
-| [step.md](step.md) | Execution plan — steps 0–10, each with a *Before you start*, substeps, a test, and a *Done when* bar. Step numbers match plan §14. |
+| [step.md](step.md) | Execution plan — steps 0–10, each with a *Before you start*, substeps, a test, and a *Done when* bar. Step numbers match plan §14. Ends with the Progress table. |
 | [stack-reference.md](stack-reference.md) | Library-level notes from Context7: exact calls, starting parameter values, known traps |
+| [learn.md](learn.md) | Plain-language walkthrough of what each finished step's code actually does, for learning alongside the build. Updated after each step — see "How to work here." |
 | `marks-grid-template.docx` | The grid the instructor pastes into the question paper |
 
-`step.md` ends with a **Progress table** — every step is currently `not
-started`. Update that table as steps complete; it is the project's status of
-record.
-
-Because nothing is built, the run/test/build commands below are **the ones
-the specs call for**, not commands verified against existing scripts. The
-first ones become real at step 0.2 and step 5.1.
+Commands below are the ones the specs call for. Once a step has actually
+built something (check the Progress table), the corresponding command is
+real and runnable, not aspirational.
 
 ## Stack
 
@@ -39,7 +39,7 @@ defaults to revisit casually.
 | Layer | Choice | Notes |
 |---|---|---|
 | Backend | Python + FastAPI, `uvicorn`, `python-multipart` | Stateless. Runs on the instructor's laptop for the pilot — no hosting. |
-| Image processing | `opencv-python` | Table detection, deskew, cell splitting |
+| Image processing | `opencv-python-headless` | Table detection, deskew, cell splitting. Headless substituted for `opencv-python` — no GUI display code (`imshow`) is used anywhere in the pipeline, only file writes, and headless avoids pulling in system Qt/GTK libs on a server. |
 | Local ID OCR | `pytesseract`, `--psm 10`, digit whitelist | Keeps the student ID off the network |
 | Serial + marks | `google-genai` (`from google import genai`) | **Not** `google-generativeai` — that SDK is retired |
 | Validation | `pydantic` | Also supplies the Gemini `response_schema` |
@@ -59,17 +59,25 @@ only; install the binary separately (`apt install tesseract-ocr`) before step
 
 ## Layout
 
-Created at step 0.1; only the markdown files and the `.docx` exist so far.
+Created starting step 0.1. Backend (steps 1–4) and the frontend scaffold +
+Setup screen (step 5) exist; steps 6–9's frontend screens don't yet.
 
 ```
 marks-upload/
-├── plan.md · stack-reference.md · step.md · CLAUDE.md
+├── plan.md · stack-reference.md · step.md · CLAUDE.md · learn.md
+├── dev.sh                       # run both servers together — see Commands
 ├── marks-grid-template.docx
 ├── testset/
-│   ├── images/                 # the photographs — step 0
-│   └── labels.json             # ground truth, hand-written
+│   ├── images/                 # the real photographs — step 0 (2 so far)
+│   ├── labels.json             # ground truth, hand-written
+│   ├── check_labels.py         # labels.json <-> images/ consistency check
+│   └── debug/                  # gitignored — detect.py's regenerable output
 ├── backend/
-│   ├── detect.py               # step 1 CLI harness
+│   ├── detect.py               # step 1 CLI harness (single image)
+│   ├── batch_detect.py         # step 1.8 — whole testset/images/ in one run
+│   ├── id_ocr_accuracy.py      # step 2.4 — ID OCR accuracy harness
+│   ├── gen_dev_cert.py         # step 6 — self-signed cert so the phone's HTTPS page can reach this backend
+│   ├── .env.example            # copy to .env, fill in GEMINI_API_KEY
 │   ├── app/
 │   │   ├── models.py           # step 4 — ScanResult, QuestionMark, QuizConfig
 │   │   ├── detection.py        # step 1 — the make-or-break component
@@ -77,39 +85,74 @@ marks-upload/
 │   │   ├── marks.py            # step 3 — the Gemini call
 │   │   └── main.py             # step 4 — POST /api/scan
 │   ├── tests/
+│   │   ├── fixtures/           # cached real Gemini responses — no live API in tests
+│   │   ├── test_detection_regression.py
+│   │   ├── test_marks.py
+│   │   └── test_main.py
 │   └── requirements.txt
-└── frontend/                   # steps 5–9
+└── frontend/
+    ├── vite.config.ts          # PWA + basicSsl (not mkcert — see Commands) + Vitest config
     └── src/
+        ├── types.ts            # QuizConfig, StudentRecord — mirrors app/models.py
+        ├── db.ts               # IndexedDB (idb) — step 5.2
+        ├── validateConfig.ts   # pure form-validation logic, unit-tested
+        ├── Setup.tsx           # step 5.3–5.4
+        └── App.tsx
 ```
 
 ## Commands
 
-Per the specs. None are verified yet — the scripts they invoke don't exist.
+All verified working (backend through step 4, frontend through step 5).
 
 ```bash
+# Run both servers together — for actual scanning use (step 6+), not
+# detector tuning. Ctrl+C stops both, reliably (see learn.md step 6 for
+# why that took two fixes: process-group signal targeting, then a
+# self-signal re-entrancy bug in the cleanup trap itself).
+./dev.sh
+
 # Detection harness — the primary loop for steps 1–3
-python backend/detect.py <image-path> --questions 5 --id-digits 7 --out debug/
+cd backend && source venv/bin/activate && python detect.py <image-path> --questions 5 --id-digits 7 --out ../testset/debug/<name>
+cd backend && source venv/bin/activate && python batch_detect.py ../testset/images --questions 5 --id-digits 7 --out ../testset/debug/
+cd backend && source venv/bin/activate && python id_ocr_accuracy.py
 
-# Backend tests — must pass offline, Gemini always mocked
-cd backend && pytest
+# Backend tests — offline, Gemini always mocked (21 tests as of step 4)
+cd backend && source venv/bin/activate && pytest
 
-# Backend
-cd backend && uvicorn app.main:app --reload --host 0.0.0.0
+# Backend — needs backend/.env with GEMINI_API_KEY (copy .env.example),
+# and an HTTPS cert (below) generated first
+cd backend && source venv/bin/activate
+python gen_dev_cert.py   # only when certs/ is missing or the LAN IP changed
+uvicorn app.main:app --reload --host 0.0.0.0 --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
 
-# Frontend — needs --host so the phone can reach it, and HTTPS for the camera
+# Frontend — HTTPS and LAN binding are on by default via vite.config.ts,
+# no --host flag needed
 cd frontend && npm run dev
-cd frontend && npx vitest
+cd frontend && npx vitest run   # or `npx vitest` for watch mode
 cd frontend && npm run build
 ```
 
-The dev server **must** serve HTTPS (mkcert or `vite-plugin-basic-ssl`).
-`getUserMedia` requires a secure context; `localhost` counts,
-`http://192.168.x.x` does not. A phone on plain HTTP fails at the camera, not
-at page load, which makes a transport problem look like a permissions
-problem. Set this up at step 5.1, not when you first need the camera.
+The dev server serves HTTPS via `@vitejs/plugin-basic-ssl`, not `mkcert` —
+this machine has no passwordless sudo, and mkcert needs a system binary plus
+a trusted CA in the OS store. basic-ssl is a pure npm plugin: a self-signed
+cert with no system install, at the cost of a one-time "not trusted"
+warning to click past on each device (the phone included) instead of a
+silently-trusted one. `getUserMedia` only needs a secure context, not a
+*trusted* one, so self-signed still satisfies it (plan.md §9). Revisit
+mkcert if the click-past warning becomes annoying enough to matter.
 
-CORS must allow both `localhost` and the laptop's LAN address — you develop
-against one and scan from the other.
+**The backend needs HTTPS too, not just the frontend** — found in step 6,
+not step 5, because nothing crossed origins over the network until then.
+A page loaded over HTTPS can't fetch a plain-HTTP endpoint except
+`localhost`/`127.0.0.1` (browsers block it as mixed content), and the phone
+reaches the backend via the LAN IP, not `localhost`. `gen_dev_cert.py`
+generates a matching self-signed cert (`backend/certs/`, gitignored,
+regenerate if the LAN IP changes) the same way `vite.config.ts` does for
+the frontend — LAN IP detected via a socket trick, never hardcoded.
+
+CORS is a regex in `app/main.py` matching `localhost`/`127.0.0.1` and all
+three private LAN ranges (`192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`),
+rather than one hardcoded address — the actual LAN IP changes per network.
 
 ## How to work here
 
@@ -128,6 +171,16 @@ produces theatre: detection is verified by *looking at overlays* plus shape
 regression; recognition by an accuracy number against labelled ground truth;
 the API by `TestClient` with Gemini mocked; frontend logic by Vitest over
 pure functions; camera/PWA/export by hand on the real phone.
+
+4. **Update [learn.md](learn.md) as the last piece of work after finishing
+   each step** — a plain-language section explaining what the step's code
+   actually does, written for someone learning alongside the build (the
+   user explicitly wants this). Simple wording, real file references, real
+   code snippets pulled from the files just written — not a restatement of
+   `step.md`'s task list. Only write the section once the step genuinely
+   meets its *Done when* bar; a partially-done step gets a partial, honestly
+   labelled entry (see step 0/1's entries for the pattern), not a section
+   describing work that hasn't happened yet.
 
 ## Conventions and invariants
 

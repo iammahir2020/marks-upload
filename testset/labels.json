@@ -1,0 +1,126 @@
+{
+  "_schema_note": "Ground truth for testset/images/. One entry per photo, keyed by filename. Delete this note key once real entries are added — check_labels.py ignores keys starting with '_'.",
+  "images": {
+    "empty_file.jpeg": {
+      "condition": "straight_on",
+      "handwriting_by": "mahir (grid lines only — a ruler-and-pen redraw of marks-grid-template.docx, no values filled in)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": null,
+      "serial": null,
+      "questions": [],
+      "total": null,
+      "note": "First real photo. Detection-only test (step 1) — no values were written, so this does not exercise step 2/3 recognition. Required KERNEL_DIVISOR 30->20 in detection.py to stop handwritten label-cell letters ('ID', 'Serial') from aliasing as column-divider lines — see learn.md step 1."
+    },
+    "filled_file.jpeg": {
+      "condition": "straight_on",
+      "handwriting_by": "mahir (pen, grid + values, following marks-grid-template.docx)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2632711",
+      "serial": "07",
+      "questions": [
+        { "q": 1, "value": 3.0 },
+        { "q": 2, "value": 2.5 },
+        { "q": 3, "value": 1.0 },
+        { "q": 4, "value": 0.0 },
+        { "q": 5, "value": 4.5 }
+      ],
+      "total": 11.0,
+      "note": "Second real photo, first with real values written in. Detection alone (step 1) required a second fix: a handwritten '1' in the tall Total cell (answer row, written '11') was tall enough to alias as a column divider, same failure mode as empty_file.jpeg's label text but from a digit instead of a letter. Fixed by requiring a candidate line to cover most of the table's own height/width (MIN_LINE_COVERAGE_FRAC), not just be locally the tallest thing — see learn.md step 1. Recognition (step 2/3, reading these digits) is not built yet; this entry only exercises geometry."
+    },
+    "phone_2632711_1.jpg": {
+      "condition": "straight_on",
+      "handwriting_by": "mahir (same physical script as filled_file.jpeg, re-photographed on a phone for step 6/7's real-device test session)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2632711",
+      "serial": null,
+      "questions": [],
+      "total": null,
+      "note": "First of 7 real phone captures from the step 6/7 live test session (2026-08-26), pulled from backend/debug_uploads/ (20260826T170044742283.jpg) after the user confirmed the correct student ID by hand. Only student_id is trustworthy ground truth here — it was given directly by the user. Serial/marks are deliberately left blank rather than transcribed from the photo: visually reading these same-script retakes turned up inconsistent serial values across supposedly-identical shots (e.g. phone_2632711_5.jpg's serial cell reads '107', not '07' like the others), which isn't something to guess into a ground-truth file. id_ocr_accuracy.py only needs student_id and skips entries without it, so this is enough to widen the ID-recognition sample beyond n=1."
+    },
+    "phone_2632711_2.jpg": {
+      "condition": "straight_on",
+      "handwriting_by": "mahir (same physical script as filled_file.jpeg, re-photographed on a phone for step 6/7's real-device test session)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2632711",
+      "serial": null,
+      "questions": [],
+      "total": null,
+      "note": "See phone_2632711_1.jpg's note — same session, same caveats. Source: backend/debug_uploads/20260826T170324707709.jpg."
+    },
+    "phone_2632711_3.jpg": {
+      "condition": "straight_on",
+      "handwriting_by": "mahir (same physical script as filled_file.jpeg, re-photographed on a phone for step 6/7's real-device test session)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2632711",
+      "serial": null,
+      "questions": [],
+      "total": null,
+      "note": "See phone_2632711_1.jpg's note — same session, same caveats. Source: backend/debug_uploads/20260826T170441874527.jpg."
+    },
+    "phone_2632711_4.jpg": {
+      "condition": "straight_on",
+      "handwriting_by": "mahir (same physical script as filled_file.jpeg, re-photographed on a phone for step 6/7's real-device test session)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2632711",
+      "serial": null,
+      "questions": [],
+      "total": null,
+      "note": "See phone_2632711_1.jpg's note — same session, same caveats. Source: backend/debug_uploads/20260826T170550632181.jpg."
+    },
+    "phone_2632711_5.jpg": {
+      "condition": "straight_on",
+      "handwriting_by": "mahir (same physical script as filled_file.jpeg, re-photographed on a phone for step 6/7's real-device test session)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2632711",
+      "serial": null,
+      "questions": [],
+      "total": null,
+      "note": "See phone_2632711_1.jpg's note — same session, same caveats. Source: backend/debug_uploads/20260826T170637859250.jpg. This is the shot whose serial cell reads '107', the inconsistency that ruled out treating any of these 7 photos' serial/marks as reliable ground truth."
+    },
+    "phone_2632700_1.jpg": {
+      "condition": "straight_on",
+      "handwriting_by": "mahir (a second physical script, different ID, from the same step 6/7 live test session)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2632700",
+      "serial": null,
+      "questions": [],
+      "total": null,
+      "note": "One of the session's last two captures, on a different physical script than the phone_2632711_* set (confirmed by the user: 'the last two photos' have ID 2632700, not 2632711). Source: backend/debug_uploads/20260826T170728282950.jpg. Same serial/marks caveat as phone_2632711_1.jpg's note — one of these last two requests hit Gemini's free-tier rate_limited response live (RPD cap), unrelated to this entry's purpose (id_ocr_accuracy.py never calls Gemini)."
+    },
+    "phone_2632700_2.jpg": {
+      "condition": "straight_on",
+      "handwriting_by": "mahir (a second physical script, different ID, from the same step 6/7 live test session)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2632700",
+      "serial": null,
+      "questions": [],
+      "total": null,
+      "note": "See phone_2632700_1.jpg's note. Source: backend/debug_uploads/20260826T170823984205.jpg — the session's final capture."
+    },
+    "_example.jpg": {
+      "condition": "straight_on | angle_20_30 | shadow | crumpled | grid_low_on_page | fluorescent | daylight | out_of_focus | column_cut_off | grid_small_in_frame",
+      "handwriting_by": "name or initials — use 3-4 different people across the set",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "1912345",
+      "serial": "07",
+      "questions": [
+        { "q": 1, "value": 4.0 },
+        { "q": 2, "value": 3.5 },
+        { "q": 3, "value": 5.0 },
+        { "q": 4, "value": 5.0 },
+        { "q": 5, "value": 2.5 }
+      ],
+      "total": 20.0
+    }
+  }
+}

@@ -293,6 +293,247 @@ response produces a clean `model_error` rather than an exception.
 
 ---
 
+## Steps 2r.0 / 2r / 3r / 3r.6 — Local CNN recognizer (optional track)
+
+Folded in from `Cnn migration.md` after steps 2, 3, and 7 were already
+done and the rate-limited fallback (`marks_ocr.py`) had just shipped —
+full design in [plan.md §16](plan.md#16-local-cnn-recognizer-optional-alongside-gemini).
+**This track is optional and additive.** It does not replace or renumber
+steps 4–10 below, and nothing in steps 2 or 3 above gets deleted or
+rewritten by it — `id_ocr.py`, `marks.py`, and `marks_ocr.py` get moved
+behind a shared interface, not discarded. Pick this up whenever step 3's
+own two triggers (real quota pressure, real accuracy ceiling) are worth
+spending more time on than moving straight to step 4; both triggers have
+already fired for real once (`step.md` step 2 and step 3's own Progress
+notes), which is why this track exists at all rather than staying a
+"maybe someday" note in plan.md §13.
+
+### Step 2r.0 — Extract the recognizer interface
+
+**Goal.** Give the CNN a working seam to slot into later, with zero
+behavior change right now. This step only moves code and adds a thin
+adapter — it does not touch what any of steps 2 or 3's logic actually
+does.
+
+**Before you start.** Confirm steps 2 and 3 (including the `marks_ocr.py`
+rate-limited fallback) are in the state the Progress table below
+describes — this step relocates that code, so it has to exist first. Read
+plan.md §16's "Two paths behind one interface" in full.
+
+#### Substeps
+
+- **2r.0.1** Define the `Recognizer` protocol in `app/recognizers/base.py`:
+  `read_id(id_crops) -> IdResult`, `read_marks(serial_crop, mark_crops,
+  total_crop, config) -> MarksResult`.
+- **2r.0.2** Move the existing logic — `id_ocr.py` (Tesseract),
+  `marks.py` (Gemini), and `marks_ocr.py` (the rate-limited fallback) —
+  behind `app/recognizers/remote.py`'s `RemoteRecognizer`. An import-path
+  change plus a thin adapter, not a rewrite; the logic inside is already
+  tested and tuned.
+- **2r.0.3** Switch `main.py` to resolve one `Recognizer` at startup via
+  `RECOGNIZER` (`"cnn" | "remote" | "both"`, defaulting to `"remote"` —
+  see plan.md §16) and call through it instead of calling `recognize` /
+  `read_id` / `recognize_locally` directly. Since `CNNRecognizer` doesn't
+  exist yet, wire `"cnn"`/`"both"` to fail loudly rather than silently
+  falling back to `"remote"` — that failure is what makes 2r/3r's absence
+  obvious instead of quietly masked.
+- **2r.0.4** Parameterize the existing "no recognizer runs after a
+  detection failure" test (step 4's test suite) over the `Recognizer`
+  implementation, rather than duplicating it — the property applies to
+  both paths equally.
+
+#### Test
+
+The full existing backend test suite (34 tests as of the rate-limited
+fallback) must pass **unchanged** after this move. Any failure means the
+move rewrote something it should have only relocated — treat that as a
+defect in this step, not an acceptable side effect of refactoring.
+
+#### Done when
+
+`main.py` calls only through the `Recognizer` protocol, `RemoteRecognizer`
+reproduces the exact current behavior end to end (including the
+`rate_limited`/`model_error` → local-OCR fallback), and every existing
+test passes with zero behavior changes.
+
+---
+
+### Step 2r — Train the digit CNN
+
+**Goal.** A small local digit classifier that beats Tesseract's measured
+baseline — 58.9% per-digit, 0-of-8 whole-ID exact match, both against real
+phone photos (step 2's Progress note) — while holding the same "0
+confidently wrong" bar `id_ocr.py` already holds itself to. Standalone; no
+app integration yet.
+
+**Before you start.** Complete step 2r.0. Read plan.md §16's "Model and
+training" section in full — the MNIST-matched preprocessing (centering by
+centre of mass, not bounding-box centre) is called out there as the single
+most common way this kind of model quietly underperforms in production,
+and is worth re-reading twice before writing the preprocessing function.
+
+#### Substeps
+
+- **2r.1** Training script: EMNIST Digits (not MNIST — 240k samples, more
+  writer variety), the small CNN architecture from plan.md §16 (~150KB as
+  ONNX), rotation/translation/scale/elastic augmentation. Watch the EMNIST
+  transpose bug — `.transpose(1, 2)` needed, or the model trains on
+  rotated digits.
+- **2r.2** Implement the MNIST-matched preprocessing (12% inset — already
+  in `id_ocr.py` — Otsu binarize, crop to the ink bounding box, scale the
+  longest side to 20px, paste centered by centre of mass onto a 28×28
+  canvas) as a standalone function. Run it over the existing real
+  `cells/id_d*.png` crops and **look at the 28×28 outputs directly** —
+  they should be visually indistinguishable from real EMNIST samples. If
+  they're not, no training run fixes it; fix the preprocessing first.
+- **2r.3** Train, export to ONNX, verify the ONNX output matches the
+  PyTorch model on a fixed batch — a numerical parity check, not just "it
+  exports without error."
+- **2r.4** Accuracy harness over the real crops already in `testset/` and
+  `backend/debug_uploads/`, using the exact ground truth
+  `id_ocr_accuracy.py` already reads from `testset/labels.json`. Report
+  per-digit accuracy and whole-ID exact match, directly comparable to the
+  current 58.9% / 0-of-8 numbers.
+
+#### Test
+
+Run the accuracy harness against every real photo currently labelled with
+a `student_id` (9 images as of the rate-limited-fallback work) and report
+the same two numbers `id_ocr_accuracy.py` already reports, so the
+comparison to the Tesseract baseline is apples to apples.
+
+#### Done when
+
+Per-digit accuracy on real crops is measured — not estimated — and
+materially beats 58.9%, and the confidently-wrong count stays at zero. A
+lower-but-honest number beats a higher-but-sometimes-wrong one, per this
+project's existing "flag, never guess" rule.
+
+---
+
+### Step 3r — Segmentation and constrained decoding
+
+**Goal.** Extend the CNN from single isolated digits (the ID, already
+boxed one-per-cell by the template) to the serial and mark cells, which
+hold multiple glyphs in one cell and need segmenting before the same
+classifier can read them.
+
+**Before you start.** Complete step 2r. Read plan.md §16's "Segmentation"
+and "Constrained decoding" sections — the overlap-merge rule for
+disconnected strokes and "score every legal value directly" are both
+load-bearing there, not optional refinements.
+
+#### Substeps
+
+- **3r.1** Segmentation per cell (after the existing 12% inset): Otsu
+  binarize, `cv2.connectedComponentsWithStats`, drop components below a
+  noise-area floor, **merge horizontally-overlapping components** (a
+  disconnected-stroke `4` or `5` produces two components that are really
+  one glyph — merge if x-ranges overlap more than ~50% of the narrower
+  one), sort left to right by centroid x.
+- **3r.2** Classify each segmented component as digit or decimal point by
+  geometry alone (height below ~35% of median component height, centroid
+  in the lower third of the glyph band) — no model, no training data
+  needed for the decimal point.
+- **3r.3** Constrained decoder: score every legal value in the question's
+  own legal set directly against the per-glyph probability vectors
+  (product of per-digit class probabilities), rather than parsing free
+  text and validating after. Reuses `marks.py`'s existing
+  `legal_values()`.
+- **3r.4** Wire serial, marks, and total through the segmenter + decoder,
+  behind the `Recognizer` protocol from 2r.0, as `CNNRecognizer` in
+  `app/recognizers/local.py`.
+- **3r.5** Accuracy run against `testset/labels.json`, with half marks
+  (`4` vs `4.5`) called out separately in the report — that discrimination
+  is exactly what the constrained decoder exists to make reliable.
+
+#### Test
+
+Unit tests, no network needed for any of them:
+
+- The decoder, fed synthetic probability vectors, returns the legal value
+  they encode.
+- The decoder never returns a value outside the legal set, whatever it's
+  fed.
+- A disconnected-stroke `4` (two components) merges into one glyph rather
+  than two.
+- A blank cell returns empty, not a confident digit — mirrors
+  `id_ocr.py`'s existing blank-handling, extended to this path.
+- Ambiguous/low-margin input returns `None` and flags rather than
+  guessing.
+
+#### Done when
+
+Mark accuracy on real photos is measured, half marks are distinguished
+reliably from whole marks, and no illegal value can reach storage — the
+same standard `marks.py`'s `validate_payload` already holds Gemini's own
+output to.
+
+---
+
+### Step 3r.6 — Collection sheet and comparison run
+
+**Goal.** Decide, with real evidence rather than a hunch, whether the CNN
+path is actually ready to become the default — and build the sample-
+collection pipeline this project keeps needing regardless of that outcome.
+
+**Before you start.** Complete step 3r. Read plan.md §16's "Collecting
+real handwriting samples" section in full, especially the asymmetry it
+draws between who should write marks-training samples (the one instructor,
+every time, forever) versus ID/serial-training samples (many different
+writers — the instructor's own handwriting is nearly useless for that
+field).
+
+#### Substeps
+
+- **3r.6a** Build the collection-sheet generator (a `.docx` variant of the
+  existing marks-grid template, one row per digit 0–9, ~20 empty cells per
+  row — labels come from row position, so no manual annotation is needed
+  at all). Collect from at least four different writers for the ID/serial
+  samples; collect the instructor's own handwriting separately for the
+  marks samples. Process both through the existing `detect.py` into
+  `training_data/<writer>/<digit>/<uuid>.png`.
+- **3r.6b** Fine-tune two separate heads on the frozen conv base (~1e-4
+  learning rate) — one weighted toward the instructor's hand for marks,
+  one weighted evenly across writers for the ID — holding out a real,
+  unseen-writer photo set to measure against. Re-run the step 2r/3r
+  accuracy harnesses. This is the number that decides whether the CNN path
+  is genuinely ready, not a guess.
+- **3r.6c** Also build the harvesting path from real use: on Confirm
+  (Review screen, step 7), POST the cell crops alongside the confirmed
+  values to `training_data/harvested/`, tagging corrections separately
+  from confirmations (corrections are the model's actual failures and
+  worth oversampling; confirmations mostly re-teach what it already
+  knows). Build this now even though nothing consumes it yet —
+  retrofitting later means losing every label from the pilot, which is the
+  period these labels matter most.
+- **3r.6d** Run a full quiz (or the fullest rehearsal available) with
+  `RECOGNIZER=both` and read `comparison_log/` — every disagreement
+  between the CNN and the remote path is a hard case with a
+  human-confirmed answer attached from the review screen, worth more than
+  an aggregate accuracy number off a thin labelled set.
+- **3r.6e** Set `RECOGNIZER=cnn` as the default only once it wins on the
+  comparison run. Leave `RemoteRecognizer` in place regardless — it costs
+  nothing sitting unused, and it's the only independent check available on
+  the local model.
+
+#### Test
+
+Manual: run `RECOGNIZER=both` across a real batch of scripts and confirm
+every logged disagreement in `comparison_log/` has both values and a
+resolved (instructor-confirmed) answer recorded. Re-run the step 2r/3r
+accuracy harnesses after fine-tuning and confirm they improved against the
+pre-fine-tune numbers, not just against Tesseract's original baseline.
+
+#### Done when
+
+The CNN path's accuracy is measured against the remote path's on the same
+real batch (not estimated), the CNN wins the comparison, and
+`RECOGNIZER=cnn` is set as the default with `RECOGNIZER=remote` confirmed
+still working as a fallback.
+
+---
+
 ## Step 4 — Wrap steps 1–3 in FastAPI
 
 **Goal.** `POST /api/scan`. By this point the hard part is proven, and the
@@ -563,14 +804,17 @@ how long a class actually takes.
 
 | Step | State |
 |---|---|
-| 0 — Test set and scaffolding | not started |
-| 1 — Detection harness | not started |
-| 2 — Local ID recognition | not started |
-| 3 — Serial and marks via Gemini | not started |
-| 4 — FastAPI wrapper | not started |
-| 5 — Frontend scaffold and Setup | not started |
-| 6 — Camera and upload queue | not started |
-| 7 — Review screen | not started |
+| 0 — Test set and scaffolding | in progress — repo layout, venv, requirements.txt, and the `.docx` row-height fix (0.1–0.3) are done. `labels.json` schema and `check_labels.py` (0.6) are in place. Two real photos exist, both hand-drawn with pen and ruler (no printer): `empty_file.jpeg` (blank grid) and `filled_file.jpeg` (real ID/serial/marks filled in, half-marks and a zero included), both labelled and passing regression. Still far short of the Done-when bar: need 15–20 photos total, 3–4 different people's handwriting, and all 9 awkward conditions — both photos so far are the easy "straight-on, well-lit, one person" case. 0.4–0.5's printing step is skipped in favor of hand-drawing, which the detector doesn't distinguish — see learn.md. |
+| 1 — Detection harness | in progress — `detect.py`, `app/detection.py`, `batch_detect.py`, and the step-1.9 regression test are written per stack-reference.md's starting parameters, then genuinely tuned twice against real photos (see learn.md): (1) reused the whole-photo line masks per table instead of re-deriving them at table scale, plus raised `KERNEL_DIVISOR` 30→20, to stop handwritten label text ("ID", "Serial") from aliasing as column dividers; (2) added `MIN_LINE_COVERAGE_FRAC` (a candidate line must cover ~40%+ of the table's own height/width) to stop a tall handwritten digit — a "1" in "11" — from aliasing as one too, since raising the length bar alone couldn't distinguish "digit that happens to be tall" from "genuine rule" once the digit was written in a deliberately tall cell. Both real photos now pass end-to-end (`status: "ok"`, all three tables, exact column counts) and the regression suite (1.9) is running for real instead of skipping. Plumbing also separately proven via synthetic placeholder images: blank page correctly fails `blurry`, noisy image correctly fails `column_count_mismatch` rather than guessing. **Still far from step 1's Done-when bar** — two easy-condition photos are not the 15–20-photo, 9-condition test set. A synthetic 15°-rotated case still fails outright (axis-aligned kernel doesn't survive in-plane rotation) — open, unsolved, needs a real angled photo to tune against rather than a synthetic guess. |
+| 2 — Local ID recognition | in progress — tesseract-ocr installed, unblocking real measurement. `app/id_ocr.py` (2.1–2.3) and `id_ocr_accuracy.py` (2.4) written, then tuned twice against the one real filled photo (see learn.md): (1) inset crops 12% before thresholding — the raw crop included a sliver of the cell's own border line, which read to Tesseract as extra ink and tanked recognition; (2) switched `PSM` from stack-reference.md's suggested 10 ("single character") to 8 ("single word") after measuring 10 completely failing on two clean, legible digits that 8 read correctly — real evidence overriding the doc default. `CONFIDENCE_FLOOR` lowered 60→35 (correct reads landed at 39–41 on this photo); noted in-code as provisional, calibrated from n=1. First real result (n=1): 3/7 digits correct, 4 correctly flagged uncertain, 0 confidently wrong, whole-ID exact match 0/1 — honest but not yet a real accuracy number, that sample being far too thin. **Widened from n=1 to n=8** using real photos from the step 6/7 phone test session (`backend/debug_uploads/`, pulled in with the user-confirmed `student_id` as ground truth — see `testset/labels.json`'s `phone_*` entries and their notes on why serial/marks were deliberately left unlabeled). Re-measuring against this larger, still-single-handwriting sample: **21/56 digits (37.5%), 0/8 exact match, 0 confidently wrong** — a real number now, if still not "different handwriting" per the original caveat. That sample surfaced a genuine bug, not just noise: positions 5–7 were wrong in *every* photo. Inspecting the actual crops (`id_d5.png`/`id_d6.png`/`id_d7.png`) showed Tesseract's LSTM engine was reading correctly-shaped digits as look-alike letters at high confidence — a handwritten "0" as `"D"` (86%), a handwritten "1" as `"l"` (90%) — and `tessedit_char_whitelist` was silently discarding the whole result instead of falling back within the digit alphabet. Fixed with a second, unconstrained OCR pass (`FALLBACK_PSM=7`) that only fires when the whitelisted pass finds nothing, and only accepts a result if it's a known digit/letter look-alike (`DIGIT_LOOKALIKES`) above a stricter confidence floor (60) — see learn.md step 2. Re-measured: **33/56 digits (58.9%), 0/8 exact match, still 0 confidently wrong** — every gain came from resolving previously-flagged-uncertain digits correctly; none introduced a wrong answer. All 28 backend tests and 9/9 `batch_detect.py` still pass. **Still not the Done-when bar** — same handwriting throughout, and whole-ID exact match is still 0/8 (getting all 7 digits right in one photo needs every position right at once, and positions like the always-hard "7" glyph are still correctly flagged rather than guessed). |
+| 3 — Serial and marks via Gemini | in progress — `GEMINI_API_KEY` added, unblocking a live run. `app/marks.py` (3.1–3.5) and `tests/test_marks.py`'s 16 offline tests still pass unchanged. First live call 404'd on the model name (`gemini-2.5-flash` retired — Google's own error named the replacement, `gemini-3.6-flash`; switched to it, a real-world API-drift fix, not a code bug). Second live call, against `filled_file.jpeg`: **every field exactly correct** — serial `07`, marks `[3.0, 2.5, 1.0, 0.0, 4.5]`, total `11.0`, nothing flagged low-confidence. Cached to `tests/fixtures/filled_file_gemini_response.json` per step 3.6 so step 4's tests can mock it without spending quota. **One clean photo passing is not step 3's Done-when bar** — same caveat as steps 0–2: this is the easy, well-lit, single-photo case, not evidence across messy real conditions. **Rate-limited fallback added** (2026-08-26, prompted by the real `rate_limited` hit during the step 6/7 phone session): `app/marks_ocr.py` is a local Tesseract-based fallback, invoked from `main.py` only when `recognize()` itself fails (rate_limited/model_error) — never a replacement for the Gemini path, and explicitly not what plan.md's "Deferred" local-mark-classifier note rules out, since it's a degraded last resort rather than a primary recognizer. Reuses `id_ocr.py`'s `_prepare`/fallback-PSM approach but reads whole short strings (PSM 7, no single-character restriction) instead of single digits, since serial/mark crops hold more than one character. Every value is still run through `marks.py`'s own `legal_values` check — an illegal or unparseable read is rejected exactly like a bad Gemini read, never stored. Every field this function touches is unconditionally flagged low-confidence, recovered or not, since this path is deliberately weaker than a fresh Gemini read even when it does parse. If nothing at all is recoverable, `recognize_locally` returns `None` and `main.py` falls through to the original failure — a rate-limited scan with zero local recovery still says so honestly rather than presenting an all-blank result as if it were a normal scan. Tested against real crops from `filled_file.jpeg` (2/7 fields recovered — Q2, Q5 — everything else correctly `None`, nothing wrong) plus 6 new backend tests (4 unit, 2 `main.py` integration via mocks). All 34 backend tests pass. No frontend changes needed — this reuses the existing `low_confidence_fields` flagging the Review screen (step 7) already renders. |
+| 2r.0 — Extract recognizer interface (optional CNN track) | not started — folded in from `Cnn migration.md` into plan.md §16 and this file. Optional and additive; does not block or reorder steps 4–10. |
+| 2r — Train the digit CNN (optional CNN track) | not started — depends on 2r.0. |
+| 3r / 3r.6 — Segmentation, constrained decoding, and comparison run (optional CNN track) | not started — depends on 2r. |
+| 4 — FastAPI wrapper | in progress — `app/models.py` (4.1, matching plan.md §8 exactly) and `app/main.py`'s `POST /api/scan` (4.2–4.5) written as a thin wrapper over steps 1–3, unchanged. Multipart image + JSON-string config field (4.2), pipeline wired with the required early exits — Gemini never called after `table_not_found`/`column_count_mismatch` (4.3), CORS via a regex matching localhost + all private LAN ranges rather than one hardcoded address (4.4), statelessness via a per-request `TemporaryDirectory` deleted before the response returns, no globals (4.5). All 21 tests pass offline (`TestClient`, only `recognize`/Gemini mocked — detection and local ID OCR run for real): each of the three failure reasons confirmed to never call the Gemini mock (`assert_not_called`), a known-good image matches expected values exactly, two back-to-back requests with different configs proven not to contaminate each other. Then verified live, no mocks: a real HTTP request through the real endpoint hitting the real Gemini API reproduced the CLI's exact values (`serial: "07"`, marks `[3.0, 2.5, 1.0, 0.0, 4.5]`, `total: 11.0`) and honestly surfaced the still-imperfect ID OCR as `low_confidence_fields: ["student_id"]` rather than hiding it. **Still not the Done-when bar** — "the endpoint agrees with the CLI on the whole test set" is true for the one real photo with values in it; the set itself is still thin (steps 0–3's shared, repeated caveat). |
+| 5 — Frontend scaffold and Setup | in progress — Vite + React + TypeScript scaffolded, `vite-plugin-pwa` and HTTPS configured (5.1: `@vitejs/plugin-basic-ssl` instead of `mkcert` — no passwordless sudo for the system binary/CA trust, same wall as Tesseract; self-signed means a real click-past warning on the phone, kept deliberately per user decision — see learn.md). `db.ts`'s IndexedDB schema (5.2) — non-unique indexes on serial/studentId, a caching bug caught by tests (not code review) and fixed by not caching the connection. `Setup.tsx` (5.3) and persistence on submit/reload (5.4) built. 14 Vitest tests pass, clean `tsc`, clean production build. **Real-browser testing found a real bug**: the LAN address the phone actually connects through wasn't in the generated cert's hostname list, which broke service worker registration specifically (harder failure than the plain page load, which can be clicked past) — fixed by detecting this machine's actual LAN IPs at config time (`os.networkInterfaces()`) and adding them to the cert, the same no-hardcoding approach already used for backend CORS. Verified two ways post-fix: `openssl s_client -verify_hostname` shows only the expected self-signed warning, no hostname mismatch; `dev-sw.js` now returns 200 over the LAN address. **Still not the full Done-when bar** — a real hard-refresh persistence check on an actual phone remains the one piece nothing here can substitute for. |
+| 6 — Camera and upload queue | in progress — real phone testing underway, three real detection bugs found and fixed from actual captures (see learn.md). Infrastructure: fixed a mixed-content gap (backend needed HTTPS too, `gen_dev_cert.py`); `getUserMedia` + framing guide (6.1), capture-to-blob (6.2), `scanQueue.ts`'s tested upload-queue state machine (6.3), raw `ScanResult` rendering (6.4) built in `Scan.tsx`/`api.ts`. Diagnosed via `backend/debug_uploads/` (gitignored, explicitly marked temporary, since the backend is otherwise stateless — there was nothing else to inspect real captures with). Three bugs found and fixed, all variants of the same root issue — a shape-only match (row/column counts) can't tell geometrically-valid-but-wrong content from correct content: (1) this phone's camera reports portrait video dimensions without actually rotating the pixel content to match — fixed with `detect_any_orientation()`, retrying at 90/180/270° only on `table_not_found`, `detect()` itself kept strict; (2) a real border line detected 8px short of the table's true edge tripped the edge-insertion fallback into adding a spurious second boundary, silently flipping a table's row_count — fixed with `_merge_close_bounds`, collapsing any two final boundaries closer than every genuine gap ever measured (190px+); (3) a table rotated a full 180° still has the *right shape* (same row/column counts) while reading every value backwards — the rotation retry from fix (1) could confidently lock onto exactly this false match. Fixed using a rule already in the template by design, for an unrelated reason: the answer row is deliberately taller than the header row (plan.md §3, originally for handwriting room) — enforcing "the second row must be the taller one" rejects any upside-down match outright. **Result: 3 of 4 real phone photos now pass completely**, matching every value already proven in steps 1–4; the fourth correctly reports `table_not_found` (unrelated, already-understood cause — some genuine dividers not detected, likely lighting; refusing to guess is correct behavior, not a bug, and unchanged by any of today's three fixes). All 21 backend tests, both existing real testset photos, and the synthetic set stayed green throughout every fix — no regressions. The synthetic 15°-rotation case remains genuinely open (needs fine-grained angle correction, not 90°-snapping) — distinguished from the near-90°/180° "held at a different quadrant" cases this session solved. A fourth issue surfaced on new photos with different marks: the ID table found 9 columns instead of 8 (a handwritten "1" measured at 0.449 coverage, uncomfortably close to the weakest genuine line ever measured, ~0.49) — flagged as a real, still-open threshold-tuning gap, not yet fixed. Rather than tune the threshold again, fixed the *recurring pattern* at its source instead: `Scan.tsx` now rotates a portrait-shaped capture (videoHeight > videoWidth) 90° before upload, since the template is always physically wider than tall — this needs no orientation guessing at all for the common case. Verified by replicating the exact canvas transform math against a real saved photo and running it through actual detection (perfect match) plus a visual check that the result is genuinely upright, not just shape-matched by luck. Backend's 4-way retry and upside-down check stay as a safety net for other devices, not retired. **Still not the Done-when bar** — five-captures-in-a-row and dead-backend-error-handling are untested; both need direct phone interaction, and the new frontend rotation itself is unverified on a real device yet. |
+| 7 — Review screen | done — built ahead of step 6's own Done-when bar (real-phone testing of five-in-a-row capture and dead-backend handling), by explicit user direction rather than the usual step order. `validateMarks.ts` (7.3–7.5: sum check, legal-value check, serial normalization, plan.md §10's identity cross-check) and `Review.tsx` (7.1, 7.2, 7.6) written. Identity fields render first at 2rem, above editable marks shown beside the capture preview; low-confidence fields get an amber border; a failed scan reuses the same form with empty fields, a reason banner, and Retake/Enter-manually rather than a dead end; save runs the cross-check via `db.ts`'s by-serial/by-studentId indexes and blocks/warns/allows per plan.md's table, with a conflict panel offering Overwrite or Save-anyway. Minimally wired into `Scan.tsx` (a Review button per finished capture) so the screen is actually reachable — the frictionless "Confirm advances straight to a live camera" loop is step 8's job, not built here. All of this step's own Done-when bar is met without a phone, since it's pure form logic: 18 pure-function tests (`validateMarks.test.ts`, including all five cross-check table rows as one parameterized block) plus 6 component tests (`Review.test.tsx`, via React Testing Library + fake-indexeddb) directly assert the sum check recomputes live on edit, an illegal edit blocks Confirm, and a failed result reaches an editable screen. 45/45 frontend tests pass, `tsc` clean, production build clean. First real-phone pass (review + confirm) found one genuine bug: the minimal `Scan.tsx` wiring used an early `return <Review />` that swapped out the whole render tree, unmounting `<video>` — the camera-setup effect only binds the live stream to the video element once on first mount, so closing Review left a fresh, streamless `<video>` node behind (frozen preview, `Capture` silently no-oping on `videoWidth === 0`). Fixed by rendering `Review` as a `position: fixed` overlay instead, so `<video>` and its stream stay mounted the whole time — see learn.md. **Not done**: how this actually feels in an instructor's hand end-to-end is still unverified — that needs step 8's real loop and, per CLAUDE.md's testing conventions, a real device. |
 | 8 — Scan loop wiring | not started |
 | 9 — Results and Excel export | not started |
 | 10 — Full rehearsal | not started |
