@@ -1,0 +1,19 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Node
+node_modules/
+dist/
+
+# Secrets
+.env
+.env.local
+
+# Detection harness output — regenerated on every run
+debug/
+
+# Claude Code setup (solo project)
+.claude/
