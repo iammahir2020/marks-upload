@@ -1,0 +1,34 @@
+{
+  "_schema_note": "Per-template max-marks config for testset ground truth. labels.json entries that need marks_accuracy.py to know each question's max (rather than assuming the old hardcoded 5-question/5-each default) reference one of these ids via a \"quiz\" key. Shape mirrors app/models.py's QuizConfig (questions: [{q, max}], totalMax).",
+  "3q_5each": {
+    "questions": [
+      { "q": 1, "max": 5.0 },
+      { "q": 2, "max": 5.0 },
+      { "q": 3, "max": 5.0 }
+    ],
+    "totalMax": 15.0
+  },
+  "5q_5each": {
+    "questions": [
+      { "q": 1, "max": 5.0 },
+      { "q": 2, "max": 5.0 },
+      { "q": 3, "max": 5.0 },
+      { "q": 4, "max": 5.0 },
+      { "q": 5, "max": 5.0 }
+    ],
+    "totalMax": 25.0
+  },
+  "8q_6x5_2x10": {
+    "questions": [
+      { "q": 1, "max": 5.0 },
+      { "q": 2, "max": 5.0 },
+      { "q": 3, "max": 5.0 },
+      { "q": 4, "max": 5.0 },
+      { "q": 5, "max": 5.0 },
+      { "q": 6, "max": 5.0 },
+      { "q": 7, "max": 10.0 },
+      { "q": 8, "max": 10.0 }
+    ],
+    "totalMax": 50.0
+  }
+}

@@ -128,3 +128,70 @@ describe('Review — save path', () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 });
+
+describe('Review — harvesting on confirm (step 3r.6c)', () => {
+  it('posts original and confirmed values to /api/harvest, without blocking save', async () => {
+    const blob = new Blob(['fake image bytes']);
+    // Plain mock responses, not real Response instances — jsdom's fetch
+    // polyfill doesn't reliably support Response.blob() round-tripping a
+    // Blob constructed this way, and this test only cares that Review.tsx
+    // calls fetch with the right arguments, not that the network stack
+    // actually round-trips bytes.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      if (typeof input === 'string' && input === 'blob:fake-preview') {
+        return { blob: async () => blob } as Response;
+      }
+      return { ok: true, json: async () => ({ harvested: true }) } as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const onSaved = vi.fn();
+    render(
+      <Review
+        result={okResult}
+        config={config}
+        imagePreviewUrl="blob:fake-preview"
+        onRetake={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+
+    // Q2 corrected from the original scan's 3 -> 4
+    fireEvent.change(screen.getByDisplayValue('3'), { target: { value: '4' } });
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/harvest'),
+        expect.objectContaining({ method: 'POST' }),
+      ),
+    );
+
+    const harvestCall = fetchMock.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('/api/harvest'),
+    );
+    const formData = harvestCall?.[1]?.body as FormData;
+    const original = JSON.parse(formData.get('original') as string);
+    const confirmed = JSON.parse(formData.get('confirmed') as string);
+
+    expect(original).toEqual({ studentId: '1912345', serial: '07', questions: [4, 3], total: 7 });
+    expect(confirmed).toEqual({ studentId: '1912345', serial: '07', questions: [4, 4], total: 7 });
+
+    vi.unstubAllGlobals();
+  });
+
+  it('does not attempt to harvest when no image preview is available', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const onSaved = vi.fn();
+    render(<Review result={okResult} config={config} onRetake={vi.fn()} onSaved={onSaved} />);
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+});

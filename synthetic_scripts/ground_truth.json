@@ -1,0 +1,559 @@
+{
+  "dataset": "synthetic_exam_script_covers",
+  "generated_on": "2026-08-29",
+  "image_dir": "images",
+  "image_width": 1400,
+  "count": 20,
+  "schema": {
+    "file_name": "image filename inside image_dir",
+    "student_id": "7-digit ID, one digit per box in the ID row",
+    "serial": "integer in the Serial box",
+    "num_questions": "number of question columns (excludes Total)",
+    "marks_per_question": "Qn -> mark written in that column",
+    "marks_list": "same marks in column order",
+    "total": "value written in the Total column (equals sum of marks_list)",
+    "max_per_question": "the (n) printed in each Qn(n) header",
+    "max_total": "the (n) printed in the Total header",
+    "handwriting_font": "font used, for stratifying train/val splits"
+  },
+  "images": [
+    {
+      "file_name": "script_001.jpg",
+      "student_id": "1651728",
+      "serial": 547,
+      "num_questions": 4,
+      "marks_per_question": {
+        "Q1": 3.5,
+        "Q2": 2.0,
+        "Q3": 2.5,
+        "Q4": 1.0
+      },
+      "marks_list": [
+        3.5,
+        2.0,
+        2.5,
+        1.0
+      ],
+      "total": 9.0,
+      "max_per_question": 5,
+      "max_total": 20,
+      "handwriting_font": "ArchitectsDaughter",
+      "width": 1400,
+      "height": 1109
+    },
+    {
+      "file_name": "script_002.jpg",
+      "student_id": "7100549",
+      "serial": 355,
+      "num_questions": 8,
+      "marks_per_question": {
+        "Q1": 4.5,
+        "Q2": 4.0,
+        "Q3": 2.5,
+        "Q4": 3.5,
+        "Q5": 0.0,
+        "Q6": 0.5,
+        "Q7": 4.5,
+        "Q8": 2.0
+      },
+      "marks_list": [
+        4.5,
+        4.0,
+        2.5,
+        3.5,
+        0.0,
+        0.5,
+        4.5,
+        2.0
+      ],
+      "total": 21.5,
+      "max_per_question": 5,
+      "max_total": 40,
+      "handwriting_font": "Caveat",
+      "width": 1400,
+      "height": 948
+    },
+    {
+      "file_name": "script_003.jpg",
+      "student_id": "6520217",
+      "serial": 747,
+      "num_questions": 8,
+      "marks_per_question": {
+        "Q1": 0.5,
+        "Q2": 2.0,
+        "Q3": 0.5,
+        "Q4": 4.0,
+        "Q5": 2.5,
+        "Q6": 4.0,
+        "Q7": 3.0,
+        "Q8": 3.5
+      },
+      "marks_list": [
+        0.5,
+        2.0,
+        0.5,
+        4.0,
+        2.5,
+        4.0,
+        3.0,
+        3.5
+      ],
+      "total": 20.0,
+      "max_per_question": 4,
+      "max_total": 32,
+      "handwriting_font": "ComingSoon",
+      "width": 1400,
+      "height": 948
+    },
+    {
+      "file_name": "script_004.jpg",
+      "student_id": "5257182",
+      "serial": 195,
+      "num_questions": 7,
+      "marks_per_question": {
+        "Q1": 3.5,
+        "Q2": 0.5,
+        "Q3": 0.5,
+        "Q4": 4.5,
+        "Q5": 3.0,
+        "Q6": 5.0,
+        "Q7": 4.5
+      },
+      "marks_list": [
+        3.5,
+        0.5,
+        0.5,
+        4.5,
+        3.0,
+        5.0,
+        4.5
+      ],
+      "total": 21.5,
+      "max_per_question": 5,
+      "max_total": 35,
+      "handwriting_font": "Delius",
+      "width": 1400,
+      "height": 847
+    },
+    {
+      "file_name": "script_005.jpg",
+      "student_id": "8268824",
+      "serial": 582,
+      "num_questions": 7,
+      "marks_per_question": {
+        "Q1": 2.5,
+        "Q2": 4.5,
+        "Q3": 1.5,
+        "Q4": 4.5,
+        "Q5": 0.5,
+        "Q6": 0.0,
+        "Q7": 4.5
+      },
+      "marks_list": [
+        2.5,
+        4.5,
+        1.5,
+        4.5,
+        0.5,
+        0.0,
+        4.5
+      ],
+      "total": 18.0,
+      "max_per_question": 5,
+      "max_total": 35,
+      "handwriting_font": "Handlee",
+      "width": 1400,
+      "height": 928
+    },
+    {
+      "file_name": "script_006.jpg",
+      "student_id": "1794823",
+      "serial": 206,
+      "num_questions": 4,
+      "marks_per_question": {
+        "Q1": 3.5,
+        "Q2": 4.0,
+        "Q3": 2.5,
+        "Q4": 0.5
+      },
+      "marks_list": [
+        3.5,
+        4.0,
+        2.5,
+        0.5
+      ],
+      "total": 10.5,
+      "max_per_question": 5,
+      "max_total": 20,
+      "handwriting_font": "IndieFlower",
+      "width": 1400,
+      "height": 856
+    },
+    {
+      "file_name": "script_007.jpg",
+      "student_id": "6905978",
+      "serial": 391,
+      "num_questions": 7,
+      "marks_per_question": {
+        "Q1": 2.0,
+        "Q2": 1.0,
+        "Q3": 1.0,
+        "Q4": 0.5,
+        "Q5": 3.0,
+        "Q6": 4.5,
+        "Q7": 4.5
+      },
+      "marks_list": [
+        2.0,
+        1.0,
+        1.0,
+        0.5,
+        3.0,
+        4.5,
+        4.5
+      ],
+      "total": 16.5,
+      "max_per_question": 5,
+      "max_total": 35,
+      "handwriting_font": "Itim",
+      "width": 1400,
+      "height": 871
+    },
+    {
+      "file_name": "script_008.jpg",
+      "student_id": "2971873",
+      "serial": 317,
+      "num_questions": 7,
+      "marks_per_question": {
+        "Q1": 8.0,
+        "Q2": 5.0,
+        "Q3": 5.5,
+        "Q4": 3.5,
+        "Q5": 3.0,
+        "Q6": 9.0,
+        "Q7": 7.5
+      },
+      "marks_list": [
+        8.0,
+        5.0,
+        5.5,
+        3.5,
+        3.0,
+        9.0,
+        7.5
+      ],
+      "total": 41.5,
+      "max_per_question": 10,
+      "max_total": 70,
+      "handwriting_font": "Kalam",
+      "width": 1400,
+      "height": 921
+    },
+    {
+      "file_name": "script_009.jpg",
+      "student_id": "5009761",
+      "serial": 638,
+      "num_questions": 3,
+      "marks_per_question": {
+        "Q1": 2.5,
+        "Q2": 2.0,
+        "Q3": 1.5
+      },
+      "marks_list": [
+        2.5,
+        2.0,
+        1.5
+      ],
+      "total": 6.0,
+      "max_per_question": 5,
+      "max_total": 15,
+      "handwriting_font": "Mali",
+      "width": 1400,
+      "height": 937
+    },
+    {
+      "file_name": "script_010.jpg",
+      "student_id": "1374818",
+      "serial": 664,
+      "num_questions": 4,
+      "marks_per_question": {
+        "Q1": 7.0,
+        "Q2": 3.0,
+        "Q3": 5.0,
+        "Q4": 0.5
+      },
+      "marks_list": [
+        7.0,
+        3.0,
+        5.0,
+        0.5
+      ],
+      "total": 15.5,
+      "max_per_question": 10,
+      "max_total": 40,
+      "handwriting_font": "NanumPen",
+      "width": 1400,
+      "height": 1071
+    },
+    {
+      "file_name": "script_011.jpg",
+      "student_id": "4165172",
+      "serial": 805,
+      "num_questions": 3,
+      "marks_per_question": {
+        "Q1": 3.0,
+        "Q2": 1.5,
+        "Q3": 2.0
+      },
+      "marks_list": [
+        3.0,
+        1.5,
+        2.0
+      ],
+      "total": 6.5,
+      "max_per_question": 4,
+      "max_total": 12,
+      "handwriting_font": "Neucha",
+      "width": 1400,
+      "height": 892
+    },
+    {
+      "file_name": "script_012.jpg",
+      "student_id": "7193608",
+      "serial": 765,
+      "num_questions": 3,
+      "marks_per_question": {
+        "Q1": 9.0,
+        "Q2": 7.0,
+        "Q3": 9.0
+      },
+      "marks_list": [
+        9.0,
+        7.0,
+        9.0
+      ],
+      "total": 25.0,
+      "max_per_question": 10,
+      "max_total": 30,
+      "handwriting_font": "PatrickHand",
+      "width": 1400,
+      "height": 818
+    },
+    {
+      "file_name": "script_013.jpg",
+      "student_id": "6790784",
+      "serial": 958,
+      "num_questions": 7,
+      "marks_per_question": {
+        "Q1": 9.0,
+        "Q2": 4.0,
+        "Q3": 1.0,
+        "Q4": 4.0,
+        "Q5": 9.5,
+        "Q6": 0.0,
+        "Q7": 5.0
+      },
+      "marks_list": [
+        9.0,
+        4.0,
+        1.0,
+        4.0,
+        9.5,
+        0.0,
+        5.0
+      ],
+      "total": 32.5,
+      "max_per_question": 10,
+      "max_total": 70,
+      "handwriting_font": "RockSalt",
+      "width": 1400,
+      "height": 911
+    },
+    {
+      "file_name": "script_014.jpg",
+      "student_id": "2415205",
+      "serial": 639,
+      "num_questions": 3,
+      "marks_per_question": {
+        "Q1": 1.5,
+        "Q2": 2.0,
+        "Q3": 1.0
+      },
+      "marks_list": [
+        1.5,
+        2.0,
+        1.0
+      ],
+      "total": 4.5,
+      "max_per_question": 4,
+      "max_total": 12,
+      "handwriting_font": "Schoolbell",
+      "width": 1400,
+      "height": 1017
+    },
+    {
+      "file_name": "script_015.jpg",
+      "student_id": "4310299",
+      "serial": 542,
+      "num_questions": 7,
+      "marks_per_question": {
+        "Q1": 2.0,
+        "Q2": 1.0,
+        "Q3": 2.5,
+        "Q4": 4.5,
+        "Q5": 4.0,
+        "Q6": 4.0,
+        "Q7": 1.0
+      },
+      "marks_list": [
+        2.0,
+        1.0,
+        2.5,
+        4.5,
+        4.0,
+        4.0,
+        1.0
+      ],
+      "total": 19.0,
+      "max_per_question": 5,
+      "max_total": 35,
+      "handwriting_font": "Sriracha",
+      "width": 1400,
+      "height": 1078
+    },
+    {
+      "file_name": "script_016.jpg",
+      "student_id": "0821229",
+      "serial": 169,
+      "num_questions": 4,
+      "marks_per_question": {
+        "Q1": 0.5,
+        "Q2": 0.0,
+        "Q3": 1.0,
+        "Q4": 3.0
+      },
+      "marks_list": [
+        0.5,
+        0.0,
+        1.0,
+        3.0
+      ],
+      "total": 4.5,
+      "max_per_question": 5,
+      "max_total": 20,
+      "handwriting_font": "ArchitectsDaughter",
+      "width": 1400,
+      "height": 1065
+    },
+    {
+      "file_name": "script_017.jpg",
+      "student_id": "3305199",
+      "serial": 589,
+      "num_questions": 7,
+      "marks_per_question": {
+        "Q1": 2.5,
+        "Q2": 5.0,
+        "Q3": 3.0,
+        "Q4": 4.0,
+        "Q5": 4.5,
+        "Q6": 0.0,
+        "Q7": 2.0
+      },
+      "marks_list": [
+        2.5,
+        5.0,
+        3.0,
+        4.0,
+        4.5,
+        0.0,
+        2.0
+      ],
+      "total": 21.0,
+      "max_per_question": 5,
+      "max_total": 35,
+      "handwriting_font": "Caveat",
+      "width": 1400,
+      "height": 932
+    },
+    {
+      "file_name": "script_018.jpg",
+      "student_id": "9020234",
+      "serial": 793,
+      "num_questions": 6,
+      "marks_per_question": {
+        "Q1": 9.0,
+        "Q2": 9.5,
+        "Q3": 1.0,
+        "Q4": 4.0,
+        "Q5": 9.0,
+        "Q6": 5.0
+      },
+      "marks_list": [
+        9.0,
+        9.5,
+        1.0,
+        4.0,
+        9.0,
+        5.0
+      ],
+      "total": 37.5,
+      "max_per_question": 10,
+      "max_total": 60,
+      "handwriting_font": "ComingSoon",
+      "width": 1400,
+      "height": 883
+    },
+    {
+      "file_name": "script_019.jpg",
+      "student_id": "8308540",
+      "serial": 391,
+      "num_questions": 5,
+      "marks_per_question": {
+        "Q1": 4.5,
+        "Q2": 4.5,
+        "Q3": 1.5,
+        "Q4": 4.5,
+        "Q5": 4.0
+      },
+      "marks_list": [
+        4.5,
+        4.5,
+        1.5,
+        4.5,
+        4.0
+      ],
+      "total": 19.0,
+      "max_per_question": 5,
+      "max_total": 25,
+      "handwriting_font": "Delius",
+      "width": 1400,
+      "height": 849
+    },
+    {
+      "file_name": "script_020.jpg",
+      "student_id": "6330534",
+      "serial": 140,
+      "num_questions": 5,
+      "marks_per_question": {
+        "Q1": 0.0,
+        "Q2": 3.0,
+        "Q3": 3.0,
+        "Q4": 2.5,
+        "Q5": 0.0
+      },
+      "marks_list": [
+        0.0,
+        3.0,
+        3.0,
+        2.5,
+        0.0
+      ],
+      "total": 8.5,
+      "max_per_question": 4,
+      "max_total": 20,
+      "handwriting_font": "Handlee",
+      "width": 1400,
+      "height": 950
+    }
+  ]
+}

@@ -17,8 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.detection import detect  # noqa: E402
 
 TESTSET = Path(__file__).parent.parent.parent / "testset"
-QUESTIONS = 5
-ID_DIGITS = 7
+ID_DIGITS = 7  # fixed app-wide config so far — every real photo used the same value
 
 
 def _load_cases():
@@ -42,7 +41,11 @@ CASES = _load_cases()
 @pytest.mark.parametrize("name,label", CASES, ids=[c[0] for c in CASES])
 def test_detection_matches_label(tmp_path, name, label):
     image_path = TESTSET / "images" / name
-    result = detect(image_path, QUESTIONS, ID_DIGITS, tmp_path)
+    # Real per-image count, not a fixed constant — every real photo so far
+    # happened to use 5, but the synthetic set genuinely varies (3-8), and
+    # labels.json already carries the real number via len(questions).
+    questions = len(label["questions"]) if label["questions"] else 5
+    result = detect(image_path, questions, ID_DIGITS, tmp_path)
 
     expected_success = label["expected_success"]
     if expected_success:

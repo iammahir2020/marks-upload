@@ -1,7 +1,14 @@
 """Step 4 tests (step.md step 4 Test section): TestClient, Gemini mocked.
-The suite must not touch the network — only app.main.recognize (the one
+The suite must not touch the network — only app.marks.recognize (the one
 function that calls Gemini) is ever mocked; detection and local ID OCR run
 for real, since both are local and fast.
+
+Since step.md step 2r.0, main.py calls recognition only through the
+Recognizer protocol (app/recognizers/), so these mocks patch the
+underlying modules (app.marks, app.id_ocr, app.marks_ocr) directly rather
+than app.main — main.py no longer imports those names itself, it goes
+through RemoteRecognizer, which references them by module attribute for
+exactly this reason.
 """
 import json
 import sys
@@ -14,8 +21,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+import app.main as main_module  # noqa: E402
 from app.main import app  # noqa: E402
 from app.marks import MarksResult  # noqa: E402
+from app.recognizers.remote import RemoteRecognizer  # noqa: E402
 
 RATE_LIMITED_RESULT = MarksResult(status="failed", failure_reason="rate_limited")
 
@@ -36,6 +45,17 @@ FIXTURE_MARKS_RESULT = MarksResult(
     total=11.0,
     low_confidence_fields=[],
 )
+
+
+@pytest.fixture
+def force_remote_recognizer(monkeypatch):
+    """These tests mock app.marks.recognize / app.id_ocr.read_id /
+    app.marks_ocr.recognize_locally, which only has any effect if
+    RemoteRecognizer is the recognizer main.py actually calls through —
+    pin it explicitly so these tests stay correct regardless of whatever
+    RECOGNIZER env var (or main.py's own default) happens to be set
+    to when the suite runs."""
+    monkeypatch.setattr(main_module, "recognizer", RemoteRecognizer())
 
 
 def _post(image_path: Path, config: dict = DEFAULT_CONFIG):
@@ -87,49 +107,36 @@ def _make_wrong_column_count(path: Path, real_questions: int):
     cv2.imwrite(str(path), img)
 
 
-def test_table_not_found_never_calls_gemini(tmp_path):
-    image_path = tmp_path / "noise.jpg"
-    _make_noise(image_path)
+@pytest.mark.parametrize(
+    "make_image, expected_reason",
+    [
+        (_make_noise, "table_not_found"),
+        (_make_blank, "blurry"),
+        (lambda p: _make_wrong_column_count(p, real_questions=4), "column_count_mismatch"),
+    ],
+)
+def test_detection_failure_never_calls_recognizer(tmp_path, make_image, expected_reason):
+    """No recognizer is ever reached after a detection failure (step.md
+    step 2r.0.4) — parameterized rather than duplicated per failure reason,
+    since the property is about the pipeline's early exit and applies the
+    same way regardless of which Recognizer implementation is selected.
+    Asserted against app.marks.recognize (the one network call either path
+    could reach) rather than a specific Recognizer method, so this stays
+    true unchanged once a second (CNN) implementation exists."""
+    image_path = tmp_path / "image.jpg"
+    make_image(image_path)
 
-    with patch("app.main.recognize") as mock_recognize:
+    with patch("app.marks.recognize") as mock_recognize:
         resp = _post(image_path)
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "failed"
-    assert body["failure_reason"] == "table_not_found"
+    assert body["failure_reason"] == expected_reason
     mock_recognize.assert_not_called()
 
 
-def test_blurry_never_calls_gemini(tmp_path):
-    image_path = tmp_path / "blank.jpg"
-    _make_blank(image_path)
-
-    with patch("app.main.recognize") as mock_recognize:
-        resp = _post(image_path)
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "failed"
-    assert body["failure_reason"] == "blurry"
-    mock_recognize.assert_not_called()
-
-
-def test_column_count_mismatch_never_calls_gemini(tmp_path):
-    image_path = tmp_path / "wrong_cols.jpg"
-    _make_wrong_column_count(image_path, real_questions=4)  # config below expects 5
-
-    with patch("app.main.recognize") as mock_recognize:
-        resp = _post(image_path)
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "failed"
-    assert body["failure_reason"] == "column_count_mismatch"
-    mock_recognize.assert_not_called()
-
-
-def test_known_good_image_matches_cli_values():
+def test_known_good_image_matches_cli_values(force_remote_recognizer):
     """filled_file.jpeg's real values, per testset/labels.json and the
     live Gemini run cached in tests/fixtures/filled_file_gemini_response.json.
     read_id is mocked too — this test is about whether main.py wires the
@@ -139,8 +146,8 @@ def test_known_good_image_matches_cli_values():
     if not image_path.exists():
         pytest.skip("filled_file.jpeg not present")
 
-    with patch("app.main.recognize", return_value=FIXTURE_MARKS_RESULT) as mock_recognize, \
-         patch("app.main.read_id", return_value=("2632711", [])) as mock_read_id:
+    with patch("app.marks.recognize", return_value=FIXTURE_MARKS_RESULT) as mock_recognize, \
+         patch("app.id_ocr.read_id", return_value=("2632711", [])) as mock_read_id:
         resp = _post(image_path)
 
     assert resp.status_code == 200
@@ -155,7 +162,7 @@ def test_known_good_image_matches_cli_values():
     mock_read_id.assert_called_once()
 
 
-def test_two_consecutive_requests_do_not_influence_each_other():
+def test_two_consecutive_requests_do_not_influence_each_other(force_remote_recognizer):
     """Different configs, same image, back to back — the second request's
     result must not be contaminated by the first's temp output."""
     image_path = TESTSET / "images" / "filled_file.jpeg"
@@ -165,7 +172,7 @@ def test_two_consecutive_requests_do_not_influence_each_other():
     config_a = dict(DEFAULT_CONFIG, questions=[{"q": i, "max": 5.0} for i in range(1, 6)])
     config_b = dict(DEFAULT_CONFIG, quizName="Different Quiz", idDigits=6)  # wrong idDigits on purpose
 
-    with patch("app.main.recognize", return_value=FIXTURE_MARKS_RESULT):
+    with patch("app.marks.recognize", return_value=FIXTURE_MARKS_RESULT):
         resp_a = _post(image_path, config_a)
         resp_b = _post(image_path, config_b)  # wrong idDigits -> should fail on its own terms
         resp_c = _post(image_path, config_a)  # back to the correct config
@@ -178,7 +185,7 @@ def test_two_consecutive_requests_do_not_influence_each_other():
     assert resp_c.json() == resp_a.json()
 
 
-def test_rate_limited_falls_back_to_local_ocr():
+def test_rate_limited_falls_back_to_local_ocr(force_remote_recognizer):
     """When Gemini fails, main.py should try marks_ocr.recognize_locally
     before giving up — a rate-limited session shouldn't force the
     instructor to hand-type every field for every remaining script."""
@@ -194,9 +201,9 @@ def test_rate_limited_falls_back_to_local_ocr():
         low_confidence_fields=["serial", "q1", "q2", "q3", "q4", "q5", "total"],
     )
 
-    with patch("app.main.recognize", return_value=RATE_LIMITED_RESULT), \
-         patch("app.main.recognize_locally", return_value=fallback_result) as mock_fallback, \
-         patch("app.main.read_id", return_value=("2632711", [])):
+    with patch("app.marks.recognize", return_value=RATE_LIMITED_RESULT), \
+         patch("app.marks_ocr.recognize_locally", return_value=fallback_result) as mock_fallback, \
+         patch("app.id_ocr.read_id", return_value=("2632711", [])):
         resp = _post(image_path)
 
     assert resp.status_code == 200
@@ -210,7 +217,7 @@ def test_rate_limited_falls_back_to_local_ocr():
     mock_fallback.assert_called_once()
 
 
-def test_rate_limited_with_nothing_recoverable_still_fails_honestly():
+def test_rate_limited_with_nothing_recoverable_still_fails_honestly(force_remote_recognizer):
     """If the local fallback can't recover anything either, this must
     still surface as a failed scan with the original reason — not a
     deceptively normal-looking "ok" result that's just all blank."""
@@ -218,8 +225,8 @@ def test_rate_limited_with_nothing_recoverable_still_fails_honestly():
     if not image_path.exists():
         pytest.skip("filled_file.jpeg not present")
 
-    with patch("app.main.recognize", return_value=RATE_LIMITED_RESULT), \
-         patch("app.main.recognize_locally", return_value=None) as mock_fallback:
+    with patch("app.marks.recognize", return_value=RATE_LIMITED_RESULT), \
+         patch("app.marks_ocr.recognize_locally", return_value=None) as mock_fallback:
         resp = _post(image_path)
 
     assert resp.status_code == 200

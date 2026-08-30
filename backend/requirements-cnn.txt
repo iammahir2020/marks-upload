@@ -1,0 +1,19 @@
+# Optional CNN track (step.md steps 2r.0/2r/3r/3r.6, plan.md §16) — kept
+# separate from requirements.txt on purpose. The main app has no
+# dependency on any of this; it's only needed to train/evaluate the local
+# digit classifier under backend/cnn/. Install with:
+#
+#   pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-cnn.txt
+#
+# --extra-index-url, not --index-url: the latter restricts pip to *only*
+# that index, which doesn't host onnx/onnxruntime/scipy and fails outright
+# (confirmed the hard way — see learn.md step 3r). --extra-index-url adds
+# the PyTorch CPU wheels alongside normal PyPI instead of replacing it.
+# The custom index itself is still deliberate: this machine has no GPU
+# (`nvidia-smi` unavailable), and the default PyPI torch wheel pulls in a
+# large set of CUDA libraries that would never be used here.
+torch==2.13.0+cpu
+torchvision==0.28.0+cpu
+onnx==1.22.0
+onnxruntime==1.23.2
+scipy==1.15.3

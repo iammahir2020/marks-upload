@@ -33,3 +33,15 @@ class QuizConfig(BaseModel):
     idDigits: int
     questions: list[QuestionConfig]
     totalMax: float
+
+
+class HarvestFields(BaseModel):
+    """One side (original or confirmed) of a /api/harvest request (step.md
+    step 3r.6c). `questions` is positional (index 0 = Q1), not keyed by
+    `q` the way ScanResult's QuestionMark is — the frontend already has
+    both shapes and reshaping to positional here keeps `harvest()`'s own
+    signature simple."""
+    studentId: str | None = None
+    serial: str | None = None
+    questions: list[float | None] = []
+    total: float | None = None

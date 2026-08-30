@@ -1,9 +1,15 @@
 """POST /api/scan (step.md step 4). Steps 1-3 are already proven standalone
 (detect.py, id_ocr_accuracy.py, and a live Gemini run — see learn.md); this
 is meant to be a thin wrapper over that working code, not a rewrite.
+
+Recognition (steps 2-3) is reached only through the Recognizer protocol
+(step.md step 2r.0, `app/recognizers/`) — this module never imports
+id_ocr/marks/marks_ocr by name, so the CNN path (step 3r) is a second
+implementation of that protocol, not a second call site here.
 """
 from __future__ import annotations
 
+import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,13 +18,41 @@ from typing import Annotated
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import harvest as harvest_module
 from .detection import detect_any_orientation
-from .id_ocr import read_id
-from .marks import recognize
-from .marks_ocr import recognize_locally
-from .models import QuestionMark, QuizConfig, ScanResult
+from .models import HarvestFields, QuestionMark, QuizConfig, ScanResult
+from .recognizers.base import Recognizer
+from .recognizers.remote import RemoteRecognizer
 
 app = FastAPI()
+
+
+def _resolve_recognizer() -> Recognizer:
+    """RECOGNIZER selects the implementation once at startup (plan.md §16);
+    the pipeline below calls only through the Recognizer protocol from here
+    on, never `id_ocr`/`marks`/`marks_ocr` by name.
+
+    CNNRecognizer/BothRecognizer are imported lazily, inside their own
+    branches, rather than at module level — the default path (RECOGNIZER
+    unset -> "remote") must never require onnxruntime/the CNN track's
+    dependencies to be installed just to import this module, the same
+    "main app has no dependency on any of this" property
+    requirements-cnn.txt is kept separate to preserve."""
+    name = os.getenv("RECOGNIZER", "cnn")
+    if name == "remote":
+        return RemoteRecognizer()
+    if name == "cnn":
+        from .recognizers.local import CNNRecognizer
+
+        return CNNRecognizer()
+    if name == "both":
+        from .recognizers.both import BothRecognizer
+
+        return BothRecognizer()
+    raise ValueError(f"Unknown RECOGNIZER={name!r} (expected 'remote', 'cnn', or 'both').")
+
+
+recognizer: Recognizer = _resolve_recognizer()
 
 # TEMPORARY — step 6 phone debugging only. Diagnosing why real phone
 # captures produce table_not_found where a direct file upload of the same
@@ -89,25 +123,15 @@ async def scan(
 
         cells_dir = out_dir / "cells"
 
-        student_id, id_low_confidence = read_id(cells_dir, quiz.idDigits)
+        id_result = recognizer.read_id(cells_dir, quiz.idDigits)
 
         question_maxes = [q.max for q in quiz.questions]
-        marks_result = recognize(cells_dir, question_maxes)
+        marks_result = recognizer.read_marks(cells_dir, question_maxes)
 
         if marks_result.status != "ok":
-            # Gemini itself failed (rate_limited/model_error), not
-            # detection — cells_dir already has real crops. Try a local,
-            # deliberately weaker OCR read rather than forcing the
-            # instructor to hand-type every field for the rest of the
-            # session; recognize_locally returns None if it couldn't
-            # recover anything, in which case this is a genuine failure
-            # same as before.
-            fallback = recognize_locally(cells_dir, question_maxes)
-            if fallback is None:
-                return ScanResult(status="failed", failure_reason=marks_result.failure_reason)
-            marks_result = fallback
+            return ScanResult(status="failed", failure_reason=marks_result.failure_reason)
 
-        low_confidence_fields = list(id_low_confidence) + list(marks_result.low_confidence_fields)
+        low_confidence_fields = list(id_result.low_confidence_fields) + list(marks_result.low_confidence_fields)
 
         questions = [
             QuestionMark(q=i + 1, value=value)
@@ -121,9 +145,60 @@ async def scan(
 
         return ScanResult(
             status="ok",
-            student_id=student_id,
+            student_id=id_result.student_id,
             serial=marks_result.serial,
             questions=questions,
             total=total,
             low_confidence_fields=low_confidence_fields,
         )
+
+
+@app.post("/api/harvest")
+async def harvest_endpoint(
+    image: Annotated[UploadFile, File()],
+    config: Annotated[str, Form()],
+    original: Annotated[str, Form()],
+    confirmed: Annotated[str, Form()],
+) -> dict[str, bool]:
+    """Step 3r.6c: called from the review screen on Confirm, alongside
+    (never blocking) the actual save. Best-effort — a detection failure
+    here just means nothing gets harvested for this scan, not a failed
+    save; the instructor's record is already safe in IndexedDB by the
+    time this fires."""
+    quiz = QuizConfig.model_validate_json(config)
+    original_fields = HarvestFields.model_validate_json(original)
+    confirmed_fields = HarvestFields.model_validate_json(confirmed)
+    image_bytes = await image.read()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        image_path = tmp_path / "upload.jpg"
+        image_path.write_bytes(image_bytes)
+        out_dir = tmp_path / "out"
+
+        question_count = len(quiz.questions)
+        det = detect_any_orientation(image_path, question_count, quiz.idDigits, out_dir)
+        if det["status"] != "ok":
+            return {"harvested": False}
+
+        # Reads harvest_module.HARVEST_DIR fresh at call time rather than
+        # relying on harvest()'s own default parameter (bound once, at
+        # function-definition time) — this is what lets tests point
+        # harvesting at a tmp_path via monkeypatch without polluting the
+        # real repo directory.
+        harvest_module.harvest(
+            out_dir / "cells",
+            quiz.idDigits,
+            question_count,
+            original_fields.studentId,
+            confirmed_fields.studentId,
+            original_fields.serial,
+            confirmed_fields.serial,
+            original_fields.questions,
+            confirmed_fields.questions,
+            original_fields.total,
+            confirmed_fields.total,
+            harvest_dir=harvest_module.HARVEST_DIR,
+        )
+
+    return {"harvested": True}

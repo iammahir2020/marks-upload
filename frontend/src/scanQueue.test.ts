@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { queueReducer, inFlightCount, type QueueEntry } from './scanQueue';
+import { queueReducer, inFlightCount, nextToReview, type QueueEntry } from './scanQueue';
 import type { ScanResult } from './api';
 
 const okResult: ScanResult = {
@@ -71,5 +71,38 @@ describe('inFlightCount', () => {
       { id: 'd', status: 'pending' },
     ];
     expect(inFlightCount(state)).toBe(2);
+  });
+});
+
+describe('nextToReview', () => {
+  it('is null when nothing is done yet', () => {
+    const state: QueueEntry[] = [{ id: 'a', status: 'pending' }];
+    expect(nextToReview(state, new Set())).toBeNull();
+  });
+
+  it('picks the earliest-captured done entry not already handled', () => {
+    const state: QueueEntry[] = [
+      { id: 'a', status: 'done', result: okResult },
+      { id: 'b', status: 'done', result: okResult },
+    ];
+    expect(nextToReview(state, new Set())).toBe('a');
+    expect(nextToReview(state, new Set(['a']))).toBe('b');
+  });
+
+  it('skips a done entry once it is saved or dismissed via Retake', () => {
+    const state: QueueEntry[] = [
+      { id: 'a', status: 'done', result: okResult },
+      { id: 'b', status: 'pending' },
+    ];
+    expect(nextToReview(state, new Set(['a']))).toBeNull();
+  });
+
+  it('ignores pending and error entries even if unhandled', () => {
+    const state: QueueEntry[] = [
+      { id: 'a', status: 'error', error: 'x' },
+      { id: 'b', status: 'pending' },
+      { id: 'c', status: 'done', result: okResult },
+    ];
+    expect(nextToReview(state, new Set())).toBe('c');
   });
 });

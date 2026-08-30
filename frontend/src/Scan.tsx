@@ -1,10 +1,10 @@
-// Camera capture + upload queue (step.md step 6). No review UI yet — this
-// just proves photograph -> upload -> ScanResult round-trips without the
-// camera ever blocking on a network call (step 6.4).
+// Camera capture + upload queue (step.md step 6), wired into the full
+// confirm -> save -> next capture loop (step.md step 8).
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { scanImage } from './api';
+import { getAllRecords } from './db';
 import Review from './Review';
-import { inFlightCount, queueReducer } from './scanQueue';
+import { inFlightCount, nextToReview, queueReducer } from './scanQueue';
 import type { QuizConfig } from './types';
 
 // Request a resolution generous enough that the detector's thin table
@@ -22,6 +22,7 @@ const CAPTURE_JPEG_QUALITY = 0.92;
 
 interface ScanProps {
   config: QuizConfig;
+  onShowResults: () => void;
 }
 
 interface Preview {
@@ -30,21 +31,38 @@ interface Preview {
   height: number;
 }
 
-export default function Scan({ config }: ScanProps) {
+export default function Scan({ config, onShowResults }: ScanProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [entries, dispatch] = useReducer(queueReducer, []);
-  const [scannedCount, setScannedCount] = useState(0);
+  // Records saved so far this session — not a plain in-memory counter,
+  // because a mid-session refresh (step 8.3) would reset that to 0 while
+  // IndexedDB still held every prior record. Seeded from the DB on mount
+  // and incremented on each save, so it always reflects what's actually
+  // persisted.
+  const [savedCount, setSavedCount] = useState(0);
+  useEffect(() => {
+    getAllRecords().then((records) => setSavedCount(records.length));
+  }, []);
   // Debug aid: the backend is stateless and discards every upload
   // immediately (plan.md §9), so without this there's no way to see what a
   // capture actually looked like when a scan unexpectedly fails — see
   // learn.md step 6.
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
-  // Step 7's Review screen, wired in minimally so it can be exercised at
-  // all — the full "confirm advances straight back to a live camera" loop
-  // is step 8's job, not this one.
+  // Step 8.1 — Review auto-opens for the next finished capture with no tap
+  // required, and closing it (save or Retake) hands off to whichever
+  // capture is next in line; camera stays live underneath the whole time
+  // (see the overlay note below), so there's nothing to "reopen".
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+  const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (reviewingId != null) return;
+    const handled = new Set([...savedIds, ...dismissedIds]);
+    const next = nextToReview(entries, handled);
+    if (next != null) setReviewingId(next);
+  }, [entries, reviewingId, savedIds, dismissedIds]);
 
   useEffect(() => {
     return () => {
@@ -118,7 +136,6 @@ export default function Scan({ config }: ScanProps) {
         if (!blob) return;
         const id = crypto.randomUUID();
         dispatch({ type: 'enqueue', id });
-        setScannedCount((n) => n + 1);
         setPreviews((p) => ({
           ...p,
           [id]: { url: URL.createObjectURL(blob), width: canvas.width, height: canvas.height },
@@ -139,9 +156,21 @@ export default function Scan({ config }: ScanProps) {
   }
 
   const reviewingEntry = entries.find((e) => e.id === reviewingId);
+  // A Retake dismisses the entry (see onRetake below) so it never blocks
+  // nextToReview again, but it also shouldn't linger as a dead, unsaved
+  // row the instructor has to look at (and could tap into a Review of a
+  // scan they already discarded) — filter it out of the visible list
+  // entirely rather than just marking it handled.
+  const visibleEntries = entries.filter((e) => !dismissedIds.has(e.id));
+  // The camera view is what the instructor is actually looking at right
+  // after tapping Capture — a thumbnail appearing in the queue list below
+  // isn't enough feedback on its own. Disabling the button and ringing it
+  // with a spinner while the shot is in flight makes "yes, that
+  // registered, hang on" visible without looking away.
+  const capturing = inFlightCount(entries) > 0;
 
   return (
-    <div>
+    <div className="page">
       {/* Review renders as an overlay, not a tree swap — swapping out this
           whole return would unmount <video>. The camera-setup effect below
           only ever binds the stream to the element that exists at mount
@@ -149,91 +178,110 @@ export default function Scan({ config }: ScanProps) {
           back with no srcObject: a frozen preview, and Capture silently
           no-oping since video.videoWidth stays 0 (see learn.md step 7). */}
       {reviewingEntry?.result && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'var(--bg)',
-            overflowY: 'auto',
-            padding: '1rem',
-            zIndex: 10,
-          }}
-        >
-          <Review
-            result={reviewingEntry.result}
-            config={config}
-            imagePreviewUrl={previews[reviewingEntry.id]?.url}
-            onRetake={() => setReviewingId(null)}
-            onSaved={() => {
-              setSavedIds((s) => new Set(s).add(reviewingEntry.id));
-              setReviewingId(null);
-            }}
-          />
+        <div className="overlay">
+          <div className="page">
+            <Review
+              result={reviewingEntry.result}
+              config={config}
+              imagePreviewUrl={previews[reviewingEntry.id]?.url}
+              onRetake={() => {
+                setDismissedIds((s) => new Set(s).add(reviewingEntry.id));
+                setReviewingId(null);
+              }}
+              onSaved={() => {
+                setSavedIds((s) => new Set(s).add(reviewingEntry.id));
+                setSavedCount((n) => n + 1);
+                setReviewingId(null);
+              }}
+            />
+          </div>
         </div>
       )}
 
-      <p>Scanned {scannedCount}</p>
-
-      {cameraError && <p role="alert">Camera error: {cameraError}</p>}
-
-      <div style={{ position: 'relative', width: 'fit-content' }}>
-        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <video ref={videoRef} autoPlay playsInline muted style={{ maxWidth: '100%' }} />
-        {/* Framing guide (plan.md §3): frame tight on the three tables,
-            marks table the largest rectangle in the shot. */}
-        <div
-          style={{
-            position: 'absolute',
-            inset: '15%',
-            border: '2px dashed #fff',
-            pointerEvents: 'none',
-          }}
-        />
+      <div className="app-header">
+        <div>
+          <span className="eyebrow">{config.quizName}</span>
+          <h1>Scanned {savedCount}</h1>
+        </div>
+        <button className="btn btn-quiet" onClick={onShowResults}>
+          View results &rarr;
+        </button>
       </div>
 
-      <button onClick={capture} disabled={!!cameraError}>
-        Capture
-      </button>
+      {cameraError && (
+        <div className="banner banner-danger" role="alert">
+          <strong>Camera error</strong>
+          <span>{cameraError}</span>
+        </div>
+      )}
 
-      <p>{inFlightCount(entries)} upload(s) in progress…</p>
+      <div className="camera-frame">
+        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+        <video ref={videoRef} autoPlay playsInline muted />
+        {/* Framing guide (plan.md §3): frame tight on the three tables,
+            marks table the largest rectangle in the shot. */}
+        <div className="camera-guide" />
+      </div>
 
-      <ul>
-        {entries.map((entry) => {
-          const preview = previews[entry.id];
-          return (
-            <li key={entry.id} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              {preview && (
-                <img
-                  src={preview.url}
-                  alt="captured"
-                  style={{ width: 80, height: 'auto', border: '1px solid #888' }}
-                />
-              )}
-              <span>
-                {preview && `${preview.width}×${preview.height} — `}
-                {entry.status === 'pending' && 'Scanning…'}
-                {entry.status === 'error' && `Failed: ${entry.error}`}
-                {entry.status === 'done' && entry.result && (
-                  <>
-                    {entry.result.status === 'failed'
-                      ? `Scan failed: ${entry.result.failure_reason}`
-                      : `ID ${entry.result.student_id ?? '?'} · Serial ${entry.result.serial ?? '?'} · Total ${entry.result.total?.value ?? '?'}`}
-                    {entry.result.low_confidence_fields.length > 0 &&
-                      ` (low confidence: ${entry.result.low_confidence_fields.join(', ')})`}
-                  </>
-                )}
-              </span>
-              {entry.status === 'done' &&
-                entry.result &&
-                (savedIds.has(entry.id) ? (
-                  <span>Saved ✓</span>
-                ) : (
-                  <button onClick={() => setReviewingId(entry.id)}>Review</button>
-                ))}
-            </li>
-          );
-        })}
-      </ul>
+      <div className="capture-bar">
+        <div className="capture-btn-wrap">
+          {capturing && <div className="capture-spinner" aria-hidden="true" />}
+          <button
+            className="capture-btn"
+            onClick={capture}
+            disabled={!!cameraError || capturing}
+            aria-label={capturing ? 'Processing previous capture' : 'Capture'}
+          />
+        </div>
+      </div>
+
+      {(visibleEntries.length > 0 || inFlightCount(entries) > 0) && (
+        <div className="stack-sm">
+          {inFlightCount(entries) > 0 && (
+            <p className="text-sm muted">{inFlightCount(entries)} upload(s) in progress…</p>
+          )}
+
+          <ul className="queue-list">
+            {visibleEntries.map((entry) => {
+              const preview = previews[entry.id];
+              return (
+                <li key={entry.id} className="queue-item">
+                  {preview && <img className="queue-thumb" src={preview.url} alt="captured script" />}
+                  <div className="queue-info">
+                    {entry.status === 'pending' && <span className="muted">Scanning…</span>}
+                    {entry.status === 'error' && (
+                      <span style={{ color: 'var(--danger)' }}>Failed: {entry.error}</span>
+                    )}
+                    {entry.status === 'done' && entry.result && (
+                      <div className="stack-sm" style={{ gap: 2 }}>
+                        <span className="primary">
+                          {entry.result.status === 'failed'
+                            ? `Scan failed: ${entry.result.failure_reason}`
+                            : `ID ${entry.result.student_id ?? '?'} · Serial ${entry.result.serial ?? '?'} · Total ${entry.result.total?.value ?? '?'}`}
+                        </span>
+                        {entry.result.low_confidence_fields.length > 0 && (
+                          <span className="badge badge-warning" style={{ width: 'fit-content' }}>
+                            {entry.result.low_confidence_fields.length} to check
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {entry.status === 'done' &&
+                    entry.result &&
+                    (savedIds.has(entry.id) ? (
+                      <span className="badge badge-success">Saved</span>
+                    ) : (
+                      <button className="btn btn-secondary btn-sm" onClick={() => setReviewingId(entry.id)}>
+                        Review
+                      </button>
+                    ))}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

@@ -69,3 +69,12 @@ export async function findRecordsByStudentId(studentId: string): Promise<Student
   const db = await getDB();
   return db.getAllFromIndex('records', 'by-studentId', studentId);
 }
+
+// Full session reset: every saved record and the quiz config itself, so
+// the next screen the app shows is Setup, not a Scan screen for a config
+// that no longer has anywhere to save to.
+export async function resetAll(): Promise<void> {
+  const db = await getDB();
+  await db.clear('records');
+  await db.clear('config');
+}

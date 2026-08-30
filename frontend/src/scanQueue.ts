@@ -33,3 +33,11 @@ export function queueReducer(state: QueueEntry[], action: QueueAction): QueueEnt
 export function inFlightCount(entries: QueueEntry[]): number {
   return entries.filter((e) => e.status === 'pending').length;
 }
+
+// Step 8.1 — which entry Review should auto-open next, so Confirm → save →
+// next capture requires no extra tap. Earliest-captured done entry that
+// hasn't already been saved or explicitly dismissed (Retake); null once
+// nothing is waiting, which is the steady state between captures.
+export function nextToReview(entries: QueueEntry[], handledIds: Set<string>): string | null {
+  return entries.find((e) => e.status === 'done' && !handledIds.has(e.id))?.id ?? null;
+}

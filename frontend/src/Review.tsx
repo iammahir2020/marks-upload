@@ -13,7 +13,7 @@
 // - 7.6 A failed scan lands here too, with empty fields, the reason shown,
 //   and Retake/Enter-manually — never a dead end.
 import { useMemo, useState } from 'react';
-import type { ScanResult } from './api';
+import { harvestScan, type HarvestFields, type ScanResult } from './api';
 import { findRecordsBySerial, findRecordsByStudentId, saveRecord } from './db';
 import type { QuizConfig, StudentRecord } from './types';
 import { crossCheck, isLegalValue, sumCheck, type CrossCheckResult } from './validateMarks';
@@ -34,8 +34,6 @@ function marksFromResult(config: QuizConfig, result: ScanResult): Record<number,
   }
   return map;
 }
-
-const flagStyle = { background: 'var(--code-bg)', borderColor: '#c60' };
 
 export default function Review({ result, config, imagePreviewUrl, onRetake, onSaved }: ReviewProps) {
   const [studentId, setStudentId] = useState(result.student_id ?? '');
@@ -87,6 +85,35 @@ export default function Review({ result, config, imagePreviewUrl, onRetake, onSa
     await saveRecord(record);
     setPendingConflict(null);
     onSaved(record);
+
+    // Step 3r.6c — fire and forget, deliberately not awaited: harvesting
+    // training data must never delay the confirm->next-capture loop
+    // (step 8's own "no added tap" rule) or be mistaken for a save
+    // failure if it errors. Every digit the instructor just confirmed or
+    // corrected is a labelled crop of real handwriting, captured now even
+    // though nothing consumes it yet (plan.md §16).
+    if (imagePreviewUrl) {
+      const original: HarvestFields = {
+        studentId: result.student_id,
+        serial: result.serial,
+        questions: config.questions.map(
+          (qc) => result.questions.find((q) => q.q === qc.q)?.value ?? null,
+        ),
+        total: result.total?.value ?? null,
+      };
+      const confirmed: HarvestFields = {
+        studentId: candidate.studentId,
+        serial: candidate.serial,
+        questions: questionValues.map((qv) => qv.value),
+        total,
+      };
+      fetch(imagePreviewUrl)
+        .then((r) => r.blob())
+        .then((blob) => harvestScan(blob, config, original, confirmed))
+        .catch(() => {
+          // Best-effort — see the comment above.
+        });
+    }
   }
 
   async function handleConfirm() {
@@ -126,108 +153,108 @@ export default function Review({ result, config, imagePreviewUrl, onRetake, onSa
   const candidateForConflict = { studentId: studentId.trim() || null, serial: serial.trim() || null };
 
   return (
-    <div style={{ textAlign: 'left', maxWidth: 640, margin: '0 auto' }}>
+    <div className="stack">
       {showFailureBanner && (
-        <div role="alert" style={{ border: '2px solid #c00', borderRadius: 6, padding: '0.75rem 1rem', marginBottom: '1rem' }}>
-          <p style={{ marginBottom: '0.5rem' }}>Scan failed: {result.failure_reason}</p>
-          <button onClick={onRetake}>Retake</button>{' '}
-          <button onClick={() => setFailureDismissed(true)}>Enter manually</button>
+        <div className="banner banner-danger" role="alert">
+          <strong>Scan failed: {result.failure_reason}</strong>
+          <div className="banner-actions">
+            <button className="btn btn-secondary btn-sm" onClick={onRetake}>
+              Retake
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={() => setFailureDismissed(true)}>
+              Enter manually
+            </button>
+          </div>
         </div>
       )}
 
       {/* 7.1 — identity fields, first and largest on the screen. */}
-      <div style={{ marginBottom: '1.5rem' }}>
-        <label style={{ display: 'block', marginBottom: '0.5rem' }}>
-          <span style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text)' }}>Student ID</span>
+      <div className="stack-sm">
+        <label className="field identity-field">
+          <span className="field-label">Student ID</span>
           <input
+            className={`input ${lowConfidence.has('student_id') ? 'input-flagged' : ''}`}
             value={studentId}
             onChange={(e) => setStudentId(e.target.value)}
-            style={{
-              fontSize: '2rem',
-              fontWeight: 600,
-              width: '100%',
-              padding: '0.25rem 0.5rem',
-              border: `2px solid ${lowConfidence.has('student_id') ? '#c60' : 'var(--border)'}`,
-              borderRadius: 6,
-            }}
+            inputMode="numeric"
           />
         </label>
-        <label style={{ display: 'block' }}>
-          <span style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text)' }}>Serial</span>
+        <label className="field identity-field">
+          <span className="field-label">Serial</span>
           <input
+            className={`input ${lowConfidence.has('serial') ? 'input-flagged' : ''}`}
             value={serial}
             onChange={(e) => setSerial(e.target.value)}
-            style={{
-              fontSize: '2rem',
-              fontWeight: 600,
-              width: '100%',
-              padding: '0.25rem 0.5rem',
-              border: `2px solid ${lowConfidence.has('serial') ? '#c60' : 'var(--border)'}`,
-              borderRadius: 6,
-            }}
+            inputMode="numeric"
           />
         </label>
       </div>
 
       {/* 7.2 — marks, editable, beside the capture for comparison. */}
-      <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+      <div className="row" style={{ alignItems: 'flex-start' }}>
         {imagePreviewUrl && (
           <img
             src={imagePreviewUrl}
             alt="captured grid"
-            style={{ width: 200, height: 'auto', border: '1px solid var(--border)', borderRadius: 4 }}
+            style={{
+              width: 120,
+              height: 'auto',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)',
+              flexShrink: 0,
+            }}
           />
         )}
-        <div style={{ flex: 1 }}>
-          {config.questions.map((qc) => (
-            <label key={qc.q} style={{ display: 'inline-block', marginRight: '0.75rem', marginBottom: '0.5rem' }}>
-              <span style={{ display: 'block', fontSize: '0.8rem' }}>
-                Q{qc.q} (max {qc.max})
-              </span>
-              <input
-                value={marks[qc.q]}
-                onChange={(e) => setMarks((m) => ({ ...m, [qc.q]: e.target.value }))}
-                style={{
-                  width: '4rem',
-                  ...(lowConfidence.has(`q${qc.q}`) || markErrors[qc.q] ? flagStyle : {}),
-                  border: `1px solid ${markErrors[qc.q] ? '#c00' : lowConfidence.has(`q${qc.q}`) ? '#c60' : 'var(--border)'}`,
-                }}
-              />
-              {markErrors[qc.q] && (
-                <span role="alert" style={{ display: 'block', fontSize: '0.75rem', color: '#c00' }}>
-                  {markErrors[qc.q]}
+        <div className="card" style={{ flex: 1, padding: 14 }}>
+          <div className="row" style={{ flexWrap: 'wrap', rowGap: 14 }}>
+            {config.questions.map((qc) => (
+              <div key={qc.q} className="field" style={{ width: '4.5rem' }}>
+                <span className="field-hint">
+                  Q{qc.q} <span className="muted">/{qc.max}</span>
                 </span>
-              )}
-            </label>
-          ))}
-          <label style={{ display: 'block', marginTop: '0.5rem' }}>
-            <span style={{ display: 'block', fontSize: '0.8rem' }}>Total</span>
-            <input
-              value={totalStr}
-              onChange={(e) => setTotalStr(e.target.value)}
-              style={{
-                width: '4rem',
-                border: `1px solid ${lowConfidence.has('total') ? '#c60' : 'var(--border)'}`,
-              }}
-            />
-          </label>
+                <input
+                  className={`input ${markErrors[qc.q] ? 'input-error' : lowConfidence.has(`q${qc.q}`) ? 'input-flagged' : ''}`}
+                  value={marks[qc.q]}
+                  onChange={(e) => setMarks((m) => ({ ...m, [qc.q]: e.target.value }))}
+                  style={{ height: 40, padding: '6px 8px', textAlign: 'center' }}
+                  inputMode="decimal"
+                />
+                {markErrors[qc.q] && (
+                  <span role="alert" className="error-text">
+                    {markErrors[qc.q]}
+                  </span>
+                )}
+              </div>
+            ))}
+            <div className="field" style={{ width: '4.5rem' }}>
+              <span className="field-hint">Total</span>
+              <input
+                className={`input ${lowConfidence.has('total') ? 'input-flagged' : ''}`}
+                value={totalStr}
+                onChange={(e) => setTotalStr(e.target.value)}
+                style={{ height: 40, padding: '6px 8px', textAlign: 'center' }}
+                inputMode="decimal"
+              />
+            </div>
+          </div>
+
+          {/* 7.3 — sum check, derived on every render. */}
+          <hr className="divider" style={{ margin: '14px 0 10px' }} />
+          <span className={matches ? 'check-ok' : 'check-fail'}>
+            Sum check: {computedSum} vs printed {total ?? '—'} {matches ? '✓' : '✗'}
+          </span>
         </div>
       </div>
 
-      {/* 7.3 — sum check, derived on every render. */}
-      <p style={{ marginTop: '1rem', color: matches ? undefined : '#c00' }}>
-        Sum check: {computedSum} vs printed {total ?? '—'} {matches ? '✓' : '✗'}
-      </p>
-
       {/* 7.5 — identity cross-check outcome, shown only once a save is attempted. */}
       {pendingConflict && pendingConflict.conflicts.length > 0 && (
-        <div role="alert" style={{ border: '2px solid #c60', borderRadius: 6, padding: '0.75rem 1rem', margin: '1rem 0' }}>
+        <div className="banner banner-warning" role="alert">
           <p>
             {pendingConflict.action === 'block'
               ? 'Same serial and ID already saved — this script may already be scanned.'
               : 'This serial or ID conflicts with an existing record — one may be misread.'}
           </p>
-          <ul>
+          <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
             {pendingConflict.conflicts.map((c) => (
               <li key={c.record.id}>
                 ID {c.record.studentId ?? '—'} · Serial {c.record.serial ?? '—'} · Total {c.record.total ?? '—'}
@@ -235,31 +262,46 @@ export default function Review({ result, config, imagePreviewUrl, onRetake, onSa
             ))}
           </ul>
           {pendingConflict.action === 'block' ? (
-            <>
-              <button onClick={() => commitSave(candidateForConflict, pendingConflict.conflicts[0].record.id)}>
+            <div className="banner-actions">
+              <button
+                className="btn btn-danger-solid btn-sm"
+                onClick={() => commitSave(candidateForConflict, pendingConflict.conflicts[0].record.id)}
+              >
                 Overwrite earlier record
-              </button>{' '}
-              <button onClick={() => setPendingConflict(null)}>Cancel</button>
-            </>
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={() => setPendingConflict(null)}>
+                Cancel
+              </button>
+            </div>
           ) : (
-            <>
-              <button onClick={() => commitSave(candidateForConflict)}>Save anyway</button>{' '}
-              <button onClick={() => setPendingConflict(null)}>Cancel</button>
-            </>
+            <div className="banner-actions">
+              <button className="btn btn-secondary btn-sm" onClick={() => commitSave(candidateForConflict)}>
+                Save anyway
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={() => setPendingConflict(null)}>
+                Cancel
+              </button>
+            </div>
           )}
         </div>
       )}
 
       {saveError && (
-        <p role="alert" style={{ color: '#c00' }}>
+        <p role="alert" className="error-text">
           {saveError}
         </p>
       )}
 
-      <div style={{ marginTop: '1rem' }}>
-        <button onClick={onRetake}>Retake</button>{' '}
-        <button onClick={handleConfirm} disabled={hasMarkErrors || !!pendingConflict}>
-          Confirm & next →
+      <div className="row">
+        <button className="btn btn-secondary" onClick={onRetake}>
+          Retake
+        </button>
+        <button
+          className="btn btn-primary flex-1"
+          onClick={handleConfirm}
+          disabled={hasMarkErrors || !!pendingConflict}
+        >
+          Confirm &amp; next &rarr;
         </button>
       </div>
     </div>

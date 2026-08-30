@@ -1,16 +1,16 @@
 {
-  "_schema_note": "Ground truth for testset/images/. One entry per photo, keyed by filename. Delete this note key once real entries are added — check_labels.py ignores keys starting with '_'.",
+  "_schema_note": "Ground truth for testset/images/. One entry per photo, keyed by filename. Delete this note key once real entries are added \u2014 check_labels.py ignores keys starting with '_'.",
   "images": {
     "empty_file.jpeg": {
       "condition": "straight_on",
-      "handwriting_by": "mahir (grid lines only — a ruler-and-pen redraw of marks-grid-template.docx, no values filled in)",
+      "handwriting_by": "mahir (grid lines only \u2014 a ruler-and-pen redraw of marks-grid-template.docx, no values filled in)",
       "expected_success": true,
       "expected_failure_reason": null,
       "student_id": null,
       "serial": null,
       "questions": [],
       "total": null,
-      "note": "First real photo. Detection-only test (step 1) — no values were written, so this does not exercise step 2/3 recognition. Required KERNEL_DIVISOR 30->20 in detection.py to stop handwritten label-cell letters ('ID', 'Serial') from aliasing as column-divider lines — see learn.md step 1."
+      "note": "First real photo. Detection-only test (step 1) \u2014 no values were written, so this does not exercise step 2/3 recognition. Required KERNEL_DIVISOR 30->20 in detection.py to stop handwritten label-cell letters ('ID', 'Serial') from aliasing as column-divider lines \u2014 see learn.md step 1."
     },
     "filled_file.jpeg": {
       "condition": "straight_on",
@@ -20,14 +20,29 @@
       "student_id": "2632711",
       "serial": "07",
       "questions": [
-        { "q": 1, "value": 3.0 },
-        { "q": 2, "value": 2.5 },
-        { "q": 3, "value": 1.0 },
-        { "q": 4, "value": 0.0 },
-        { "q": 5, "value": 4.5 }
+        {
+          "q": 1,
+          "value": 3.0
+        },
+        {
+          "q": 2,
+          "value": 2.5
+        },
+        {
+          "q": 3,
+          "value": 1.0
+        },
+        {
+          "q": 4,
+          "value": 0.0
+        },
+        {
+          "q": 5,
+          "value": 4.5
+        }
       ],
       "total": 11.0,
-      "note": "Second real photo, first with real values written in. Detection alone (step 1) required a second fix: a handwritten '1' in the tall Total cell (answer row, written '11') was tall enough to alias as a column divider, same failure mode as empty_file.jpeg's label text but from a digit instead of a letter. Fixed by requiring a candidate line to cover most of the table's own height/width (MIN_LINE_COVERAGE_FRAC), not just be locally the tallest thing — see learn.md step 1. Recognition (step 2/3, reading these digits) is not built yet; this entry only exercises geometry."
+      "note": "Second real photo, first with real values written in. Detection alone (step 1) required a second fix: a handwritten '1' in the tall Total cell (answer row, written '11') was tall enough to alias as a column divider, same failure mode as empty_file.jpeg's label text but from a digit instead of a letter. Fixed by requiring a candidate line to cover most of the table's own height/width (MIN_LINE_COVERAGE_FRAC), not just be locally the tallest thing \u2014 see learn.md step 1. Recognition (step 2/3, reading these digits) is not built yet; this entry only exercises geometry."
     },
     "phone_2632711_1.jpg": {
       "condition": "straight_on",
@@ -38,7 +53,7 @@
       "serial": null,
       "questions": [],
       "total": null,
-      "note": "First of 7 real phone captures from the step 6/7 live test session (2026-08-26), pulled from backend/debug_uploads/ (20260826T170044742283.jpg) after the user confirmed the correct student ID by hand. Only student_id is trustworthy ground truth here — it was given directly by the user. Serial/marks are deliberately left blank rather than transcribed from the photo: visually reading these same-script retakes turned up inconsistent serial values across supposedly-identical shots (e.g. phone_2632711_5.jpg's serial cell reads '107', not '07' like the others), which isn't something to guess into a ground-truth file. id_ocr_accuracy.py only needs student_id and skips entries without it, so this is enough to widen the ID-recognition sample beyond n=1."
+      "note": "First of 7 real phone captures from the step 6/7 live test session (2026-08-26), pulled from backend/debug_uploads/ (20260826T170044742283.jpg) after the user confirmed the correct student ID by hand. Only student_id is trustworthy ground truth here \u2014 it was given directly by the user. Serial/marks are deliberately left blank rather than transcribed from the photo: visually reading these same-script retakes turned up inconsistent serial values across supposedly-identical shots (e.g. phone_2632711_5.jpg's serial cell reads '107', not '07' like the others), which isn't something to guess into a ground-truth file. id_ocr_accuracy.py only needs student_id and skips entries without it, so this is enough to widen the ID-recognition sample beyond n=1."
     },
     "phone_2632711_2.jpg": {
       "condition": "straight_on",
@@ -49,7 +64,7 @@
       "serial": null,
       "questions": [],
       "total": null,
-      "note": "See phone_2632711_1.jpg's note — same session, same caveats. Source: backend/debug_uploads/20260826T170324707709.jpg."
+      "note": "See phone_2632711_1.jpg's note \u2014 same session, same caveats. Source: backend/debug_uploads/20260826T170324707709.jpg."
     },
     "phone_2632711_3.jpg": {
       "condition": "straight_on",
@@ -60,7 +75,7 @@
       "serial": null,
       "questions": [],
       "total": null,
-      "note": "See phone_2632711_1.jpg's note — same session, same caveats. Source: backend/debug_uploads/20260826T170441874527.jpg."
+      "note": "See phone_2632711_1.jpg's note \u2014 same session, same caveats. Source: backend/debug_uploads/20260826T170441874527.jpg."
     },
     "phone_2632711_4.jpg": {
       "condition": "straight_on",
@@ -71,7 +86,7 @@
       "serial": null,
       "questions": [],
       "total": null,
-      "note": "See phone_2632711_1.jpg's note — same session, same caveats. Source: backend/debug_uploads/20260826T170550632181.jpg."
+      "note": "See phone_2632711_1.jpg's note \u2014 same session, same caveats. Source: backend/debug_uploads/20260826T170550632181.jpg."
     },
     "phone_2632711_5.jpg": {
       "condition": "straight_on",
@@ -82,7 +97,7 @@
       "serial": null,
       "questions": [],
       "total": null,
-      "note": "See phone_2632711_1.jpg's note — same session, same caveats. Source: backend/debug_uploads/20260826T170637859250.jpg. This is the shot whose serial cell reads '107', the inconsistency that ruled out treating any of these 7 photos' serial/marks as reliable ground truth."
+      "note": "See phone_2632711_1.jpg's note \u2014 same session, same caveats. Source: backend/debug_uploads/20260826T170637859250.jpg. This is the shot whose serial cell reads '107', the inconsistency that ruled out treating any of these 7 photos' serial/marks as reliable ground truth."
     },
     "phone_2632700_1.jpg": {
       "condition": "straight_on",
@@ -93,7 +108,7 @@
       "serial": null,
       "questions": [],
       "total": null,
-      "note": "One of the session's last two captures, on a different physical script than the phone_2632711_* set (confirmed by the user: 'the last two photos' have ID 2632700, not 2632711). Source: backend/debug_uploads/20260826T170728282950.jpg. Same serial/marks caveat as phone_2632711_1.jpg's note — one of these last two requests hit Gemini's free-tier rate_limited response live (RPD cap), unrelated to this entry's purpose (id_ocr_accuracy.py never calls Gemini)."
+      "note": "One of the session's last two captures, on a different physical script than the phone_2632711_* set (confirmed by the user: 'the last two photos' have ID 2632700, not 2632711). Source: backend/debug_uploads/20260826T170728282950.jpg. Same serial/marks caveat as phone_2632711_1.jpg's note \u2014 one of these last two requests hit Gemini's free-tier rate_limited response live (RPD cap), unrelated to this entry's purpose (id_ocr_accuracy.py never calls Gemini)."
     },
     "phone_2632700_2.jpg": {
       "condition": "straight_on",
@@ -104,23 +119,768 @@
       "serial": null,
       "questions": [],
       "total": null,
-      "note": "See phone_2632700_1.jpg's note. Source: backend/debug_uploads/20260826T170823984205.jpg — the session's final capture."
+      "note": "See phone_2632700_1.jpg's note. Source: backend/debug_uploads/20260826T170823984205.jpg \u2014 the session's final capture."
+    },
+    "synthetic_script_004.jpg": {
+      "condition": "straight_on",
+      "handwriting_by": "synthetic (Claude-generated dataset, ../synthetic_scripts/generate.py \u2014 Delius font, 2026-08-29)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "5257182",
+      "serial": "195",
+      "questions": [
+        {
+          "q": 1,
+          "value": 3.5
+        },
+        {
+          "q": 2,
+          "value": 0.5
+        },
+        {
+          "q": 3,
+          "value": 0.5
+        },
+        {
+          "q": 4,
+          "value": 4.5
+        },
+        {
+          "q": 5,
+          "value": 3.0
+        },
+        {
+          "q": 6,
+          "value": 5.0
+        },
+        {
+          "q": 7,
+          "value": 4.5
+        }
+      ],
+      "total": 21.5,
+      "note": "One image (script_004.jpg) copied from synthetic_scripts/, chosen because it already passed a read-only detect_any_orientation check before being added here. Max per question is 5 (max_total 35) \u2014 see synthetic_scripts/ground_truth.json for the full source record."
+    },
+    "synthetic_script_001.jpg": {
+      "condition": "straight_on",
+      "handwriting_by": "synthetic (Claude-generated dataset, ../synthetic_scripts/generate.py \u2014 ArchitectsDaughter font, 2026-08-29)",
+      "expected_success": false,
+      "expected_failure_reason": "table_not_found",
+      "student_id": "1651728",
+      "serial": "547",
+      "questions": [
+        {
+          "q": 1,
+          "value": 3.5
+        },
+        {
+          "q": 2,
+          "value": 2.0
+        },
+        {
+          "q": 3,
+          "value": 2.5
+        },
+        {
+          "q": 4,
+          "value": 1.0
+        }
+      ],
+      "total": 9.0,
+      "note": "One image (script_001.jpg) copied from synthetic_scripts/. Deliberately kept even though it currently fails detection (see synthetic_scripts/ground_truth.json for the full source record) \u2014 a real, diagnosed case of the generator's long-horizontal-rule wobble breaking the ID row's own line detection (see learn.md), not an orientation bug. Kept as a known regression case rather than swapped for an easier one."
+    },
+    "synthetic_printed_002.jpg": {
+      "condition": "straight_on",
+      "handwriting_by": "synthetic (Claude-generated dataset, ../synthetic_scripts/generate.py, printed-labels revision \u2014 Caveat font, 2026-08-29)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "7100549",
+      "serial": "355",
+      "questions": [
+        {
+          "q": 1,
+          "value": 4.5
+        },
+        {
+          "q": 2,
+          "value": 4.0
+        },
+        {
+          "q": 3,
+          "value": 2.5
+        },
+        {
+          "q": 4,
+          "value": 3.5
+        },
+        {
+          "q": 5,
+          "value": 0.0
+        },
+        {
+          "q": 6,
+          "value": 0.5
+        },
+        {
+          "q": 7,
+          "value": 4.5
+        },
+        {
+          "q": 8,
+          "value": 2.0
+        }
+      ],
+      "total": 21.5,
+      "note": "First image from the generator's printed-grid/printed-labels revision (script_002.jpg from a fresh local run, ../synthetic_scripts/generated/) \u2014 table lines and all labels (ID/Serial/Qn(m)/Total) are now machine-printed; only ID digits, serial, and marks stay handwritten. Max per question is 5 (max_total 40)."
     },
     "_example.jpg": {
-      "condition": "straight_on | angle_20_30 | shadow | crumpled | grid_low_on_page | fluorescent | daylight | out_of_focus | column_cut_off | grid_small_in_frame",
-      "handwriting_by": "name or initials — use 3-4 different people across the set",
+      "condition": "straight_on | angle_20_30 | shadow | crumpled | grid_low_on_page | fluorescent | daylight | out_of_focus | column_cut_off | grid_small_in_frame | adjacent_scripts_in_frame",
+      "handwriting_by": "name or initials \u2014 use 3-4 different people across the set",
       "expected_success": true,
       "expected_failure_reason": null,
       "student_id": "1912345",
       "serial": "07",
       "questions": [
-        { "q": 1, "value": 4.0 },
-        { "q": 2, "value": 3.5 },
-        { "q": 3, "value": 5.0 },
-        { "q": 4, "value": 5.0 },
-        { "q": 5, "value": 2.5 }
+        {
+          "q": 1,
+          "value": 4.0
+        },
+        {
+          "q": 2,
+          "value": 3.5
+        },
+        {
+          "q": 3,
+          "value": 5.0
+        },
+        {
+          "q": 4,
+          "value": 5.0
+        },
+        {
+          "q": 5,
+          "value": 2.5
+        }
       ],
       "total": 20.0
+    },
+    "real_class_01.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "6543208",
+      "serial": "22",
+      "questions": [
+        {
+          "q": 1,
+          "value": 5.0
+        },
+        {
+          "q": 2,
+          "value": 5.0
+        },
+        {
+          "q": 3,
+          "value": 5.0
+        },
+        {
+          "q": 4,
+          "value": 5.0
+        },
+        {
+          "q": 5,
+          "value": 5.0
+        }
+      ],
+      "total": 25.0,
+      "quiz": "5q_5each",
+      "note": "Real photo #1 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set."
+    },
+    "real_class_02.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "4569021",
+      "serial": "31",
+      "questions": [
+        {
+          "q": 1,
+          "value": 3.0
+        },
+        {
+          "q": 2,
+          "value": 3.0
+        },
+        {
+          "q": 3,
+          "value": 2.0
+        },
+        {
+          "q": 4,
+          "value": 2.0
+        },
+        {
+          "q": 5,
+          "value": 1.0
+        },
+        {
+          "q": 6,
+          "value": 1.0
+        },
+        {
+          "q": 7,
+          "value": 2.0
+        },
+        {
+          "q": 8,
+          "value": 2.0
+        }
+      ],
+      "total": 16.0,
+      "quiz": "8q_6x5_2x10",
+      "note": "Real photo #2 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set."
+    },
+    "real_class_03.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "5689022",
+      "serial": "44",
+      "questions": [
+        {
+          "q": 1,
+          "value": 5.0
+        },
+        {
+          "q": 2,
+          "value": 2.0
+        },
+        {
+          "q": 3,
+          "value": 5.0
+        }
+      ],
+      "total": 12.0,
+      "quiz": "3q_5each",
+      "note": "Real photo #3 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set."
+    },
+    "real_class_04.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2010233",
+      "serial": "17",
+      "questions": [
+        {
+          "q": 1,
+          "value": 2.0
+        },
+        {
+          "q": 2,
+          "value": 2.0
+        },
+        {
+          "q": 3,
+          "value": 2.0
+        },
+        {
+          "q": 4,
+          "value": 2.0
+        },
+        {
+          "q": 5,
+          "value": 2.0
+        }
+      ],
+      "total": 10.0,
+      "quiz": "5q_5each",
+      "note": "Real photo #4 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set."
+    },
+    "real_class_05.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2022204",
+      "serial": "18",
+      "questions": [
+        {
+          "q": 1,
+          "value": 5.0
+        },
+        {
+          "q": 2,
+          "value": 5.0
+        },
+        {
+          "q": 3,
+          "value": 3.0
+        },
+        {
+          "q": 4,
+          "value": 3.0
+        },
+        {
+          "q": 5,
+          "value": 3.0
+        },
+        {
+          "q": 6,
+          "value": 3.0
+        },
+        {
+          "q": 7,
+          "value": 3.0
+        },
+        {
+          "q": 8,
+          "value": 3.0
+        }
+      ],
+      "total": 28.0,
+      "quiz": "8q_6x5_2x10",
+      "note": "Real photo #5 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set."
+    },
+    "real_class_06.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "4022102",
+      "serial": "19",
+      "questions": [
+        {
+          "q": 1,
+          "value": 5.0
+        },
+        {
+          "q": 2,
+          "value": 1.0
+        },
+        {
+          "q": 3,
+          "value": 1.0
+        }
+      ],
+      "total": 7.0,
+      "quiz": "3q_5each",
+      "note": "Real photo #6 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set."
+    },
+    "real_class_07.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2842189",
+      "serial": "99",
+      "questions": [
+        {
+          "q": 1,
+          "value": 4.0
+        },
+        {
+          "q": 2,
+          "value": 4.0
+        },
+        {
+          "q": 3,
+          "value": 4.0
+        }
+      ],
+      "total": 12.0,
+      "quiz": "3q_5each",
+      "note": "Real photo #7 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set."
+    },
+    "real_class_08.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "8978201",
+      "serial": "77",
+      "questions": [
+        {
+          "q": 1,
+          "value": 5.0
+        },
+        {
+          "q": 2,
+          "value": 2.0
+        },
+        {
+          "q": 3,
+          "value": 3.0
+        },
+        {
+          "q": 4,
+          "value": 7.0
+        },
+        {
+          "q": 5,
+          "value": 2.0
+        },
+        {
+          "q": 6,
+          "value": 3.0
+        },
+        {
+          "q": 7,
+          "value": 2.0
+        },
+        {
+          "q": 8,
+          "value": 3.0
+        }
+      ],
+      "total": 27.0,
+      "quiz": "8q_6x5_2x10",
+      "note": "Real photo #8 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. KNOWN ANOMALY: Q4's ground-truth value (7) exceeds its own column's max (5) -- sum(marks) still equals the stated total (27), so this is a real marking-error on the original script, not a transcription slip. No legal-value-constrained decoder can ever match 7 for a max-5 question -- this field is structurally unscorable as \"correct\", not a bug to fix. Kept as-is because it's a genuine, valuable illegal-value test case (the app should flag/reject it, never store 7)."
+    },
+    "real_class_09.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "5567890",
+      "serial": "66",
+      "questions": [
+        {
+          "q": 1,
+          "value": 1.0
+        },
+        {
+          "q": 2,
+          "value": 2.0
+        },
+        {
+          "q": 3,
+          "value": 3.0
+        },
+        {
+          "q": 4,
+          "value": 4.0
+        },
+        {
+          "q": 5,
+          "value": 5.0
+        }
+      ],
+      "total": 15.0,
+      "quiz": "5q_5each",
+      "note": "Real photo #9 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set."
+    },
+    "real_class_10.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": false,
+      "expected_failure_reason": "blurry",
+      "student_id": "6692127",
+      "serial": "129",
+      "questions": [
+        {
+          "q": 1,
+          "value": 1.0
+        },
+        {
+          "q": 2,
+          "value": 1.0
+        },
+        {
+          "q": 3,
+          "value": 1.0
+        }
+      ],
+      "total": 3.0,
+      "quiz": "3q_5each",
+      "note": "Real photo #10 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. Detection genuinely fails on this photo (status: failed, failure_reason: blurry) -- a real image-quality issue, not a logic bug; kept as a known failing case rather than dropped."
+    },
+    "real_class_11.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": false,
+      "expected_failure_reason": "column_count_mismatch",
+      "student_id": "5678900",
+      "serial": "119",
+      "questions": [
+        {
+          "q": 1,
+          "value": 2.0
+        },
+        {
+          "q": 2,
+          "value": 2.0
+        },
+        {
+          "q": 3,
+          "value": 2.0
+        },
+        {
+          "q": 4,
+          "value": 2.0
+        },
+        {
+          "q": 5,
+          "value": 2.0
+        },
+        {
+          "q": 6,
+          "value": 2.0
+        },
+        {
+          "q": 7,
+          "value": 2.0
+        },
+        {
+          "q": 8,
+          "value": 2.0
+        }
+      ],
+      "total": 16.0,
+      "quiz": "8q_6x5_2x10",
+      "note": "Real photo #11 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. CORRECTION after a second detection fix round: this photo's own ID row genuinely has only 7 detected columns (one internal divider not found), not 8 -- a real, separate line-detection gap, unrelated to the adjacent-scripts-in-frame issue. It was initially (wrongly) reported as passing because a decoy candidate (the next script's own ID row, visible below this photo's marks table) happened to have the expected 8 columns and got silently substituted -- fixed by selecting id/serial by *position* relative to the marks table rather than by column count, so this genuine shortfall now surfaces honestly as column_count_mismatch instead of a false ok on the wrong student's ID. Left unfixed (not chased further) -- a real, known, documented gap, not guessed around."
+    },
+    "real_class_12.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "9018112",
+      "serial": "109",
+      "questions": [
+        {
+          "q": 1,
+          "value": 3.0
+        },
+        {
+          "q": 2,
+          "value": 3.0
+        },
+        {
+          "q": 3,
+          "value": 3.0
+        },
+        {
+          "q": 4,
+          "value": 3.0
+        },
+        {
+          "q": 5,
+          "value": 3.0
+        }
+      ],
+      "total": 15.0,
+      "quiz": "5q_5each",
+      "note": "Real photo #12 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set."
+    },
+    "real_class_13.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2452602",
+      "serial": "07",
+      "questions": [
+        {
+          "q": 1,
+          "value": 3.0
+        },
+        {
+          "q": 2,
+          "value": 3.0
+        },
+        {
+          "q": 3,
+          "value": 3.0
+        }
+      ],
+      "total": 9.0,
+      "quiz": "3q_5each",
+      "note": "Real photo #13 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. Serial ground truth corrected from \"7\" to \"07\" -- the original real_class_info.json recorded Serial as a bare JSON integer (losing any leading zero), but the actual photo shows it handwritten with a leading zero; ground truth here follows this project's own convention (e.g. filled_file.jpeg's \"07\") of the literal written value, not the numeric value."
+    },
+    "real_class_14.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "1246880",
+      "serial": "06",
+      "questions": [
+        {
+          "q": 1,
+          "value": 1.0
+        },
+        {
+          "q": 2,
+          "value": 2.0
+        },
+        {
+          "q": 3,
+          "value": 1.0
+        },
+        {
+          "q": 4,
+          "value": 2.0
+        },
+        {
+          "q": 5,
+          "value": 1.0
+        },
+        {
+          "q": 6,
+          "value": 2.0
+        },
+        {
+          "q": 7,
+          "value": 1.0
+        },
+        {
+          "q": 8,
+          "value": 2.0
+        }
+      ],
+      "total": 12.0,
+      "quiz": "8q_6x5_2x10",
+      "note": "Real photo #14 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. Serial ground truth corrected from \"6\" to \"06\" -- the original real_class_info.json recorded Serial as a bare JSON integer (losing any leading zero), but the actual photo shows it handwritten with a leading zero; ground truth here follows this project's own convention (e.g. filled_file.jpeg's \"07\") of the literal written value, not the numeric value."
+    },
+    "real_class_15.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2899211",
+      "serial": "04",
+      "questions": [
+        {
+          "q": 1,
+          "value": 1.0
+        },
+        {
+          "q": 2,
+          "value": 1.0
+        },
+        {
+          "q": 3,
+          "value": 1.0
+        },
+        {
+          "q": 4,
+          "value": 1.0
+        },
+        {
+          "q": 5,
+          "value": 1.0
+        }
+      ],
+      "total": 5.0,
+      "quiz": "5q_5each",
+      "note": "Real photo #15 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. Serial ground truth corrected from \"4\" to \"04\" -- the original real_class_info.json recorded Serial as a bare JSON integer (losing any leading zero), but the actual photo shows it handwritten with a leading zero; ground truth here follows this project's own convention (e.g. filled_file.jpeg's \"07\") of the literal written value, not the numeric value."
+    },
+    "real_class_16.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "5642185",
+      "serial": "05",
+      "questions": [
+        {
+          "q": 1,
+          "value": 3.0
+        },
+        {
+          "q": 2,
+          "value": 2.0
+        },
+        {
+          "q": 3,
+          "value": 3.0
+        }
+      ],
+      "total": 8.0,
+      "quiz": "3q_5each",
+      "note": "Real photo #16 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. Serial ground truth corrected from \"5\" to \"05\" -- the original real_class_info.json recorded Serial as a bare JSON integer (losing any leading zero), but the actual photo shows it handwritten with a leading zero; ground truth here follows this project's own convention (e.g. filled_file.jpeg's \"07\") of the literal written value, not the numeric value."
+    },
+    "real_class_17.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "2345608",
+      "serial": "03",
+      "questions": [
+        {
+          "q": 1,
+          "value": 5.0
+        },
+        {
+          "q": 2,
+          "value": 5.0
+        },
+        {
+          "q": 3,
+          "value": 5.0
+        },
+        {
+          "q": 4,
+          "value": 5.0
+        },
+        {
+          "q": 5,
+          "value": 5.0
+        },
+        {
+          "q": 6,
+          "value": 5.0
+        },
+        {
+          "q": 7,
+          "value": 5.0
+        },
+        {
+          "q": 8,
+          "value": 5.0
+        }
+      ],
+      "total": 40.0,
+      "quiz": "8q_6x5_2x10",
+      "note": "Real photo #17 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. Serial ground truth corrected from \"3\" to \"03\" -- the original real_class_info.json recorded Serial as a bare JSON integer (losing any leading zero), but the actual photo shows it handwritten with a leading zero; ground truth here follows this project's own convention (e.g. filled_file.jpeg's \"07\") of the literal written value, not the numeric value."
+    },
+    "real_class_18.jpeg": {
+      "condition": "adjacent_scripts_in_frame",
+      "handwriting_by": "real student (CSE211L pilot class, anonymous)",
+      "expected_success": true,
+      "expected_failure_reason": null,
+      "student_id": "4862119",
+      "serial": "02",
+      "questions": [
+        {
+          "q": 1,
+          "value": 2.0
+        },
+        {
+          "q": 2,
+          "value": 4.0
+        },
+        {
+          "q": 3,
+          "value": 4.0
+        },
+        {
+          "q": 4,
+          "value": 2.0
+        },
+        {
+          "q": 5,
+          "value": 1.0
+        }
+      ],
+      "total": 13.0,
+      "quiz": "5q_5each",
+      "note": "Real photo #18 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. Serial ground truth corrected from \"2\" to \"02\" -- the original real_class_info.json recorded Serial as a bare JSON integer (losing any leading zero), but the actual photo shows it handwritten with a leading zero; ground truth here follows this project's own convention (e.g. filled_file.jpeg's \"07\") of the literal written value, not the numeric value."
     }
   }
 }

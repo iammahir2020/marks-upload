@@ -21,7 +21,38 @@ MIN_TABLE_AREA_FRAC = 0.01     # a table contour must cover at least this much o
 APPROX_EPSILON_FRAC = 0.02     # approxPolyDP epsilon as a fraction of contour perimeter
 BLUR_LAPLACIAN_FLOOR = 50.0    # variance of Laplacian below this -> "blurry"
 LINE_PEAK_MIN_GAP_FRAC = 0.02  # merge line-mask peaks closer than this fraction of the table's own dimension
-MIN_LINE_COVERAGE_FRAC = 0.4  # a real rule spans nearly the whole table; a digit stroke rarely does
+CONTRAST_FLOOR = 30  # a pixel counts as "ink" only if it's this much darker (0-255 grayscale)
+                       # than its own local, same-row/column paper background. Ground truth for
+                       # this number, and for the two floors below, comes from a real cluttered
+                       # notebook photo (2026-08-29, testset/debug/clutter_*) where genuine table
+                       # dividers measured contrast 63-116 and known noise (a table's own left/right
+                       # border re-detected next to the synthetic edge) measured 18-38 — see learn.md.
+MIN_LINE_COVERAGE_FRAC = 0.4  # a real rule is dark (>=CONTRAST_FLOOR) across nearly the whole table;
+                                # a digit stroke rarely is, even though it can be locally just as dark.
+                                # Coverage is measured directly on the source grayscale image (raw
+                                # pixel-vs-local-background contrast), not on the binarized,
+                                # morphologically-eroded/dilated line mask that finds candidate
+                                # positions in the first place: that mask is good at *locating* a line
+                                # cheaply, but adaptiveThreshold plus erode/dilate — both tuned for the
+                                # whole image, not per-line — can fragment one genuine, fully dark line
+                                # into disconnected pieces under uneven lighting or a steep angle,
+                                # undercounting its own coverage. On a real photo (2026-08-29) two
+                                # genuine ID-row dividers measured only 41-43% *mask* coverage — below
+                                # this floor — while their own raw pixels were just as dark against the
+                                # paper (contrast 80-94) as every accepted divider in the same row
+                                # (63-116); scoring contrast directly recovers exactly this case
+                                # without loosening what counts as a genuine line (see learn.md).
+MIN_RELATIVE_PEAK_FRAC = 0.65  # among a table's *own* surviving dividers, reject one shorter than
+                                # this fraction of their median length — a hand-ruled grid draws
+                                # every real divider to roughly the same length, so an outlier that
+                                # still clears MIN_LINE_COVERAGE_FRAC is far more likely to be a
+                                # stray mark than an intentional one (found on a real hand-drawn
+                                # whiteboard photo: a stray line cleared the absolute floor at 0.445
+                                # coverage while its 9 genuine peers all measured 0.57-0.99 — see
+                                # learn.md). Only applied with >=4 peers, so a table with too few
+                                # dividers to have a meaningful "typical length" is left alone —
+                                # exactly the short-table case this function's own min_value
+                                # docstring already warns a relative-only rule is unsafe for.
 
 FAILURE_REASONS = {"table_not_found", "column_count_mismatch", "blurry"}
 
@@ -95,26 +126,72 @@ def _find_table_quads(mask: np.ndarray, min_area: float) -> list[np.ndarray]:
     return quads
 
 
-def _cluster_peaks(profile: np.ndarray, min_gap: int, min_value: float = 0.0) -> list[int]:
-    """Positions of contiguous high-value runs in a 1D projection, merged
-    into peaks at least min_gap apart. This reads actual line positions —
-    never divide the table width by the column count (plan.md §5 step 4).
+def _contrast_coverage(gray: np.ndarray, axis: str, center: int, margin_frac: float = 0.1) -> float:
+    """Fraction of a candidate line's length where the raw grayscale pixel is
+    at least CONTRAST_FLOOR darker than its own local, same-row/column paper
+    background — measured directly on the source grayscale image, not on the
+    binarized-and-morphologically-cleaned line mask that only located this
+    candidate's approximate position. See CONTRAST_FLOOR/MIN_LINE_COVERAGE_FRAC
+    above for why this exists and the real numbers behind it. margin_frac
+    trims the first/last 10% of the line's length, where a header row's own
+    label text can bleed into the very first/last few pixels of a column."""
+    h, w = gray.shape
+    if axis == "col":
+        length = h
+        lo, hi = int(length * margin_frac), int(length * (1 - margin_frac))
+        offset = max(int(w * 0.02), 5)
+        left, right = max(center - offset, 0), min(center + offset, w - 1)
+        line_vals = gray[lo:hi, center].astype(int)
+        bg_vals = np.maximum(gray[lo:hi, left], gray[lo:hi, right]).astype(int)
+    else:
+        length = w
+        lo, hi = int(length * margin_frac), int(length * (1 - margin_frac))
+        offset = max(int(h * 0.02), 5)
+        top, bottom = max(center - offset, 0), min(center + offset, h - 1)
+        line_vals = gray[center, lo:hi].astype(int)
+        bg_vals = np.maximum(gray[top, lo:hi], gray[bottom, lo:hi]).astype(int)
+    if line_vals.size == 0:
+        return 0.0
+    return float(((bg_vals - line_vals) >= CONTRAST_FLOOR).mean())
 
-    min_value is an *absolute* floor, not just relative to this profile's
-    own peak. A relative-only threshold accepts a handwritten digit stroke
-    (e.g. "1") as a column boundary whenever it happens to be the tallest
-    thing in a short table — min_value instead demands near-full-table
+
+def _cluster_peaks(profile: np.ndarray, min_gap: int, gray: np.ndarray, axis: str) -> list[int]:
+    """Positions of contiguous high-value runs in a 1D line-mask projection,
+    merged into peaks at least min_gap apart. This reads actual line
+    positions — never divide the table width by the column count (plan.md
+    §5 step 4). The line mask (profile) only *locates* candidates cheaply;
+    whether each one clears MIN_LINE_COVERAGE_FRAC / MIN_RELATIVE_PEAK_FRAC
+    is decided on _contrast_coverage instead of the mask's own value, for the
+    reasons documented on MIN_LINE_COVERAGE_FRAC above.
+
+    The absolute floor is deliberate, not just a relative-to-peak threshold.
+    A relative-only threshold accepts a handwritten digit stroke (e.g. "1")
+    as a column boundary whenever it happens to be the tallest thing in a
+    short table — the absolute floor instead demands near-full-table
     coverage, which a digit rarely reaches even when it's locally the
     strongest column (found on a real photo — see learn.md step 1)."""
     if profile.size == 0 or profile.max() <= 0:
         return []
-    idx = np.where((profile > profile.max() * 0.3) & (profile >= min_value))[0]
+    idx = np.where(profile > profile.max() * 0.3)[0]
     if len(idx) == 0:
         return []
     splits = np.where(np.diff(idx) > 1)[0] + 1
     runs = np.split(idx, splits)
     centers = [int(run.mean()) for run in runs]
+    coverages = [_contrast_coverage(gray, axis, c) for c in centers]
 
+    kept = [(c, v) for c, v in zip(centers, coverages) if v >= MIN_LINE_COVERAGE_FRAC]
+    if not kept:
+        return []
+
+    if len(kept) >= 4:
+        median_value = float(np.median([v for _, v in kept]))
+        floor = median_value * MIN_RELATIVE_PEAK_FRAC
+        kept = [(c, v) for c, v in kept if v >= floor]
+        if not kept:
+            return []
+
+    centers = [c for c, _ in kept]
     merged = [centers[0]]
     for c in centers[1:]:
         if c - merged[-1] >= min_gap:
@@ -144,15 +221,16 @@ def _merge_close_bounds(bounds: list[int], min_gap: int) -> list[int]:
     return merged
 
 
-def _recover_bounds(warped_h_mask: np.ndarray, warped_v_mask: np.ndarray) -> tuple[list[int], list[int]]:
+def _recover_bounds(
+    warped_h_mask: np.ndarray, warped_v_mask: np.ndarray, warped_gray: np.ndarray
+) -> tuple[list[int], list[int]]:
     h, w = warped_h_mask.shape
     row_profile = warped_h_mask.sum(axis=1)  # horizontal rules -> peaks at row boundaries
     col_profile = warped_v_mask.sum(axis=0)  # vertical rules -> peaks at column boundaries
-    # 255 per surviving pixel (binary mask) x the near-full-dimension coverage a real rule has.
     row_min_gap = max(int(h * LINE_PEAK_MIN_GAP_FRAC), 10)
     col_min_gap = max(int(w * LINE_PEAK_MIN_GAP_FRAC), 10)
-    row_bounds = _cluster_peaks(row_profile, row_min_gap, min_value=MIN_LINE_COVERAGE_FRAC * 255 * w)
-    col_bounds = _cluster_peaks(col_profile, col_min_gap, min_value=MIN_LINE_COVERAGE_FRAC * 255 * h)
+    row_bounds = _cluster_peaks(row_profile, row_min_gap, warped_gray, axis="row")
+    col_bounds = _cluster_peaks(col_profile, col_min_gap, warped_gray, axis="col")
 
     # The perspective transform was fit to the table's own outer corners, so
     # the warped crop's own edges are the outer border — include them even if
@@ -170,6 +248,59 @@ def _recover_bounds(warped_h_mask: np.ndarray, warped_v_mask: np.ndarray) -> tup
     col_bounds = _merge_close_bounds(col_bounds, col_min_gap)
 
     return row_bounds, col_bounds
+
+
+LABEL_COLUMN_INSET_FRAC = 0.12  # same border-trim fraction id_ocr.py/segment.py already use,
+                                  # so a cell's own ruled border is never counted as ink.
+LABEL_COLUMN_NOISE_AREA_FRAC = 0.01  # component area floor, as a fraction of the (inset)
+                                       # column's own area — drops single-pixel/JPEG-noise
+                                       # specks before counting. A separate constant from
+                                       # cnn/segment.py's own NOISE_AREA_FRAC on purpose: this
+                                       # module has no dependency on the optional CNN track.
+
+
+def _column_component_count(gray: np.ndarray, y0: int, y1: int, x0: int, x1: int) -> int:
+    """Count of real (non-noise) connected ink components in one cell crop —
+    the proxy _label_column_is_backwards uses for "is this a multi-character
+    word or a single digit/number.\""""
+    h, w = y1 - y0, x1 - x0
+    dy, dx = int(h * LABEL_COLUMN_INSET_FRAC), int(w * LABEL_COLUMN_INSET_FRAC)
+    crop = gray[y0 + dy:y1 - dy, x0 + dx:x1 - dx] if h > 2 * dy and w > 2 * dx else gray[y0:y1, x0:x1]
+    if crop.size == 0:
+        return 0
+    _, bw = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    n, _, stats, _ = cv2.connectedComponentsWithStats(bw, connectivity=8)
+    noise_floor = crop.shape[0] * crop.shape[1] * LABEL_COLUMN_NOISE_AREA_FRAC
+    return sum(1 for i in range(1, n) if stats[i, 4] >= noise_floor)
+
+
+def _label_column_is_backwards(gray: np.ndarray, row_bounds: list[int], col_bounds: list[int]) -> bool | None:
+    """For a single-row ID/Serial candidate: True if the *last* column looks
+    like the multi-character label cell ("ID"/"Serial") and the *first*
+    looks like a single digit/number — i.e. this candidate's column order is
+    backwards, the signature of a 180-degree-flipped read. A flip reverses
+    row and column order together, so resolving left-right order here is
+    enough by itself to catch it, for this table and every other table on
+    the same page. False if the first column is the label (correctly
+    oriented). None if the two ends are tied — genuinely inconclusive, so
+    the caller must not reject on this signal alone.
+
+    Component count, not ink darkness/coverage, because a multi-letter word
+    reliably fragments into more disconnected ink components than a lone
+    digit or short number regardless of ink weight or paper lighting —
+    verified directly on 3 real photos plus 1 synthetic photo (2026-08-29):
+    the true label column had strictly more components than the opposite
+    end in all 6 ID/Serial rows checked (gaps of 1-7 components), including
+    a case where an ink-darkness-based measure came out nearly tied. See
+    learn.md."""
+    n_cols = len(col_bounds) - 1
+    if n_cols < 2:
+        return None
+    first = _column_component_count(gray, row_bounds[0], row_bounds[1], col_bounds[0], col_bounds[1])
+    last = _column_component_count(gray, row_bounds[0], row_bounds[1], col_bounds[-2], col_bounds[-1])
+    if first == last:
+        return None
+    return last > first
 
 
 def _is_blurry(gray: np.ndarray) -> bool:
@@ -263,7 +394,8 @@ def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path) -> d
         # learn.md step 1.
         w_h_mask = cv2.warpPerspective(horizontal, m, (width, height), flags=cv2.INTER_NEAREST)
         w_v_mask = cv2.warpPerspective(vertical, m, (width, height), flags=cv2.INTER_NEAREST)
-        row_bounds, col_bounds = _recover_bounds(w_h_mask, w_v_mask)
+        w_gray = cv2.warpPerspective(gray, m, (width, height))
+        row_bounds, col_bounds = _recover_bounds(w_h_mask, w_v_mask, w_gray)
 
         candidates.append(TableCandidate(quad=quad, warped=warped, row_bounds=row_bounds, col_bounds=col_bounds))
         cv2.polylines(overlay, [quad.astype(int)], True, (0, 255, 0), 3)
@@ -273,24 +405,87 @@ def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path) -> d
 
     # A table rotated 180deg from correct still has the right row/column
     # *counts* — shape alone can't tell upside-down-and-mirrored from
-    # right-side-up. The template's own design already gives a free,
-    # content-independent way to tell: the answer row is deliberately
-    # taller than the header row (plan.md §3), always, by construction. If
-    # the *first* row (by top-to-bottom order after warping) is the taller
-    # one, this candidate is being read upside down — reject it here rather
-    # than accept a shape match that reads every value backwards. Found on
-    # a real phone photo where detect_any_orientation's rotation retry
-    # landed on exactly this false-positive orientation — see learn.md
-    # step 6.
-    marks_candidates = [
-        c for c in candidates
-        if c.row_count == 2 and (c.row_bounds[2] - c.row_bounds[1]) > (c.row_bounds[1] - c.row_bounds[0])
-    ]
-    single_row = sorted((c for c in candidates if c.row_count == 1), key=lambda c: c.col_count, reverse=True)
+    # right-side-up. The ID/Serial rows give a stronger, content-independent
+    # tell than the marks table's own header/value row heights do: column 0
+    # is always the multi-character label ("ID"/"Serial"), every other
+    # column a lone digit or short number, by construction. A flip reverses
+    # row *and* column order together, so this one check is enough to catch
+    # it for every table on the page — see _label_column_is_backwards for
+    # the real measurements behind it.
+    single_row_raw = sorted((c for c in candidates if c.row_count == 1), key=lambda c: c.col_count, reverse=True)
+    single_row: list[TableCandidate] = []
+    orientation_confirmed = False
+    for c in single_row_raw:
+        c_gray = cv2.cvtColor(c.warped, cv2.COLOR_BGR2GRAY)
+        backwards = _label_column_is_backwards(c_gray, c.row_bounds, c.col_bounds)
+        if backwards is True:
+            continue
+        if backwards is False:
+            orientation_confirmed = True
+        single_row.append(c)
+
+    if orientation_confirmed:
+        # Whole-photo orientation is already confirmed correct from the
+        # ID/Serial check above — every table on the same page shares that
+        # one rotation, so the marks table needs no separate check here.
+        marks_candidates = [c for c in candidates if c.row_count == 2]
+    else:
+        # No ID/Serial signal available (missing, or both ends tied) — fall
+        # back to the original height-based check: the template's answer
+        # row is deliberately taller than the header row (plan.md §3),
+        # always, by construction. If the *first* row (by top-to-bottom
+        # order after warping) is the taller one, this candidate is being
+        # read upside down — reject it here rather than accept a shape
+        # match that reads every value backwards. Found on a real phone
+        # photo where detect_any_orientation's rotation retry landed on
+        # exactly this false-positive orientation — see learn.md step 6.
+        marks_candidates = [
+            c for c in candidates
+            if c.row_count == 2 and (c.row_bounds[2] - c.row_bounds[1]) > (c.row_bounds[1] - c.row_bounds[0])
+        ]
 
     marks = marks_candidates[0] if marks_candidates else None
-    id_table = single_row[0] if len(single_row) >= 1 else None
-    serial_table = single_row[1] if len(single_row) >= 2 else None
+
+    # Select id/serial by *position*, not column count. Picking by count
+    # (or by rank-among-counts) breaks once a second, same-shaped candidate
+    # can appear in frame — e.g. a neighboring script's own ID row peeking
+    # in below this one (the real_class_* photos' "adjacent scripts in
+    # frame" condition): two 8-column single-row candidates can both be
+    # present. Worse, if this script's *own* row happens to have a genuine,
+    # unrelated column-detection shortfall (e.g. 7 columns instead of 8,
+    # a real line-detection miss), count-based matching would exclude the
+    # correct row entirely and silently accept the decoy instead — turning
+    # an honest column_count_mismatch into a false "ok" that reads the
+    # wrong student's ID. The template's layout is fixed and tightly
+    # grouped for one script instance (ID directly above Serial directly
+    # above Marks), and the marks table is reliably unambiguous, so it
+    # anchors the choice: among single-row candidates positioned above the
+    # marks table, the closest one is this script's own Serial row and the
+    # second-closest is its own ID row — true regardless of either row's
+    # actual column count, which the existing match/mismatch check below
+    # still verifies honestly. Any decoy from a neighboring script sits
+    # either on the far side of a full table's worth of vertical gap
+    # (below marks) or, if above, farther from marks than this script's
+    # own two rows are (a different script entirely) — so it never wins
+    # the "closest" comparison.
+    if marks is not None:
+        marks_top = (marks.quad[0][1] + marks.quad[1][1]) / 2
+        above_marks = sorted(
+            (c for c in single_row if (c.quad[2][1] + c.quad[3][1]) / 2 <= marks_top),
+            key=lambda c: marks_top - (c.quad[2][1] + c.quad[3][1]) / 2,
+        )
+        # Closest above marks = Serial (sits directly on top of Marks);
+        # second-closest = ID (sits directly on top of Serial).
+        serial_table = above_marks[0] if len(above_marks) >= 1 else None
+        id_table = above_marks[1] if len(above_marks) >= 2 else None
+    else:
+        # No marks table to anchor to — fall back to the original
+        # rank-by-column-count order (unchanged behavior for this
+        # degenerate case, which fails elsewhere anyway): highest count
+        # is ID, next is Serial.
+        by_count = sorted(single_row, key=lambda c: c.col_count, reverse=True)
+        id_table = by_count[0] if len(by_count) >= 1 else None
+        serial_table = by_count[1] if len(by_count) >= 2 else None
 
     found = {"marks": marks, "id": id_table, "serial": serial_table}
     for name, cand in found.items():

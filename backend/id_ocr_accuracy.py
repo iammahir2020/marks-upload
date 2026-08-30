@@ -42,7 +42,14 @@ def main() -> int:
             image_path = TESTSET / "images" / name
             true_id = label["student_id"]
             out_dir = Path(tmp) / name
-            result = detect(image_path, QUESTIONS, ID_DIGITS, out_dir)
+            # Real per-image question count, not the fixed QUESTIONS
+            # default — this harness only reads the ID crop, but detect()
+            # still needs the marks table's real shape to avoid an
+            # unrelated column_count_mismatch masking an otherwise-usable
+            # ID read (same fix already applied in
+            # tests/test_detection_regression.py).
+            questions = len(label["questions"]) if label.get("questions") else QUESTIONS
+            result = detect(image_path, questions, ID_DIGITS, out_dir)
 
             if result["status"] != "ok":
                 print(f"{name}: detection failed ({result['failure_reason']}) — skipping, not an OCR result")
