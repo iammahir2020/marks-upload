@@ -3486,3 +3486,119 @@ unchanged. What this adds is real material for whoever does that
 fine-tuning next, collected the easy way (a batch of real photos already
 in hand) rather than the hard way (printing a sheet and waiting for four
 people to fill it in).
+
+## Step 3r.6e — Making the CNN the default
+
+Everything up to here treated the CNN as the *optional* path. This step
+flips it: with `RECOGNIZER` unset, the app now uses the local CNN, and
+Gemini + Tesseract become the fallback you opt into. Worth understanding
+both what the numbers said and what they didn't, because this decision was
+made on partial evidence, deliberately.
+
+### The numbers it was decided on
+
+Two harnesses, both run against the 18-photo real-class batch:
+
+```
+python cnn/accuracy.py
+  per-digit accuracy: 167/182 = 91.8%   (Tesseract baseline: 33/56 = 58.9%)
+  whole-ID exact match: 16/29 = 55.2%   (Tesseract baseline: 0/8 = 0.0%)
+  confidently wrong: 1
+
+python cnn/marks_accuracy.py
+  per-question accuracy: 103/105 = 98.1%
+    whole marks: 91/93 = 97.8%
+    half marks:  12/12 = 100.0%
+  serial accuracy: 12/19 = 63.2%
+  total accuracy: 17/19 = 89.5%
+```
+
+On the student ID the CNN wins decisively, and that's a like-for-like
+comparison — same photos, same harness shape, against the exact number
+Tesseract scored. That part is settled.
+
+### What the numbers did *not* say
+
+Marks and serial were previously read by **Gemini**, not Tesseract, and
+there is no Gemini number for this batch. `RECOGNIZER=both` exists exactly
+to produce one — it runs both paths and logs disagreements — but that
+run never happened, and `comparison_log/` doesn't exist. So "98.1% on
+marks" is a good absolute number with nothing to compare it against.
+
+The weak spot is **serial at 63.2%**, the lowest figure in the system. The
+likeliest cause is segmentation rather than the classifier: the serial
+cell holds two digits that have to be split apart, and `segment.py`'s
+merge rule is tuned for one glyph per box. That's a hypothesis to test,
+not a diagnosis.
+
+### Why it was flipped anyway
+
+Because accuracy isn't the only axis, and the other axis is one-sided:
+
+- **No quota.** A real `rate_limited` response is what started this whole
+  track. The CNN cannot rate-limit itself out of a class.
+- **No network.** The laptop doesn't need internet mid-session.
+- **No cost.** Every scan is free.
+- **Privacy improves.** Nothing leaves the machine at all — the qualifier
+  plan.md §12 has to attach to the remote path stops applying.
+
+And the failure mode is safe by construction: a digit the CNN isn't
+confident about is *flagged blank*, not guessed, and the instructor
+confirms every scan on the review screen anyway. A 63.2% serial mostly
+means "more blanks to fill in", not "more wrong numbers stored". Identity
+also survives a missing serial on its own, because of the
+at-least-one-of-ID-or-serial rule from plan.md §10.
+
+The one genuinely uncomfortable fact: both harnesses report
+`confidently wrong: 1`, against this track's own bar of zero. It's a
+single ambiguous cursive digit rather than a systematic error, but the bar
+isn't met, and pretending otherwise would be exactly the kind of theatre
+this project's testing rules exist to prevent.
+
+### The packaging consequence nobody asks about until it breaks
+
+This is the part that's easy to miss. `requirements-cnn.txt` was kept
+separate on the principle that *the main app has no dependency on any of
+it*. The moment the CNN becomes the default, that principle is false —
+the app can't start without `onnxruntime`.
+
+So the split was redrawn along the real line, which is **inference vs
+training**, not app vs CNN:
+
+- `requirements.txt` gained `onnxruntime` (runs the `.onnx` file) and
+  `scipy` (`segment.py`'s connected-component labelling). The default path
+  needs both.
+- `requirements-cnn.txt` keeps `torch`, `torchvision`, and `onnx` — used
+  only by `train.py` to train and export.
+
+The claim that torch is training-only isn't taken on trust; it's verified
+by poisoning the module and building the recognizer anyway:
+
+```python
+import sys
+sys.modules['torch'] = None       # any real import of torch now explodes
+from app.recognizers.local import CNNRecognizer
+CNNRecognizer()                   # constructs fine
+```
+
+Same trick confirms the default resolves correctly with the environment
+variable unset:
+
+```python
+os.environ.pop('RECOGNIZER', None)
+import app.main as m
+type(m.recognizer).__name__       # -> 'CNNRecognizer'
+```
+
+### A doc bug this uncovered
+
+`main.py` already read `os.getenv("RECOGNIZER", "cnn")` before this step
+— while the docstring directly above it said the default was `"remote"`,
+and CLAUDE.md and plan.md §16 said the same. The code had been the real
+default for some time and nothing pointed it out. Everything is now
+reconciled to say `cnn`, with the caveats attached rather than dropped.
+
+The lesson generalises: a comment asserting behaviour sitting one line
+above the code that contradicts it is worse than no comment, because it
+gets believed. `RECOGNIZER=remote` still works and is still supported;
+it's just no longer what you get by accident.

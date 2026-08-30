@@ -107,6 +107,13 @@ uses the Setup config to interpret what it sees.
                                  └────────────────────────────────┘
 ```
 
+**The diagram above describes `RECOGNIZER=remote`.** Since step 3r.6e the
+default is `RECOGNIZER=cnn`, where the whole right-hand column disappears:
+a local CNN reads the ID, serial and marks, and no request leaves the
+laptop. Section 16 covers that path in full; the OpenCV detection stage,
+the API contract, and every validation rule below are identical either way,
+which is the point of putting both behind one `Recognizer` protocol.
+
 Four decisions worth stating explicitly:
 
 **The Gemini key lives only on the backend.** A browser PWA can't hide an
@@ -283,9 +290,21 @@ reports success is a defect; a genuinely unusable photo that returns
 | Hosting | None — both halves run on the instructor's laptop for the pilot | No account, no deploy step, no cold start. See "Running locally" in section 9. |
 
 This table is the baseline (Gemini + Tesseract) stack and stays accurate for
-the `RemoteRecognizer` path. Section 16 adds a second, optional local path
-(a small CNN via ONNX Runtime) behind the same interface — additive, not a
-replacement of anything in this table.
+the `RemoteRecognizer` path. Section 16 adds a second local path (a small
+CNN via ONNX Runtime) behind the same interface — additive, and a
+replacement for nothing in this table.
+
+**As of step 3r.6e (2026-08-30) that second path is the default**, so for a
+default run the two recognition rows above are replaced by:
+
+| Layer | Choice | Why |
+|---|---|---|
+| ID + serial + mark recognition | Local digit CNN, ONNX Runtime | 91.8% per-digit on the ID vs Tesseract's 58.9%; no key, no quota, no network, nothing leaves the laptop. Section 16 has the full numbers and caveats. |
+
+`onnxruntime` and `scipy` therefore sit in `requirements.txt`, not in the
+optional `requirements-cnn.txt` — the app cannot start without them.
+`torch` stays training-only. Everything else in the table is unchanged, and
+`RECOGNIZER=remote` still selects exactly the stack listed above it.
 
 ## 8. Data models
 
@@ -365,6 +384,16 @@ next to the file — it has to be a form field the handler parses.
 9. Assemble and return `ScanResult`.
 
 Backend is stateless. No auth, no storage, nothing written to disk.
+
+**Steps 5–8 above describe `RECOGNIZER=remote`.** On the default `cnn`
+path they collapse into a single local inference pass that reads the ID,
+serial and marks together — no composite image, no API call, no retry
+policy. Steps 1–4 (decode, detect, deskew, split) and step 9 (assemble
+`ScanResult`) are identical on both paths, as are the early exits: no
+recognizer of any kind runs after `table_not_found` or
+`column_count_mismatch`. The legal-value rejection in step 8 also applies
+to both — the CNN's decoder is constrained to legal values by
+construction, but the check is not conditional on that.
 
 ### Running locally
 
@@ -529,6 +558,17 @@ claim that the ID never leaves the device. Making that true would mean
 moving detection and cropping into the browser with OpenCV.js and
 uploading only pre-cropped mark cells — worth doing if this ever runs as a
 hosted service for other faculty, unnecessary for a self-hosted pilot.
+
+**The default recognizer strengthens this considerably** (section 16, step
+3r.6e). On `RECOGNIZER=cnn` there is no outbound API call at all: no
+serial, no marks, no composite image leaves the laptop, so the free-tier
+training concern above simply doesn't arise. The precision above still
+holds exactly as written, though — the photo does travel from the phone to
+the laptop, so the accurate claim is "**no third party ever sees a
+script**", not "the ID never leaves the device". The remaining paragraph
+above stays relevant because `RECOGNIZER=remote` is still supported, and
+because the browser-side-cropping upgrade is what the stronger claim needs
+regardless of recognizer.
 
 ## 13. MVP scope
 
@@ -746,12 +786,40 @@ Two implementations:
 Selection by environment variable:
 
 ```python
-RECOGNIZER = os.getenv("RECOGNIZER", "remote")   # "cnn" | "remote" | "both"
+RECOGNIZER = os.getenv("RECOGNIZER", "cnn")   # "cnn" | "remote" | "both"
 ```
 
-Default stays `"remote"` until the comparison run (below) says otherwise —
-this section adds the option, it doesn't flip the default on arrival.
-`main.py` resolves it once at startup and holds the instance. The
+The default was `"remote"` as originally written here — this section added
+the option without flipping the default on arrival, deliberately. **It was
+flipped to `"cnn"` on 2026-08-30** (step 3r.6e) once the 18-photo
+real-class batch gave real numbers to decide on: 91.8% per-digit / 55.2%
+whole-ID against Tesseract's 58.9% / 0.0%, and 98.1% per-question on marks
+(half marks 100%).
+
+The accuracy gap on the ID is the headline, but not the whole argument.
+The CNN path costs nothing per scan, has no quota to exhaust in the middle
+of a class, needs no network, and keeps every photo on the instructor's own
+laptop — which is the privacy property section 12 otherwise has to
+qualify. A rate-limited Gemini mid-session is a real failure mode this
+removes outright.
+
+Two honest caveats, accepted rather than overlooked:
+
+- **Serial is the CNN's weakest field at 63.2%**, and there is no Gemini
+  baseline on the same batch to compare it against, because the full
+  comparison run below never happened. This is survivable because a
+  low-confidence serial is flagged blank rather than guessed, identity
+  holds on the student ID alone (section 10's "at least one non-null"
+  rule), and the instructor confirms every scan anyway — but it is the
+  first thing to fix, and the likeliest culprit is segmentation of the
+  two-digit serial cell rather than the classifier.
+- **Both accuracy harnesses report one confidently-wrong case**, against
+  the bar stated below that it must stay zero. One genuinely ambiguous
+  cursive digit, not a systematic error — but the bar is the bar, and it
+  is not currently met.
+
+`RECOGNIZER=remote` remains fully supported as the fallback. `main.py`
+resolves the choice once at startup and holds the instance. The
 pipeline's existing early exits are unchanged: no recognizer is called
 after `table_not_found` or `column_count_mismatch`, whichever is selected
 (section 9 step 2, unchanged).
@@ -998,6 +1066,12 @@ improvement over 58.9% per-digit but whole-ID exact match still poor until
 fine-tuning — plan around the review screen catching it, which it already
 does, and keep `RECOGNIZER=remote` available as the fallback while that's
 still true.
+
+**This prediction held almost exactly** (measured 2026-08-30): 91.8%
+per-digit, a large improvement as expected, with whole-ID exact match at
+55.2% — still poor, still pending fine-tuning, exactly as anticipated.
+The review screen catching it is what makes the default flip defensible;
+`RECOGNIZER=remote` stays available.
 
 **Self-collected samples can narrow the model rather than widen it.** If
 every sheet is the instructor's own handwriting, fine-tuning makes the ID

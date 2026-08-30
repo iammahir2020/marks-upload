@@ -15,10 +15,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import harvest as harvest_module
+# Loaded here, explicitly, so RECOGNIZER can be set in backend/.env rather
+# than only as a shell variable. It already happened to work via marks.py's
+# own load_dotenv, but only as a side effect of RemoteRecognizer being
+# imported eagerly below — making the CNN path lazy would have silently
+# broken .env-based selection. Load it where it is actually depended on.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+from . import harvest as harvest_module  # noqa: E402
 from .detection import detect_any_orientation
 from .models import HarvestFields, QuestionMark, QuizConfig, ScanResult
 from .recognizers.base import Recognizer
@@ -32,12 +40,23 @@ def _resolve_recognizer() -> Recognizer:
     the pipeline below calls only through the Recognizer protocol from here
     on, never `id_ocr`/`marks`/`marks_ocr` by name.
 
-    CNNRecognizer/BothRecognizer are imported lazily, inside their own
-    branches, rather than at module level — the default path (RECOGNIZER
-    unset -> "remote") must never require onnxruntime/the CNN track's
-    dependencies to be installed just to import this module, the same
-    "main app has no dependency on any of this" property
-    requirements-cnn.txt is kept separate to preserve."""
+    The default is "cnn" as of 2026-08-30 (step 3r.6e). Measured on the
+    18-photo real-class batch, the local CNN reads IDs at 91.8% per-digit /
+    55.2% whole-ID against Tesseract's 58.9% / 0.0%, and marks at 98.1%
+    per-question — and it costs nothing, has no rate limit to exhaust
+    mid-class, works with no network at all, and keeps every photo on this
+    laptop. Serial is its weakest field (63.2%); a low-confidence serial is
+    flagged blank rather than guessed, and identity survives on the ID
+    alone, so this was accepted deliberately rather than overlooked.
+
+    Because "cnn" is now the default, onnxruntime and scipy are in
+    requirements.txt, not requirements-cnn.txt — the app genuinely cannot
+    start without them. torch stays training-only: nothing under app/
+    imports it, so the running app still never needs it.
+
+    The sub-recognizers are still imported lazily, inside their own
+    branches, so that RECOGNIZER=remote keeps working on a machine with no
+    CNN dependencies installed at all."""
     name = os.getenv("RECOGNIZER", "cnn")
     if name == "remote":
         return RemoteRecognizer()

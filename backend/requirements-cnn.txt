@@ -1,19 +1,28 @@
-# Optional CNN track (step.md steps 2r.0/2r/3r/3r.6, plan.md §16) — kept
-# separate from requirements.txt on purpose. The main app has no
-# dependency on any of this; it's only needed to train/evaluate the local
-# digit classifier under backend/cnn/. Install with:
+# TRAINING-ONLY dependencies for the local digit classifier under
+# backend/cnn/ (step.md steps 2r/3r, plan.md §16).
+#
+# Note the narrowed scope as of 2026-08-30 (step 3r.6e): the CNN is now the
+# *default* recognizer, so its inference deps (onnxruntime, scipy) moved into
+# requirements.txt — the app cannot start without them. What remains here is
+# only what training and ONNX export need. Nothing under app/ imports any of
+# it, so running the app never requires torch; verified by poisoning `torch`
+# in sys.modules and constructing CNNRecognizer clean.
+#
+# Install with:
 #
 #   pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-cnn.txt
 #
+# This file assumes requirements.txt is already installed — onnxruntime and
+# scipy live there now and are deliberately not repeated here, so there is
+# only one pin per package to keep in sync.
+#
 # --extra-index-url, not --index-url: the latter restricts pip to *only*
-# that index, which doesn't host onnx/onnxruntime/scipy and fails outright
-# (confirmed the hard way — see learn.md step 3r). --extra-index-url adds
-# the PyTorch CPU wheels alongside normal PyPI instead of replacing it.
-# The custom index itself is still deliberate: this machine has no GPU
-# (`nvidia-smi` unavailable), and the default PyPI torch wheel pulls in a
-# large set of CUDA libraries that would never be used here.
+# that index, which doesn't host onnx and fails outright (confirmed the hard
+# way — see learn.md step 3r). --extra-index-url adds the PyTorch CPU
+# wheels alongside normal PyPI instead of replacing it. The custom index
+# itself is still deliberate: this machine has no GPU (`nvidia-smi`
+# unavailable), and the default PyPI torch wheel pulls in a large set of
+# CUDA libraries that would never be used here.
 torch==2.13.0+cpu
 torchvision==0.28.0+cpu
-onnx==1.22.0
-onnxruntime==1.23.2
-scipy==1.15.3
+onnx==1.22.0  # ONNX export at the end of train.py; onnxruntime (inference) is in requirements.txt

@@ -2,7 +2,13 @@
 # Run the backend and frontend dev servers together. Ctrl+C stops both.
 #
 # Assumes backend/venv and frontend/node_modules already exist (see
-# CLAUDE.md for first-time setup) and backend/.env has GEMINI_API_KEY.
+# CLAUDE.md for first-time setup).
+#
+# RECOGNIZER defaults to "cnn" (step 3r.6e) — fully local, so no
+# GEMINI_API_KEY and no Tesseract binary are needed for a normal run. Set
+# RECOGNIZER=remote before invoking this script to use Gemini+Tesseract
+# instead; that path does need backend/.env to carry a real key.
+#   RECOGNIZER=remote ./dev.sh
 set -e
 # Deliberately NOT `set -m`: job control puts each backgrounded job in its
 # own process group, which would mean `kill 0` below (send to *this*

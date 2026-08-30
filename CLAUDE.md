@@ -64,8 +64,26 @@ in `training_data/harvested/` and giving step 3r.6a's "collect from ≥4
 writers" goal real, substantive progress. What's still left — actually
 fine-tuning on that data, and running a real full quiz with
 `RECOGNIZER=both` — needs the user's own further real-world participation
-and can't be built or simulated. `RECOGNIZER=remote` stays the actual
-default until that real comparison says otherwise.
+and can't be built or simulated.
+
+**`RECOGNIZER` now defaults to `cnn` (2026-08-30, step 3r.6e).** This was
+a deliberate user decision made on the real-batch numbers rather than on
+the full comparison run originally required — that run still hasn't
+happened, and `comparison_log/` does not exist. What the decision rests
+on: the CNN beats Tesseract decisively on the ID (91.8%/55.2% vs
+58.9%/0.0%), reads marks at 98.1% per-question, and — the part accuracy
+numbers don't capture — costs nothing, cannot be rate-limited mid-class,
+needs no network, and keeps every photo on the laptop. Two caveats live
+with it: **serial is the weakest field at 63.2%** with no Gemini baseline
+to compare against, and **both harnesses report 1 confidently-wrong case**
+against a bar that says it must stay 0. Neither is hidden by the default;
+both are the first things to look at. `RECOGNIZER=remote` remains fully
+supported and is the fallback if the CNN misbehaves in a real session.
+
+Because `cnn` is the default, **`onnxruntime` and `scipy` moved into
+`requirements.txt`** — the app cannot start without them. `torch` stays
+training-only in `requirements-cnn.txt`; nothing under `app/` imports it,
+so the running app still never needs it.
 
 ## Stack
 
@@ -76,8 +94,9 @@ defaults to revisit casually.
 |---|---|---|
 | Backend | Python + FastAPI, `uvicorn`, `python-multipart` | Stateless. Runs on the instructor's laptop for the pilot — no hosting. |
 | Image processing | `opencv-python-headless` | Table detection, deskew, cell splitting. Headless substituted for `opencv-python` — no GUI display code (`imshow`) is used anywhere in the pipeline, only file writes, and headless avoids pulling in system Qt/GTK libs on a server. |
-| Local ID OCR | `pytesseract`, `--psm 10`, digit whitelist | Keeps the student ID off the network |
-| Serial + marks | `google-genai` (`from google import genai`) | **Not** `google-generativeai` — that SDK is retired |
+| **Recognition (default)** | local digit CNN, `onnxruntime` + `scipy` | `RECOGNIZER=cnn`, the default since step 3r.6e — ID, serial and marks all read on-device. No key, no quota, no network. |
+| Local ID OCR (`remote` path) | `pytesseract`, `--psm 10`, digit whitelist | Keeps the student ID off the network |
+| Serial + marks (`remote` path) | `google-genai` (`from google import genai`) | **Not** `google-generativeai` — that SDK is retired |
 | Validation | `pydantic` | Also supplies the Gemini `response_schema` |
 | Frontend | React + TypeScript, Vite, `vite-plugin-pwa` | Camera via `getUserMedia` |
 | Session state | `idb` (IndexedDB) | Survives crash/refresh mid-scan |
@@ -87,6 +106,10 @@ defaults to revisit casually.
 
 Local toolchain: Python 3.10.12, Node 20.20.2, npm 10.8.2. Nothing is pinned
 yet — `requirements.txt` gets written at step 0.2.
+
+**Tesseract only matters on the `remote` path now** (step 3r.6e made the CNN
+the default, and it uses neither Tesseract nor Gemini). The note below still
+applies whenever you run `RECOGNIZER=remote` or `=both`.
 
 **Tesseract is not installed on this machine.** The pip package is a wrapper
 only; install the binary separately (`apt install tesseract-ocr`) before step
@@ -98,12 +121,13 @@ only; install the binary separately (`apt install tesseract-ocr`) before step
 Created starting step 0.1. Backend through step 3's rate-limited fallback
 plus steps 2r.0/2r/3r's full local CNN path, and frontend through step 9's
 Results screen and Excel export (code done, a real full-class export/
-reconcile still pending), all exist. Step 10 doesn't yet. The optional CNN
+reconcile still pending), all exist. Step 10 doesn't yet. The CNN
 track (steps 2r.0/2r/3r/3r.6,
-plan.md §16): `app/recognizers/` (2r.0's interface, 3r's `local.py`
+plan.md §16) — **no longer optional, it is the default path since
+3r.6e**: `app/recognizers/` (2r.0's interface, 3r's `local.py`
 wiring, 3r.6's `both.py` comparison mode), `backend/cnn/`'s trained model
-plus segmentation/decoding (2r, 3r) are all done and reachable via
-`RECOGNIZER=cnn`/`both`. Step 3r.6's harvesting pipeline (`app/harvest.py`,
+plus segmentation/decoding (2r, 3r) are all done, and `RECOGNIZER` selects
+between `cnn` (default), `remote` and `both`. Step 3r.6's harvesting pipeline (`app/harvest.py`,
 `/api/harvest`, wired into the review screen) and its `.docx` collection-
 sheet generator are also built; real handwriting collection has now
 started (see the real_class_* batch below), but the fine-tuning and
@@ -231,8 +255,9 @@ marks-upload/
 │   │   ├── test_harvest.py     #   step 3r.6c — harvest() unit tests
 │   │   └── test_harvest_endpoint.py #  step 3r.6c — /api/harvest against a real photo
 │   ├── requirements.txt        # includes python-docx (step 0's template fix, step 3r.6a's generator)
-│   ├── requirements-cnn.txt    # step 2r — torch/torchvision/onnx/onnxruntime/scipy,
-│   │                           # kept separate: the main app has no dependency on any of it
+│   ├── requirements-cnn.txt    # step 2r — torch/torchvision/onnx: TRAINING only.
+│   │                           # onnxruntime/scipy moved to requirements.txt when the
+│   │                           # CNN became the default (3r.6e) — inference needs them
 │   └── cnn/                    # steps 2r/3r — model + inference code the app's
 │       │                       # optional CNN path (app/recognizers/local.py) imports
 │       ├── model.py            #   DigitCNN architecture (plan.md §16)
@@ -296,27 +321,32 @@ cd backend && source venv/bin/activate && python id_ocr_accuracy.py
 # real_class_* batch's detection-regression cases, 2026-08-30)
 cd backend && source venv/bin/activate && pytest
 
-# Optional CNN track (steps 2r/3r, plan.md §16) — reachable via
-# RECOGNIZER=cnn/both once trained. One-time setup: CPU-only wheels (no
-# GPU on this machine), kept out of the main requirements.txt on purpose.
+# CNN accuracy harnesses (steps 2r/3r, plan.md §16). These need NO extra
+# install as of step 3r.6e — onnxruntime/scipy are in requirements.txt now
+# that the CNN is the default path, and digit_cnn.onnx is committed.
 cd backend && source venv/bin/activate
-pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-cnn.txt
-python cnn/inspect_preprocess.py ../testset/debug/*/cells/id_d*.png   # look at the 28x28 outputs directly before training anything
-python cnn/train.py --epochs 8 --out cnn/checkpoints                  # EMNIST Digits, ~8-10 min/epoch on CPU
+python cnn/accuracy.py                                                # ID accuracy + confidently-wrong count — 91.8% per-digit,
+                                                                       # 55.2% whole-ID, 1 confidently wrong (2026-08-30),
+                                                                       # vs id_ocr_accuracy.py's 58.9% / 0.0% whole-ID
 python cnn/accuracy.py --calibrate                                    # dump confidence/margin per real digit, to pick floors —
                                                                        # last recalibrated 2026-08-30 (0.9/0.8 -> 0.75/0.6) against
                                                                        # the real_class_* batch's ~20 writers, see step.md step 2r
-python cnn/accuracy.py                                                # ID accuracy + confidently-wrong count — 91.8%/1-confidently-
-                                                                       # wrong as of 2026-08-30, vs id_ocr_accuracy.py's 37.4%/0-of-29
-python cnn/marks_accuracy.py                                          # step 3r.5 — serial/marks/total accuracy, half marks reported
-                                                                       # separately; reads testset/quiz_configs.json per photo when
-                                                                       # a label has a "quiz" key (2026-08-30)
+python cnn/marks_accuracy.py                                          # step 3r.5 — 98.1% per-question (half marks 100%),
+                                                                       # total 89.5%, serial 63.2% (the weak spot); reads
+                                                                       # testset/quiz_configs.json per photo when a label has a "quiz" key
 
-# Run the actual app against the CNN path, or both paths side by side
-# (step 3r.6d) — "both" costs real Gemini quota, logs every disagreement
+# RETRAINING only — torch/torchvision/onnx are training-only deps, kept out
+# of requirements.txt on purpose. CPU-only wheels (no GPU on this machine).
+pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-cnn.txt
+python cnn/inspect_preprocess.py ../testset/debug/*/cells/id_d*.png   # look at the 28x28 outputs directly before training anything
+python cnn/train.py --epochs 8 --out cnn/checkpoints                  # EMNIST Digits, ~8-10 min/epoch on CPU
+
+# Run the app against a NON-default recognizer. Plain `uvicorn`/`./dev.sh`
+# already gives the CNN (step 3r.6e). "remote" needs GEMINI_API_KEY and the
+# Tesseract binary; "both" costs real Gemini quota, logs every disagreement
 # to comparison_log/comparisons.jsonl, and is only meant for an actual
-# comparison run, not everyday use.
-RECOGNIZER=cnn uvicorn app.main:app --reload --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
+# comparison run, not everyday use. RECOGNIZER also works from backend/.env.
+RECOGNIZER=remote uvicorn app.main:app --reload --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
 RECOGNIZER=both uvicorn app.main:app --reload --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
 
 # Step 3r.6a — blank handwriting-sample sheet (not the marks-grid template).
@@ -337,8 +367,9 @@ cd synthetic_scripts
 python3 generate.py 0 20   # writes generated/images/ + _recs/*.json
 python3 generate.py        # reads _recs/, writes generated/ground_truth.json
 
-# Backend — needs backend/.env with GEMINI_API_KEY (copy .env.example),
-# and an HTTPS cert (below) generated first
+# Backend — needs an HTTPS cert (below) generated first. No GEMINI_API_KEY
+# needed on the default CNN path; copy .env.example and fill it in only if
+# you intend to run RECOGNIZER=remote/both.
 cd backend && source venv/bin/activate
 python gen_dev_cert.py   # only when certs/ is missing or the LAN IP changed
 uvicorn app.main:app --reload --host 0.0.0.0 --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
@@ -419,7 +450,10 @@ When the detected shape disagrees with the Setup config, fail — never guess.
 pytesseract; ID crops are excluded from the composite sent to the API. Step
 3.1 requires this be an *assertion in code*, not a convention — the privacy
 property is one line away from being false. Serial and marks do go to Gemini;
-they identify nobody without the instructor's attendance sheet.
+they identify nobody without the instructor's attendance sheet. **On the
+default `cnn` path nothing at all leaves the machine**, which makes this
+invariant trivially true — but it still governs, because `remote`/`both`
+remain supported and the assertion protects them.
 
 **Marks are a constrained enumeration.** A question out of 5 has exactly 11
 legal values (0, 0.5, … 5), derived per question from its own max. The
@@ -458,7 +492,9 @@ and this is the highest-value check in the workflow.
 **The backend is stateless.** Nothing written to disk, no globals carrying
 request data between calls.
 
-**A Gemini failure tries a local OCR fallback before giving up.**
+**A Gemini failure tries a local OCR fallback before giving up.** This is
+a `remote`-path rule — it lives inside `RemoteRecognizer` and does not run
+on the default `cnn` path, which has no API call that can fail this way.
 `marks_ocr.py`'s `recognize_locally` runs only after `marks.py`'s
 `recognize` itself fails (`rate_limited`/`model_error`) — never a
 replacement for the Gemini path, never called on the happy path. Every
@@ -507,7 +543,10 @@ all-blank result as if it were a normal scan.
 - **Don't claim the ID never leaves the device.** The full photo does reach
   the backend — that's the instructor's own laptop, writing nothing to disk.
   Making the stronger claim true means client-side OpenCV.js, which is
-  explicitly deferred (plan §12, §13).
+  explicitly deferred (plan §12, §13). Still true on the `cnn` default: the
+  photo leaves the *phone* for the laptop either way. What the default did
+  change is that nothing leaves the **laptop** — so "no third party ever
+  sees a script" is now accurate, while "never leaves the device" is not.
 - **Don't swap out a component's whole render tree to show an overlay
   screen if anything underneath holds a live browser resource.** `Scan.tsx`
   did this with an early `return <Review />` and it silently unmounted
@@ -543,9 +582,15 @@ Step 3r.6 (the comparison run and harvesting infrastructure that would
 make the CNN the default) is in progress: the harvesting pipeline and
 comparison-logging mode are both built and tested, and the same real
 18-photo batch fed 16 photos through harvesting directly, giving real
-progress on collecting from multiple writers. Still not done: actually
-fine-tuning on that harvested data, and running a real full quiz session
-with `RECOGNIZER=both`.
+progress on collecting from multiple writers.
+
+**The CNN is no longer a deferred option at all — it is the default
+recognizer** (3r.6e, 2026-08-30), decided on the batch numbers above rather
+than on the comparison run this step originally required. That run still
+hasn't happened. Still not done: fine-tuning on the harvested data, and a
+real full quiz session with `RECOGNIZER=both` — which is now *more*
+valuable, not less, since it is the only thing that would validate the
+default on marks and serial rather than on the ID alone.
 
 ## Frontend design system
 
