@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
+import { openDB } from 'idb';
 import {
+  getSourceId,
+  resetAll,
   findRecordsByStudentId,
   findRecordsBySerial,
   getAllRecords,
@@ -85,5 +88,70 @@ describe('records store — indexes must permit duplicates (plan.md §10)', () =
     await saveRecord(makeRecord({}));
     const all = await getAllRecords();
     expect(all).toHaveLength(2);
+  });
+});
+
+// Step 11.2.5 — the per-browser writer tag. Each of these asserts a
+// property the tag's purpose depends on, not just that the function runs.
+describe('source id', () => {
+  it('is stable across calls, so one browser is one writer', async () => {
+    const first = await getSourceId();
+    const second = await getSourceId();
+    expect(first).toBe(second);
+    expect(first).toBeTruthy();
+  });
+
+  it('survives resetAll, because it identifies a writer and not a session', async () => {
+    // Regenerating on every "Reset everything" would split one person's
+    // collected handwriting across unrelated prefixes and defeat the
+    // held-out-writer evaluation the tag exists for (plan.md §16).
+    const before = await getSourceId();
+    await saveConfig(config);
+    await resetAll();
+
+    expect(await loadConfig()).toBeUndefined(); // the reset really happened
+    expect(await getSourceId()).toBe(before);
+  });
+
+  it('differs between browsers', async () => {
+    const first = await getSourceId();
+    indexedDB = new IDBFactory(); // a different machine/browser entirely
+    expect(await getSourceId()).not.toBe(first);
+  });
+
+  it('contains nothing the user typed', async () => {
+    await saveConfig(config); // quizName: 'CSE211L Quiz 1'
+    const id = await getSourceId();
+    expect(id.toLowerCase()).not.toContain('cse211l');
+    expect(id).toMatch(/^[A-Za-z0-9-]+$/); // safe as a path/key segment
+  });
+});
+
+describe('v1 -> v2 migration', () => {
+  it('keeps existing records when the meta store is added', async () => {
+    // The real risk case: an instructor mid-pilot, with a v1 database
+    // holding real records, opens a build that adds the meta store. An
+    // unguarded upgrade() would throw on re-creating 'records', and a
+    // wrong one would drop what they had already scanned.
+    const v1 = await openDB('marks', 1, {
+      upgrade(db) {
+        const records = db.createObjectStore('records', { keyPath: 'id' });
+        records.createIndex('by-serial', 'serial');
+        records.createIndex('by-studentId', 'studentId');
+        db.createObjectStore('config');
+      },
+    });
+    await v1.put('records', makeRecord({ studentId: '2632711', serial: '07' }));
+    await v1.put('config', config, 'current');
+    v1.close();
+
+    // Anything that opens the DB now triggers the v2 upgrade.
+    const sourceId = await getSourceId();
+
+    expect(sourceId).toBeTruthy();
+    const survivors = await getAllRecords();
+    expect(survivors).toHaveLength(1);
+    expect(survivors[0].studentId).toBe('2632711');
+    expect(await loadConfig()).toEqual(config);
   });
 });

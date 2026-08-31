@@ -38,9 +38,28 @@ COMPARISON_LOG_FILE = COMPARISON_LOG_DIR / "comparisons.jsonl"
 
 
 def _log_disagreement(field: str, cnn_value: Any, remote_value: Any) -> None:
-    """Appends one line — the backend is otherwise stateless, but this
-    log is the one deliberate, permanent exception (plan.md §16), the
-    same way debug_uploads/ was a deliberate temporary one for step 6."""
+    """Appends one line — the backend is otherwise stateless, and this log
+    is a deliberate, local-only exception for a comparison run (plan.md
+    §16).
+
+    Two caveats, both recorded in issues.md N9 and neither fixed here:
+
+    1. **This writes recognised student IDs verbatim**, in scan order, with
+       timestamps — which is the thing `harvest.py` (shuffled writes,
+       content-addressed keys), `stores.py` (CONSTANT_MTIME) and
+       `observability.py` (key denylist + 4-digit redaction) all exist to
+       prevent. It is gitignored and only produced under RECOGNIZER=both,
+       but the comparison run this exists for is meant to happen during a
+       real class, which is when the file is most sensitive.
+    2. This path is repo-relative and would raise OSError on Lambda's
+       read-only filesystem. Not reachable today (the deploy sets
+       RECOGNIZER=cnn) but it is one env var away.
+
+    An earlier version of this docstring cited debug_uploads/ as the
+    precedent for "a deliberate exception to statelessness". That is a bad
+    precedent: debug_uploads/ was deleted in step 11.0.1 as a privacy
+    defect, not retired as a success.
+    """
     COMPARISON_LOG_DIR.mkdir(exist_ok=True)
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),

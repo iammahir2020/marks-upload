@@ -772,3 +772,12 @@ table.data-table {
   border: 1px dashed var(--border);
   border-radius: var(--radius-md);
 }
+
+/* Step 11.5.1 — the always-visible data note under Setup's "How this
+   works". Quiet by design: it must be readable without competing with the
+   form, and it must not look like an error or a warning, because it is
+   neither. Semantic tokens only, no raw hex (see CLAUDE.md). */
+.data-note {
+  padding: 0 4px;
+  line-height: 1.5;
+}

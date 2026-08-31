@@ -3602,3 +3602,1430 @@ The lesson generalises: a comment asserting behaviour sitting one line
 above the code that contradicts it is worse than no comment, because it
 gets believed. `RECOGNIZER=remote` still works and is still supported;
 it's just no longer what you get by accident.
+
+## Step 11 — Hosting it for other faculty (BUILT AND DEPLOYED)
+
+**All three phases are built, and the app is deployed and live** at
+`https://d2n2meq17rr1oi.cloudfront.net`. Each phase has its own entry at
+the end of this section — A is the two privacy defects, B is the config
+seams, the storage seam and the container, C is hardening, disclosure,
+observability and the deploy itself. What remains is only 11.7's
+verification *as a user*: a real phone on mobile data, the full loop
+through Excel export, and handing the URL to someone who has never seen it.
+
+The deployed architecture is **not** the one the plan specified, for a
+reason that could only be discovered by deploying. That story is the last
+entry here, and it is the most useful thing in this section.
+
+The sections immediately below are the *reasoning* that produced the plan,
+written before any of it existed. They are kept because several of the
+conclusions were surprising, and two of them turned out to be real bugs
+rather than deployment concerns. Written to the same honesty rule as steps
+0 and 1's partial entries: labelled for what it is, so nobody reads the
+unbuilt parts as a description of working code.
+
+### The question
+
+Could the app be hosted so other faculty could try it themselves, for free?
+
+### Why the CNN default made this a different question
+
+Step 3r.6e turned out to matter far more for hosting than for accuracy.
+On the Gemini path, hosting for several faculty is close to unworkable:
+there is one `GEMINI_API_KEY`, so everyone shares one free-tier quota, and
+five people scanning would rate-limit each other within minutes. It also
+needs the Tesseract binary, which means an `apt` layer in the container.
+
+On the CNN default there is no key, no quota, and no system package. The
+container becomes a plain `pip install`, and each user's scans cost nothing
+and interfere with nobody. A decision made on accuracy grounds quietly
+removed the main obstacle to sharing the thing.
+
+### Measuring before recommending
+
+Three numbers decided the architecture, and all three were measured rather
+than assumed:
+
+```
+real capture size   166 KB average, 807 KB largest   (from debug_uploads/)
+cold init           0.90 s  (0.48 s cv2+scipy+onnxruntime, 0.42 s app+model)
+idle memory         124 MB RSS with the model loaded
+```
+
+Each cleared a specific risk. The capture size matters because **Lambda
+caps a request payload at 6 MB** — had photos been 8 MP phone dumps this
+would have been ruled out immediately, but `Scan.tsx` constrains capture to
+1920×1080, so real uploads are ~166 KB. Cold init matters because a
+multi-second import cost is what makes serverless feel broken; 0.9 s is
+fine. And 124 MB fits any free tier's 512 MB.
+
+### The finding that changed the plan
+
+Free hosting has one constraint that outranks everything else: **no
+mainstream free tier gives you a persistent disk.** Koyeb excludes volumes
+on free instances, Render attaches disks only to paid services, Fly.io
+dropped its free tier for new signups, and Hugging Face charges for
+persistence.
+
+That matters because `training_data/harvested/` is the whole point of
+keeping the harvester running — and on an ephemeral filesystem every
+harvested crop disappears on each redeploy and each idle-sleep.
+
+The fix is to stop storing crops on the app host at all and write them to
+object storage instead. The app host goes back to being disposable, which
+is exactly what free tiers are good at. *(Built in phase B — see the
+`Store` seam below.)*
+
+### Two real bugs found by asking a deployment question
+
+This is the part worth remembering. Neither of these is a hosting problem;
+hosting just made them visible. **Both are now fixed — phase A, below —
+but they are described here as they were found, because how they were
+found is the transferable part.**
+
+**1. The backend is not stateless, and says it is.** `main.py` has a block
+labelled TEMPORARY that writes every upload to `backend/debug_uploads/`. By
+the time it was deleted it had accumulated **605 real photos, 99 MB**.
+CLAUDE.md asserts "the backend is stateless — nothing written to disk" a
+few lines away from code that writes to disk on every request.
+
+**2. The harvester's UUIDs don't achieve what they were for.** Each crop
+gets its own `uuid.uuid4()` precisely so that the seven digits of one
+student's ID cannot be reassembled. But they are written in a loop, in
+order, within a single request — so sorting `id_digits/` by modification
+time reconstructs the ID, in order. The randomised filename hides the link;
+the filesystem metadata restores it.
+
+That second one was, at this stage, still a *prediction* from reading the
+code. It was later confirmed against this repo's own collected crops before
+being fixed — two real student IDs came back verbatim. Prose about a
+vulnerability and a demonstration of one are different things, and the
+demonstration is what justified also backfilling the ~700 crops already on
+disk.
+
+The lesson generalises past this project: an anonymisation scheme has to
+account for *everything* the storage layer records, not just the field you
+chose to randomise. A one-line constant mtime closes it.
+
+### Why AWS, and why not the credits
+
+The user had $140 in AWS credits, which sounds like the reason to pick AWS
+but is actually the weakest one. The design targets AWS's **always-free**
+tiers instead — permanent, service-level allowances that have nothing to do
+with credits or account age:
+
+| | Always-free allowance | This workload |
+|---|---|---|
+| Lambda | 1M requests + 400,000 GB-s / month | ~4 GB-s per scan → ~100,000 scans/month |
+| CloudFront | 1 TB egress + 10M requests / month | 1.2 MB per page load |
+
+A realistic demo — ten faculty, thirty students each — is 300 scans, or
+0.3% of the free allowance. So the credits stay untouched as a safety net,
+and the demo does not die when they expire.
+
+### The trap in the credit screen
+
+The credits displayed an expiry of **18 Aug 2027**, which reads like a year
+of runway. It isn't. Under AWS's current model a **Free plan account closes
+automatically after six months** — around 18 Feb 2027 here — or when
+credits are exhausted, whichever comes first. The credits' expiry date and
+the account's lifetime are two different clocks, and the shorter one wins.
+
+The fix is to move to the Paid plan and set a budget alarm. That sounds
+like the riskier option and is actually the safer one here: the workload
+sits inside always-free tiers either way, so the expected bill is $0, and
+the Paid plan is what stops the account vanishing mid-semester with other
+people relying on it.
+
+### Where Lambda turns advice into enforcement
+
+The nicest part of the target. **Lambda's filesystem is read-only outside
+`/tmp`**, so both write paths above don't merely misbehave there — they
+raise `OSError: Read-only file system` on the first scan. The deployment
+cannot run until the statelessness invariant is literally true.
+
+Documentation asks you to remember an invariant. This target enforces it.
+`TemporaryDirectory` in the scan handler is unaffected, since it lands in
+`/tmp` — which is why detection and cell-splitting keep working untouched.
+
+### Addendum — a mitigation that existed only on paper
+
+One more finding from the step 11 planning, added because it is the most
+transferable lesson in this section.
+
+plan.md §16 lists an open risk: *"Self-collected samples can narrow the
+model rather than widen it. Per-writer tagging exists so this is measurable
+rather than a surprise: hold out an unseen writer entirely."*
+
+Read that sentence and you would assume per-writer tagging is implemented.
+It never was. `harvest.py`'s `_save` writes:
+
+```python
+shutil.copyfile(crop_path, out_dir / f"{value}_{uuid.uuid4().hex}.png")
+```
+
+A value and a random hex string. No writer, no session, no source. The
+mitigation was correctly identified, written down as though it were a
+property of the system, and never built — and nothing surfaced the gap
+because with a single instructor there was only ever one writer, so the
+missing distinction cost nothing.
+
+It only became visible when the question changed to "what happens when ten
+faculty pool crops into one bucket", where the answer is that §16's
+evaluation method becomes impossible and **cannot be reconstructed
+afterwards** — an untagged crop has no way to remember where it came from.
+
+The design that fixes it has one interesting constraint. The obvious
+implementation, a per-scan id, would directly undo the privacy work in
+11.0.2: give every crop from one request the same tag and you have
+regrouped that student's seven ID digits, which is precisely the link the
+per-crop UUIDs and the constant mtime exist to break. So the tag has to be
+**per-faculty** — coarse enough that one prefix holds an entire class mixed
+together and identifies nobody, fine enough to say "hold out faculty B and
+measure against them".
+
+Two smaller things fell out of the same review, both worth knowing before
+anyone fine-tunes:
+
+- **The `confirmed`/`corrected` split is polluted.** `harvest_real_photos.py`
+  posts `original == confirmed`, so its entire batch is filed as
+  `confirmed/` whether or not the model would have got it right. Still
+  valid labelled data; not a valid list of the model's failures.
+- **The classes are imbalanced.** Across the 727 crops collected so far, ID
+  digits run from 20 (`4`) to 80 (`2`), and marks are worse — whole numbers
+  33–58 each against **half marks at only ~8 each**, six times rarer than
+  the values they are hardest to tell apart from.
+
+The general lesson: a documented mitigation is not a mitigation. It is
+worth periodically grepping for the thing a risk paragraph claims exists,
+because the paragraph will keep reading as true long after the code has
+failed to catch up with it.
+
+---
+
+### Phase A (step 11.0) — the two privacy defects, actually fixed
+
+This is the part of step 11 that is **built**, not planned. It shipped on
+its own, ahead of any deployment work, because neither item was really
+about hosting — they were live defects in the laptop app, and hosting only
+made them consequential.
+
+#### 11.0.1 — deleting the thing that stored every script
+
+`main.py` had a block, labelled `TEMPORARY` in its own comment, that saved
+every uploaded photo to `backend/debug_uploads/`:
+
+```python
+# TEMPORARY — see DEBUG_UPLOADS_DIR comment above.
+DEBUG_UPLOADS_DIR.mkdir(exist_ok=True)
+stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+(DEBUG_UPLOADS_DIR / f"{stamp}.jpg").write_bytes(image_bytes)
+```
+
+It was added in step 6 for a good reason: the backend is stateless, so when
+phone captures were mysteriously failing there was nothing left to look at
+after a request. It did its job — several real detection bugs were found
+through it. But "temporary" survived four more steps, and by the time
+anyone looked it held **605 photos, 99 MB** of real students' scripts.
+
+Deleting it is three deletions: the constant and its comment, those four
+lines in the handler, and the `datetime` import that nothing else was using
+any more. Then `rm -rf backend/debug_uploads`. Nothing tracked changed,
+because the directory was gitignored the whole time.
+
+One thing worth doing *before* the `rm`, not after: check whether anything
+depended on those files. `testset/labels.json` cites `debug_uploads/`
+paths in seven of its entries — the `phone_*` captures that widened ID
+accuracy measurement from n=1 to n=8. Those had already been **copied**
+into `testset/images/`, so the citations are provenance notes, not live
+references, and nothing broke. But that was worth five seconds of `ls`
+rather than an assumption, because it is not recoverable if wrong.
+
+The `TemporaryDirectory` in the same handler stays. That is the legitimate
+per-request working directory — it is deleted before the response returns,
+and on Lambda it will live in `/tmp`, the one writable path.
+
+#### 11.0.2 — the anonymisation that wasn't
+
+This is the more interesting one, and it is a good lesson about what
+"anonymised" actually requires.
+
+The harvester writes each labelled cell crop under a random filename:
+
+```python
+shutil.copyfile(crop_path, out_dir / f"{value}_{uuid.uuid4().hex}.png")
+```
+
+The `uuid4` is deliberate. It is there so that the seven crops making up
+one student's ID cannot be put back together — each digit becomes a loose,
+unlinkable image of a `2` or a `7`, which is all a training set needs.
+
+Except the digits are written **in a loop, in order, within one request**.
+So while the *names* are random, the *write times* are not:
+
+```
+9_b6b65f56….png   2026-08-30 01:14:52.299164217
+9_c37b1a5b….png   2026-08-30 01:00:13.580048141
+```
+
+Sort the directory by mtime, read the label off the front of each filename,
+and the ID comes back in order. The random filename hides the link; the
+filesystem's own metadata restores it.
+
+The fix is one line, in `_save` rather than at each call site so that no
+field added later can forget it:
+
+```python
+dest = out_dir / f"{value}_{uuid.uuid4().hex}.png"
+shutil.copyfile(crop_path, dest)
+# Stamped here rather than at each call site, so no field added later
+# can forget it — see CONSTANT_MTIME.
+os.utime(dest, (CONSTANT_MTIME, CONSTANT_MTIME))
+```
+
+`CONSTANT_MTIME` is `0.0` — the value is arbitrary, only its *constancy*
+matters — and it carries a comment explaining why, because a hardcoded
+1970 timestamp looks exactly like a bug to the next person reading it.
+
+#### Proving the leak instead of believing the write-up
+
+The step described this leak in prose. Prose can be wrong, so it was worth
+running the attack against the repo's own data before fixing it: sort every
+existing crop in `id_digits/` by mtime, read the labels in order, and see
+whether any real student ID falls out.
+
+**Two of the eighteen real class IDs came back verbatim** (`5567890`,
+`5678900`). Not all eighteen — the batch harvest wrote its digits with
+sub-millisecond gaps so request boundaries blur together, and a student's
+digits split across `confirmed/` and `corrected/` when some were
+corrections. But two verbatim hits from a crude ten-line script settles the
+question: the ordering carries identifying information, and someone trying
+harder would get more. After the fix, zero.
+
+#### The part the spec didn't cover
+
+Running the step's own verification turned up something its instructions
+missed. `os.utime` in `_save` protects **future** writes. The **727 crops
+already collected** still carried 133 distinct real mtimes — and that
+existing corpus is precisely what step 11.2 is going to upload to S3. The
+fix would have been correct and the leak would have shipped anyway.
+
+So the existing crops were backfilled to the same constant, after checking
+that nothing anywhere reads a harvested crop's mtime (a repo-wide grep for
+`st_mtime`/`getmtime`/`.stat()` found exactly one hit, and it was a file
+*size* in `train.py`):
+
+```
+727 crops: 133 distinct mtimes -> 1
+```
+
+The general lesson: when you fix a data-handling defect, the fix applies to
+new data automatically and to old data never. The data you already have is
+usually the data that matters most, because it is real.
+
+#### Writing the test as the attack
+
+The step suggested a regression test, on the grounds that a lone `os.utime`
+call is exactly the kind of line a future cleanup deletes as pointless. The
+useful choice was *what* to assert. Asserting "`utime` was called" tests the
+implementation and would pass even if the mechanism stopped working. So the
+test performs the attack instead:
+
+```python
+crops = list(harvest_dir.rglob("*.png"))
+assert len(crops) == len(digits) + 3  # every field really was written
+
+mtimes = {p.stat().st_mtime for p in crops}
+assert mtimes == {CONSTANT_MTIME}, (
+    "harvested crops carry distinguishable mtimes, so sorting them by "
+    "time reconstructs one student's digits in order"
+)
+```
+
+Then — the step that is easy to skip — the `os.utime` line was temporarily
+replaced with `pass` to confirm the test actually fails. It did, printing
+three visibly ordered timestamps a millisecond apart. A privacy test that
+has never been seen failing is not evidence of anything.
+
+#### What phase A leaves behind
+
+- 85 backend tests (84 → 85), 31/31 detection regression, 67 frontend.
+- A real `/api/scan` returns exactly what it did before
+  (`student_id: "2632711"`, `serial: "07"`, `q1` flagged rather than
+  guessed) — the point of phase A is that behaviour is unchanged.
+- `find backend -name '*.jpg' -mmin -5` after a scan returns nothing. The
+  backend genuinely writes nothing under `backend/` now.
+- The `harvest.py` write remains, deliberately — that is 11.2's problem,
+  and on Lambda it raises `OSError` rather than silently losing data.
+
+---
+
+### Phase B (steps 11.1–11.3) — making it deployable without changing it
+
+Phase B is the odd kind of work where **the goal is that nothing happens.**
+Every line of it adds a way for the app to behave differently somewhere
+else, while the laptop app stays byte-for-byte what it was. That constraint
+is what makes it safe to merge months before any deployment exists.
+
+#### One module for every environment read
+
+The temptation is to sprinkle `os.getenv` wherever a setting is needed. Two
+things in this codebase argue against it. `main.py` resolves `RECOGNIZER` at
+*import* time, and already needed an explicit `load_dotenv` to do that
+reliably — a lesson from the CNN default flip, where making the recognizer
+imports lazy nearly broke `.env` selection as a side effect. And every new
+setting has to work identically as a shell variable on a laptop and as a
+Lambda environment variable in production.
+
+So `app/config.py` loads dotenv exactly once and exposes typed values.
+Nothing else in `app/` reads the environment.
+
+The interesting part is the CORS setting, because it has to mean two
+different things:
+
+```python
+def allowed_origins() -> list[str] | None:
+    raw = os.getenv("ALLOWED_ORIGINS")
+    if raw is None:
+        return None
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    return origins or None
+```
+
+`None` and `[]` are *not* the same answer. `None` means "keep the
+localhost/LAN regex"; `[]` would mean "allow no origin at all", which
+silently breaks every client. So a blank or all-whitespace value falls back
+to `None` rather than locking everyone out — a mistake should not be
+interpreted as a strict security policy.
+
+#### Testing that nothing changed
+
+The property phase B rests on ("an unset environment is today's app") is
+exactly the kind that quietly stops being true. `tests/test_config.py`
+asserts it directly, including a copy of the pre-step-11 CORS regex written
+out literally rather than imported:
+
+```python
+PRE_STEP_11_REGEX = (
+    r"^https?://(localhost|127\.0\.0\.1"
+    ...
+)
+
+def test_cors_regex_is_byte_identical_to_what_shipped_before_step_11():
+    assert config.DEFAULT_ALLOWED_ORIGIN_REGEX == PRE_STEP_11_REGEX
+```
+
+Importing the constant would make the test tautological — it would pass no
+matter what the regex became. Duplicating it is the point.
+
+**A test-isolation bug worth knowing about.** `config` resolves values at
+import, so tests that need a different environment reload the module. The
+fixture's first version did this:
+
+```python
+yield _reload
+importlib.reload(config)          # WRONG
+```
+
+Every test passed on its own and three unrelated tests failed in the full
+suite. The reason is fixture finalisation order: `reloaded` is set up
+*after* `monkeypatch`, so its finaliser runs *first* — reloading while the
+patched environment was still in place, which baked `HARVEST_BACKEND=s3`
+into the module for the rest of the session. The fix is one line, and it
+has to be explicit:
+
+```python
+monkeypatch.undo()
+importlib.reload(config)
+```
+
+The general lesson: any fixture that snapshots global state has to undo the
+things it depends on *before* it re-snapshots, and pytest's reverse-order
+finalisation makes "depends on" mean "was set up before me".
+
+#### The store seam, and why the key is the design
+
+Harvested crops cannot stay on the app host: no free tier offers a
+persistent disk, and Lambda's filesystem is read-only outside `/tmp`. So
+`_save` stopped touching the filesystem and started handing a key to a
+store:
+
+```python
+key = f"{source}/{field}/{tag}/{value}_{uuid.uuid4().hex}.png"
+store.put(key, crop_path)
+```
+
+`LocalStore` writes that key as a relative path; `S3Store` writes it as an
+object key under a prefix. Keeping them *identical* is the whole trick —
+`aws s3 sync` then reproduces the training layout byte for byte, so the
+fine-tuning code never has to know which backend collected the data.
+
+The interface is deliberately one method. Listing, deleting, reading back
+would all be inventing requirements: harvesting only ever appends.
+
+#### The source tag is a granularity decision, not a field
+
+This is the part where the obvious implementation is actively harmful.
+plan.md §16 needs to hold out an *unseen writer* to measure fine-tuning
+honestly. That is impossible once several faculty pool crops into one
+bucket with nothing to tell them apart — and it cannot be reconstructed
+afterwards, so it had to happen before anyone collects anything.
+
+The obvious tag would be per-scan. **That would undo step 11.0.2
+outright**: give every crop from one request the same tag and you have
+regrouped that student's seven ID digits, which is exactly the link the
+random filenames and constant mtime exist to break.
+
+So the tag is **per-faculty** — coarse enough that one prefix holds a whole
+class mixed together and isolates nobody, fine enough to say "hold out
+faculty B and measure against them". And it is generated **client-side**,
+because step 11 deploys one shared backend behind one URL, so a server-side
+constant would label every faculty member identically.
+
+A missing tag files crops under `unknown/` rather than getting one invented
+server-side. A gap you can see in the bucket beats a gap papered over.
+
+#### A schema decision that only shows up later
+
+The source id lives in IndexedDB. The obvious place is beside the quiz
+config — but `resetAll()` *clears* the config store, and "Reset everything"
+is a normal thing to do between classes. Storing it there would hand the
+same person a fresh identity every reset, splitting one writer's
+handwriting across unrelated prefixes and quietly defeating the evaluation
+the tag exists for.
+
+So it goes in a new `meta` store that `resetAll()` deliberately does not
+touch, which means a schema version bump — and a guarded upgrade, because
+real instructors have real records in a v1 database:
+
+```ts
+upgrade(db, oldVersion) {
+  if (oldVersion < 1) { /* records + config */ }
+  if (oldVersion < 2) { db.createObjectStore('meta'); }
+}
+```
+
+Without the `oldVersion` guard, opening an existing v1 database throws on
+re-creating `records`. That is worth a test, and worth *watching the test
+fail*: removing the guard turns the migration test red with a
+`ConstraintError`, which is how you know it is testing the migration and
+not just the happy path.
+
+#### The container, and the check that actually earns its keep
+
+The Dockerfile has no `apt` layer at all. That is not tidiness — it is
+step 3r.6e's CNN default cashing out. The remote path needed the Tesseract
+binary; the default path needs nothing outside pip.
+
+One deviation from the step's plan, made for a concrete reason. The step
+suggested the `public.ecr.aws/lambda/python` base image *and* the Lambda
+Web Adapter. Those pull in opposite directions: the adapter is what speaks
+the Lambda Runtime API, so the base image's runtime interface client is
+redundant — and keeping it means the container answers Lambda's
+`/2015-03-31/functions/function/invocations` envelope instead of a plain
+`POST /api/scan`. That would break the local verification the whole step
+exists for. The step's own test command curls `/api/scan` directly, so a
+plain slim base plus the adapter is what makes the tested thing and the
+shipped thing the same thing.
+
+Then the check that pays for the entire phase:
+
+```bash
+docker run --read-only --tmpfs /tmp marks-backend
+```
+
+`--read-only` reproduces Lambda's filesystem on a laptop. A real scan
+through that container returned the identical result the laptop gives
+(`student_id: "2632711"`, `serial: "07"`, `q1` flagged). And harvesting,
+left on its local default, failed exactly as predicted:
+
+```
+OSError: [Errno 30] Read-only file system: '/var/task/training_data'
+```
+
+That is a *success*. It is the failure this step was written to prevent,
+surfaced in about a second instead of through CloudWatch logs after a
+deploy. Switching to `HARVEST_BACKEND=s3` moved the failure to
+`InvalidAccessKeyId` — the filesystem is no longer in the path at all, and
+the only thing left is a real bucket.
+
+#### What running the container found that no test would have
+
+`S3Store` imports `boto3`, and AWS documentation says boto3 ships in the
+Lambda runtime. That is true of the **managed** Python runtime and the
+Lambda base image. This deploys a **custom container on a plain slim
+base**, where nothing is provided:
+
+```
+ModuleNotFoundError: No module named 'boto3'
+```
+
+Every unit test passed throughout, because they stub `boto3` — correctly,
+since the point of those tests is the key construction. Only building and
+running the actual image caught it. It now lives in a new
+`requirements-deploy.txt`, following the same split the project already
+uses for `requirements-cnn.txt`: the laptop should not install what it will
+never import.
+
+The lesson is narrow and worth keeping: a stubbed dependency proves your
+code calls it correctly, never that it will be there.
+
+#### The corpus had to move too
+
+Same shape of problem as 11.0.2's backfill. The new key puts the source
+first, but the 727 crops already collected sat at the old top level, so the
+corpus would have had two layouts. They were moved under a single
+`pilot-legacy/` prefix with a README explaining what it is — deliberately
+not a more specific name, because those crops mix the instructor's own
+review-screen Confirms with the 18-photo real-class batch and can no longer
+be told apart. Accurate as a *writer* prefix (one faculty member collected
+all of it); not a claim about whose handwriting is inside.
+
+---
+
+### Steps 11.4 and 11.5 — hardening, and a claim that had quietly gone false
+
+These are phase C's two code-only substeps, done ahead of the deploy on
+purpose: neither needs an AWS account, and doing them first means the AWS
+session is infrastructure work rather than debugging.
+
+#### The rate limiter, and being honest about what it's worth
+
+There is no auth on this API and deliberately won't be for a demo, so a
+size cap and a per-IP limit are what stands in for it.
+
+The easy version of this section would claim the endpoint is now
+protected. It isn't, quite, and the reason is worth understanding. The
+counter lives in **this process's memory**. On Lambda that means per
+*container instance*, and concurrent invocations get separate containers —
+so an attacker spreading requests across many cold starts is limited far
+less than "30 per minute" suggests. Making it exact needs Redis or
+DynamoDB: real infrastructure, real cost, and a shared-state dependency on
+every request, for a free demo whose documented answer to sustained abuse
+is "take the URL down".
+
+So what it actually buys is: accidental hammering, a stuck retry loop, and
+casual abuse. That is worth having. Pretending it were more would be worse
+than the limit itself. (This is also why no new dependency — `slowapi`
+carries the identical per-instance limitation, so it buys nothing here.)
+
+**Two small design choices that matter more than they look.**
+
+A *sliding* window rather than a fixed calendar-minute bucket:
+
+```python
+cutoff = now - self.window_seconds
+while hits and hits[0] <= cutoff:
+    hits.popleft()
+```
+
+A fixed bucket lets a caller spend the whole budget at 11:59:59 and the
+whole budget again at 12:00:00 — twice the intended rate, at exactly the
+moment a retry storm is most likely.
+
+And an over-limit request is **not recorded**:
+
+```python
+if len(hits) >= self.max_requests:
+    return max(0.0, hits[0] + self.window_seconds - now)
+hits.append(now)   # only reached when allowed
+```
+
+Record the rejected ones and a client that keeps hammering keeps pushing
+its own window forward, staying locked out indefinitely — a limiter that
+punishes retrying harder than the original burst.
+
+#### Why the size check is middleware and not a dependency
+
+FastAPI dependencies are the natural place for this kind of guard, and
+they are the wrong place here. A dependency runs *after* FastAPI has
+parsed the multipart form — by which point the oversized upload is already
+in memory and the cap has accomplished nothing. It has to run before the
+body is read, which means middleware.
+
+There are then two checks, not one. `Content-Length` is a claim, not a
+fact — it can be absent or a lie — but rejecting on it is free and catches
+the honest case. The real enforcement is after the read, where the actual
+bytes are known.
+
+#### Numbers chosen against measurements, not roundness
+
+`MAX_UPLOAD_BYTES` is **4 MB** because real captures measured **166 KB on
+average and 807 KB at the largest**, so 4 MB is generous by a wide margin
+while still refusing a body that could only be abuse or a mistake.
+
+4 MB and not 5, and the reason is easy to get wrong: Lambda's 6 MB request
+limit applies to the **base64-encoded event payload**, not to the raw
+bytes. The body gets base64'd on the way in, which inflates it by 4/3 — so
+a 5 MB image becomes a 6.7 MB payload and is rejected by the platform with
+an opaque error, which is precisely what this cap exists to prevent. 4 MB
+raw is ~5.3 MB encoded, leaving headroom for the multipart and JSON
+envelope. Measured, not assumed: a real 67 KB capture produced an 89 KB
+payload through the runtime emulator.
+
+*(This paragraph said 5 MB until 2026-08-31. The code was changed to 4 MB
+with the reasoning above; this file and `backend/.env.example` both kept
+recommending the value the code's own comment argues against — issues.md
+N28. Fixed in all three places.)*
+
+`RATE_LIMIT_REQUESTS` is 30/minute for three reasons at once, and the
+third is the one that isn't obvious:
+
+1. An instructor scanning a class does roughly 3 a minute. 10x headroom.
+2. Several faculty behind **one institutional NAT** share an apparent IP.
+   Five people scanning hard is ~15/min — still inside it. A tighter limit
+   would lock out a whole department for looking like one person.
+3. A single IP sustaining the full 30/min for a month is ~43,000 scans,
+   still within Lambda's always-free tier. So even a hostile-but-slow
+   caller cannot generate a bill.
+
+#### Two browser behaviours that are easy to get silently wrong
+
+**Preflights must not count.** Browsers send `OPTIONS` automatically before
+a cross-origin POST. They cost nothing to answer, and counting them would
+quietly halve an instructor's real budget.
+
+**A 429 must still carry CORS headers.** Without them the browser reports
+an opaque CORS failure rather than the real status, so the frontend can
+never tell the user to slow down — the error becomes indistinguishable
+from the backend being down. Whether this works depends on
+`CORSMiddleware` *wrapping* the `guard` middleware, which is a consequence
+of registration order rather than anything visible at the call site. That
+makes it exactly the sort of thing a later refactor breaks without
+noticing, so there's a test pinning it.
+
+#### The header we key on is spoofable, on purpose
+
+Behind API Gateway and CloudFront, `request.client.host` is the
+*proxy* — every caller would share one bucket and the per-IP limit would
+silently become a global one. So the key comes from `X-Forwarded-For`.
+
+Anyone can send that header, so an attacker can evade the limit by varying
+it. That trade is taken deliberately and written down in the code: keying
+on the proxy is a **guaranteed outage** for legitimate users, versus a
+**possible evasion** by an attacker the threat model already concedes it
+cannot stop. Choosing the guaranteed harm to prevent a conceded one would
+be the worse trade.
+
+#### 11.5 — the app had been overstating its privacy for two steps
+
+This was meant to be "add a disclosure". It turned out to be a
+**correction**.
+
+`Setup.tsx` had said this since step 5:
+
+> Everything stays on this device until you export it — there's no
+> account, no upload of student marks anywhere they don't need to go…
+
+And `/api/harvest` has been saving labelled cell crops to the backend
+since step 3r.6c. The sentence was written when it was true and nobody
+revisited it when the harvester landed — so the app had been telling
+faculty something false for two steps.
+
+The replacement states both halves, because only stating the reassuring
+one would repeat the original mistake:
+
+- the **photograph** is never stored (true since 11.0.1), and
+- **individual cells** — one digit or mark each — are kept with the value
+  the instructor confirmed, and used to train and tune recognition,
+  carrying no name, nothing linking back to a student, and no way to
+  reassemble a whole ID.
+
+**Where it goes matters as much as what it says.** The "How this works"
+section is a `<details open={!saved}>` — expanded on first use, collapsed
+once a quiz config exists. Putting the disclosure only in there means the
+person on their tenth session never sees it again, and that is precisely
+the person whose students' handwriting is being collected. So a one-line
+summary also renders outside it, always visible, and `Setup.test.tsx`
+asserts that:
+
+```tsx
+const note = await screen.findByText(/used to train and tune handwriting recognition/i);
+expect(note.closest('details')).toBeNull();
+```
+
+Testing UI copy is usually a waste — wording should be free to change.
+This is the exception: it is a promise made to users about their students'
+data, and the test guards its *existence and placement*, not its phrasing.
+
+The general lesson is the one this project keeps re-learning in different
+forms: a true sentence about a system's behaviour stops being true when
+the behaviour changes, and nothing about the sentence announces that. It
+is worth periodically re-reading the claims a UI makes and asking whether
+the code still supports them.
+
+---
+
+### Resetting the training corpus (2026-08-31)
+
+Sometimes the right move is to throw the data away. This is a short account
+of how we decided that, because the reasoning transfers.
+
+#### The corpus was describing testing, not handwriting
+
+`fetch-crops.sh` reported a digit histogram: `2` appearing 82 times, `4`
+only 20. That reads like natural class imbalance until you notice which
+digits. The two scripts used during step 6/7 phone testing had IDs
+`2632711` and `2632700` — both 2-heavy — and they were re-photographed
+dozens of times while debugging, with every Confirm harvesting again.
+
+So the "imbalance" was mostly an artifact of one person testing the camera.
+Fine-tuning on it would have taught the model that `2` is four times more
+likely than `4`, which is true of nothing except that afternoon.
+
+Three other problems sat alongside it:
+
+- **`pilot-legacy` mixed two collections that could not be separated** —
+  the phone-test Confirms and the 18-photo real class batch — so
+  plan.md §16's held-out evaluation was impossible on it.
+- **The `confirmed`/`corrected` split was a lie.** `harvest_real_photos.py`
+  posted `original == confirmed`, so all 16 real photos filed as "the model
+  got this right" when the model had never been asked.
+- **Verification crops shared a namespace with real ones**, with no way to
+  tell them apart afterwards.
+
+#### The thing that made the decision easy
+
+The valuable half was **regenerable**. The 18-photo batch came from a
+script, and the photos plus ground truth still live in `testset/`. So the
+choice was never "discard hard-won data" — it was "drop the contamination
+and rebuild the good part cleanly".
+
+And 229 crops is nowhere near enough to fine-tune on regardless (EMNIST has
+240,000). The corpus had no training value yet, which is exactly why
+resetting cost nothing. **The cheapest moment to fix a data-hygiene problem
+is while the data is still worthless.**
+
+#### Fix 1: make test data structurally separate
+
+A convention ("remember not to harvest while testing") is the thing that
+already failed. `TEST_SOURCE_PREFIX = "test-"` is now reserved, and
+`fetch-crops.sh` drops those sources unless `INCLUDE_TEST=1`. Structure
+cannot be forgotten the way a habit can.
+
+#### Fix 2: stop asserting what the model did
+
+`harvest_real_photos.py` now runs a real `/api/scan` first and uses that as
+`original`:
+
+```python
+scan = _post(client, "/api/scan", files=..., data={"config": ...})
+original = _fields_from_scan(scan.json(), len(config["questions"]))
+```
+
+One extra request per photo, and the `corrected` tag starts meaning
+something. After the re-harvest: 211 confirmed, **18 corrected** — 18 crops
+that are genuinely the model's failures, and those are the ones worth
+weighting most.
+
+A failed scan yields all-None, which is correct rather than a special case:
+the model produced nothing usable, so every field the ground truth supplies
+is a correction.
+
+#### Fix 3: content-addressed keys
+
+The duplication problem has a neat fix — make the filename a hash of the
+crop's own bytes instead of a uuid4:
+
+```python
+digest = hashlib.sha256(crop_path.read_bytes()).hexdigest()[:32]
+return f"{source}/{field}/{tag}/{value}_{digest}.png"
+```
+
+Re-confirming the same script now produces the same key and overwrites.
+Duplication becomes structurally impossible rather than something to
+remember.
+
+It keeps the property the uuid4 was there for: two different digits from
+one student hash differently, so nothing groups a student's crops. The
+trade — a content-addressed store lets someone holding a candidate crop
+test whether it is in the corpus — is far smaller than the duplication it
+prevents, and is written down in the code rather than glossed.
+
+Two tests pin both halves, and the second matters as much as the first:
+
+- re-harvesting the same crop five times leaves one file
+- **two different students' `7`s both survive** — dedupe must be by
+  content, never by label, or the corpus loses exactly the variation it
+  exists to capture
+
+Fixing this also broke a test fixture in an instructive way. `_make_cells`
+wrote identical bytes to every placeholder, so under content addressing
+they all collapsed into one file. The fixture was unrealistic — real crops
+of different cells are never byte-identical — so the fix was to make the
+placeholders distinct, not to weaken the dedupe.
+
+#### What the clean baseline looks like
+
+```
+by source:  pilot-real-class 229
+by tag:     confirmed 211, corrected 18
+ID digits:  rarest 2, commonest 26   (13x)
+marks:      101 whole, 0 half
+```
+
+Two things worth reading honestly rather than as a win:
+
+**The imbalance looks worse (13x, up from 4.1x).** It isn't. The old 4.1x
+was flattened by hundreds of duplicates of two IDs; 13x across 16 real
+students is what a small honest sample looks like. It will even out.
+
+**There is now zero half-mark data.** This class awarded none. Half marks
+are the hardest values for the model to read, and there is nothing to learn
+from — which is precisely what step 3r.6a's blank collection sheet
+generator was built for, and it remains unused.
+
+#### The rate limiter caught its own author
+
+The re-harvest crashed partway through with a 429. The script makes two
+requests per photo — 36 for 18 photos — against the 30/min budget added in
+step 11.4.
+
+That is the limiter working, on the first real workload that ever exercised
+it. The fix was on the client side, where it belonged: honour `Retry-After`
+rather than fall over. It also means the script keeps working if it is ever
+pointed at the deployed URL.
+
+---
+
+### Getting ready to deploy (step 11.6 preparation)
+
+No AWS resource exists yet. This is everything done to make the deploy
+boring when it happens.
+
+#### Running the deployed shape before deploying
+
+`local-stack.sh` runs the real container on a read-only filesystem with
+only `/tmp` writable — exactly how Lambda mounts it — harvesting over a
+real S3 API (MinIO), with `ALLOWED_ORIGINS` set and rate limiting on. It is
+not `dev.sh`; it is the artifact that ships.
+
+Its value showed up immediately, in the S3 ordering leak described earlier:
+a *real* S3 implementation stamping *real* `LastModified` timestamps
+reconstructed a student ID exactly. No stubbed test could have found that,
+because the stub had no timestamps to stamp.
+
+Two bugs in the script itself, both worth knowing because both are the same
+shape — **a thing that looks fine while quietly destroying evidence**:
+
+- **MinIO had no volume.** Its data lived in the container's writable
+  layer, so `down` (which `rm -f`s the container) deleted every crop
+  collected during testing — the exact evidence the test existed to
+  produce. Now a named volume that `down` deliberately spares, with a
+  separate `reset` for wiping on purpose.
+- **A `|| true` swallowed a real failure.** Bucket creation failed because
+  I published MinIO's console port but not its API port; the `|| true` hid
+  it, so everything looked healthy until the first harvest died on
+  `NoSuchBucket`. Only "already exists" is tolerated now.
+
+#### The LAN IP is baked into two artifacts, and they go stale separately
+
+A "Failed to fetch" on the phone turned out to be neither a code nor a CORS
+problem. The frontend had been built while tethered to a phone hotspot
+(`172.20.10.6`) and was then used on home wifi (`192.168.0.108`).
+`VITE_API_BASE` is inlined at **build** time, so the bundle kept calling a
+host that no longer existed. A fetch to an unreachable host fails before
+any HTTP status, which is why the error is so shapeless.
+
+The TLS cert has the same problem independently — its SAN list pins the IP
+too. `local-stack.sh` already rebuilt the frontend on every `up`, so that
+half self-healed; it now also regenerates the cert when the SANs no longer
+cover the current IP, and prints the address it built for:
+
+```
+Built for LAN IP 192.168.0.108. If your phone cannot reach that address,
+you have changed networks since — re-run ./local-stack.sh up.
+```
+
+That line is the whole diagnosis next time.
+
+#### Verifying the Lambda adapter without Lambda
+
+The one component that had never actually run was the Lambda Web Adapter —
+it activates only inside a Lambda execution environment, so every local
+test had been exercising plain uvicorn with the adapter sitting inert.
+
+The AWS Runtime Interface Emulator closes that gap. Running the image under
+RIE and invoking it with a real Function-URL-shaped event:
+
+```
+INIT REPORT durationMs: 1258
+INVOKE START ... "GET /openapi.json HTTP/1.1" 200 OK
+```
+
+Then a full multipart scan through the same path returned the identical
+result the laptop gives. That is as close to a real invocation as it is
+possible to get without deploying.
+
+It also surfaced a sizing error in my own work. Watch the numbers:
+
+```
+multipart body: 67 KB, base64 payload: 89 KB
+```
+
+Lambda's 6 MB request limit applies to the **base64-encoded event**, not
+the raw bytes — base64 inflates by 4/3. The 5 MB upload cap I had set
+meant a max-size image became a 6.7 MB payload and would be rejected by the
+platform with an opaque error, which is precisely what the cap existed to
+prevent. Now 4 MB, with the test asserting the *encoded* size rather than
+the raw one.
+
+While inspecting the image, one more: the adapter reads `AWS_LWA_PORT`,
+with bare `PORT` only a legacy alias. The Dockerfile now sets both. A
+mismatch there is invisible locally (the adapter is inert) and shows up in
+production as a hang.
+
+#### Two bugs in deploy.sh, found by reading rather than running
+
+**The Lambda waiter was wrong.** After `create-function`, a container-image
+function is `Pending` while the image is pulled and unpacked.
+`function-updated` does not wait for that — it watches `LastUpdateStatus` —
+so the smoke test could fire at a function that cannot serve yet, and fail
+for a reason that looks like a code problem. `function-active-v2` after
+create; `function-updated-v2` between the two update calls, where it is
+*required* because two updates cannot be in flight at once.
+
+**IAM eventual consistency was papered over with `sleep 12`.** A fresh role
+often is not assumable yet, and `create-function` fails outright. A retry
+loop is both faster in the common case and correct in the slow one — and it
+re-runs the failing call unredirected on the last attempt, so you see the
+real error instead of a silent exit.
+
+#### Least privilege, and the probe that punished it
+
+The deploy user's policy is derived from the API calls `deploy.sh` actually
+makes, scoped to one ECR repo, one function, one role, two buckets.
+
+Two grants are wider than the rest, and both are documented as deliberate:
+
+- **`iam:PassRole`** is the dangerous one — unscoped it is close to
+  privilege escalation. Here it is pinned to a single role ARN *and*
+  conditioned on `iam:PassedToService: lambda.amazonaws.com`.
+- **CloudFront cannot be resource-scoped on create**, because a
+  distribution's ARN does not exist until it exists. That is an AWS
+  limitation, and it is the strongest argument for a dedicated user.
+
+Then the least-privilege design tripped my own checker. `preflight.sh`
+probed `aws iam list-roles` — an account-wide action the policy
+deliberately omits and `deploy.sh` never calls — and reported a blocker on
+a correct policy.
+
+The tempting fix is to add `iam:ListRoles`. That would be **loosening a
+correct policy to satisfy a bad test**, and it is worth naming as a trap
+because it looks like progress. The real fix was to probe the role
+`deploy.sh` actually touches.
+
+That exposed a second flaw in the same code: the probes could not tell
+*"you may not do this"* from *"that does not exist yet."* Before a first
+deploy nothing exists, so `NoSuchEntity` is a **pass** — the call was
+authorised and found nothing. All three resources returned exactly that.
+
+#### A check that broke what it was checking
+
+`preflight.sh` built the frontend with a throwaway
+`VITE_API_BASE=https://preflight.invalid` — into `dist/`. So running the
+safety check left the real build pointing at a host that does not exist,
+and the next `vite preview` served a frontend that could reach no backend
+at all.
+
+It builds into a temp directory now. The general lesson: a verification
+step must not have side effects on the thing it verifies, and "it only
+writes to the build output" is not an exemption when the build output is
+what you are about to serve.
+
+#### A verification command that verified nothing
+
+Related, and worse. I had been running `npx tsc --noEmit` in `frontend/`
+as a check for several sessions. The root `tsconfig.json` is a solution
+file — `"files": []` plus references — so that command typechecks
+**nothing** and passes cheerfully on genuinely broken code. It was hiding
+two real type errors.
+
+`npm run build` (which runs `tsc -b`) does catch them, and that was being
+run too, so coverage was real — but the extra command was theatre. If a
+check has never once failed, that is worth being suspicious about rather
+than reassured by.
+
+---
+
+### The deploy (step 11.6) — and why the architecture changed
+
+This is the entry worth reading, because almost none of it went to plan.
+
+#### First: the app had to be able to say anything
+
+CloudWatch can only show what a program emits, and this backend emitted
+nothing but uvicorn's request lines. So observability came before the
+deploy.
+
+`app/observability.py` writes one JSON object per line to stdout. Lambda
+captures stdout with no agent and no configuration, and Logs Insights
+parses the fields natively because they are real JSON rather than a
+formatted sentence:
+
+```json
+{"event":"scan","status":"ok","recognizer":"cnn","image_kb":66,
+ "ms_detect":85,"ms_read_id":13,"ms_read_marks":27,"ms_total":126,
+ "flagged_count":1,"flagged":["q1"]}
+```
+
+The per-stage timings are the point. "Scans are slow" is unactionable;
+"detection is 2.1 s and recognition is 0.2 s" points at the cause.
+
+**The privacy constraint shaped the design.** Step 11.7.3 requires that no
+recognised student ID reaches CloudWatch, and logging is the easiest way in
+the whole codebase to break that — one `logger.info(result)` while
+debugging and every ID sits in a log group for a month. Logs also outlive
+the request, which is what the rest of this backend is built to avoid.
+
+So it is structural: a key denylist drops `student_id`, `serial`, `total`,
+`value` whatever is passed, and a scrubber redacts any run of 4+ digits
+inside a string — catching an ID smuggled through a message or an exception
+string. `flagged` carries field *names*, which is the useful signal and
+none of the sensitive one.
+
+**Verifying it taught something.** The test runs a real scan, asserts the
+ID was genuinely recognised, then asserts it appears nowhere in the output.
+To check the test wasn't vacuous I leaked the ID into a log call — **and it
+still passed**, because the scrubber redacted it. That is defence in depth
+working, but it meant the check proved nothing about the test. Only
+disabling the scrubber *and* leaking made it fail. When you verify a test,
+make sure you have disabled every layer that could mask the thing you are
+trying to trigger.
+
+#### Then the deploy, which failed in a way no local test could catch
+
+The backend went up cleanly: ECR image, Lambda Active, crops bucket,
+execution role, Function URL. The smoke test returned:
+
+```
+{"Message":"Forbidden. For troubleshooting Function URL authorization issues..."}
+```
+
+What followed was hours of proving a correct configuration was correct.
+The resource policy was textbook — `Principal: "*"`, `lambda:InvokeFunctionUrl`,
+condition `FunctionUrlAuthType: NONE`. I ruled out, one at a time: an
+Organizations SCP (the account is not in an org), permission ordering
+(deleted and recreated the URL *after* the permission existed — same 403),
+propagation, and function state.
+
+Then a decisive experiment. Same URL, same function, only the auth type
+changed:
+
+| Caller | Result |
+|---|---|
+| Public (`NONE`) + correct public policy | 403 |
+| CloudFront service principal + correct OAC grant | 403 |
+| An IAM user with a signed request | **200** |
+
+**This account refuses Lambda Function URL invocation by anything except an
+IAM principal.** Not documented anywhere I could find, not visible in any
+setting, and it blocks both routes the plan depended on.
+
+#### A second bug that disguised the first
+
+Along the way, multipart POSTs through CloudFront failed with a *signature
+mismatch* while bodyless GETs failed with an *authorization* error. Two
+different errors that looked like one problem.
+
+The signature one is real and documented: CloudFront's OAC does not include
+the request body in its SigV4 signature, while Lambda Function URLs verify
+a payload hash. The fix is a CloudFront Function setting
+`x-amz-content-sha256: UNSIGNED-PAYLOAD`.
+
+I built it. It changed nothing — because the body was never the blocker.
+That only became clear when I tested a **bodyless GET** and it failed too.
+
+The lesson is about diagnosis, not CloudFront: when two symptoms look
+related, find the simplest request that still fails. The GET took thirty
+seconds and would have saved an hour if I had run it first.
+
+#### What actually works
+
+API Gateway HTTP API, which does not use Function URL auth at all. It
+worked on the first try after one trap:
+
+> `aws apigatewayv2 create-api --target <lambda-arn>` builds the
+> integration and the route but **not** the Lambda invoke permission.
+
+The symptom is a bare `Internal Server Error` with **nothing in
+CloudWatch** — and that absence is the diagnosis. If the request had
+reached the function there would be a log line, so silence means it died
+upstream.
+
+I had dismissed API Gateway earlier on cost and its 29–30 s timeout, and
+the cost half was wrong: ~300 requests/month against $1/million is
+$0.0003/month. The timeout is the real constraint, and it is a live one —
+a 9 s cold start plus a scan fits inside 30 s, but not by much. That is why
+the warm-up is now wired into the deploy rather than left as advice.
+
+#### A bug I introduced, of a shape this project keeps meeting
+
+The first distribution had the usual SPA fallback: 403 → `/index.html`,
+status 200. CloudFront applies `CustomErrorResponses` **distribution-wide**,
+not per cache behaviour — so it was silently rewriting API errors into an
+HTML page with a **success** status. The failing POST looked like a working
+endpoint returning gibberish.
+
+The app has no client-side routing, so the fallback was never needed. But
+note the shape: *something that looks fine while hiding the real failure*.
+That is the third time in this project — the MinIO volume that deleted the
+evidence, the `|| true` that swallowed a bucket error, the `tsc --noEmit`
+that checked nothing. It is worth actively looking for.
+
+#### The measurements that corrected earlier guesses
+
+- **Cold start ~9 s**, not the 2–4 s extrapolated from a laptop runtime
+  emulator. The adapter logs `app is not ready after 8000ms`. Lambda's
+  slower vCPU plus the image pull is the difference.
+- **Peak memory 201 MB of 2048 MB.** Tempting to cut, but memory is CPU on
+  Lambda and startup is already the slow part, so reducing it would make
+  cold starts worse.
+- **Cost is ~$0.10/month, not $0.** ECR image storage dominates: 705 MB
+  against a 500 MB free tier that is *12-month*, not always-free. S3's is
+  12-month too. Only Lambda and CloudFront are permanently free.
+
+The account is on the AWS Free plan, which **cannot be billed** — spend is
+bounded by credits and the account closes rather than charging. So the risk
+was never a surprise bill; it is credit drain ending the demo mid-semester.
+Which also means a plain cost budget is useless here: it reads $0.00
+forever because credits absorb everything. The budget has to **exclude
+credits** from its calculation to measure anything at all.
+
+---
+
+## The audit (2026-08-31) — what a full read-through found that the tests did not
+
+This section is not a step. It is what happened when, with the app deployed
+and every step's Done-when bar met, every source file in the repo was read
+straight through looking for defects.
+
+The headline is worth sitting with before any individual finding:
+
+> **148 backend tests and 79 frontend tests all pass. The audit found 43
+> open defects.**
+
+Not because the tests are bad — they are good, and several are unusually
+thoughtful (the mtime-ordering test is written as *the attack*, not as the
+implementation). The point is narrower and more useful: **a test suite tells
+you the things you thought to check are still true.** It cannot tell you
+about the things you did not think of. Those need a different activity, and
+the different activity is reading the code with an adversarial question in
+mind rather than a confirming one.
+
+### The near-miss that is the best lesson in the whole audit
+
+`harvest.py` builds the storage path for a crop like this:
+
+```python
+def _key(field: str, tag: str, value: str, source: str, crop_path: Path) -> str:
+    digest = hashlib.sha256(crop_path.read_bytes()).hexdigest()[:32]
+    return f"{source}/{field}/{tag}/{value}_{digest}.png"
+```
+
+`source` arrives from the client. Somebody thought carefully about that and
+wrote a sanitizer, with a docstring that names the exact threat:
+
+```python
+def _sanitize_source(source: str | None) -> str:
+    """The source id becomes a path/key segment, so it is never
+    interpolated raw. ... `/api/harvest` is a public endpoint and this
+    arrives in a form field — a `../..` here would otherwise escape the
+    harvest root."""
+```
+
+Then they wrote a test for it — `test_a_hostile_source_cannot_escape_the_harvest_root`
+— and it passes.
+
+Look at the f-string again. `value` also arrives from the client, on the
+same request, in the same function, one variable along. It is
+`HarvestFields.serial`, an unconstrained `str | None` straight off the
+wire. It is not sanitized.
+
+```
+harvest(..., confirmed_serial="../../../../escaped/PWNED", store=LocalStore(root))
+→ escaped/PWNED_73bf48fb3c46eb87f38779f251eb6cfc.png     # written OUTSIDE root
+→ harvested/                                              # empty
+```
+
+That is a real arbitrary-file-write on a publicly deployed endpoint, and it
+was verified by running it, not by reasoning about it.
+
+Three things to take from this, in increasing order of usefulness:
+
+1. **Reasoning correctly about a threat is not the same as being protected
+   from it.** The threat model here was *right*. It was applied to one
+   field.
+2. **A passing test can make a gap invisible.** Anyone scanning the test
+   names sees "hostile source cannot escape the harvest root", concludes
+   path traversal is handled, and moves on. The test covers one *instance*
+   of the bug class and reads like coverage of the *class*.
+3. **Put the guard where the class of bug lives, not where the instance
+   was found.** The fix is not "also sanitize `value`" — the next field
+   added has the same problem. The fix is to sanitize inside `_key`, so no
+   future field can forget, *and* assert in `LocalStore.put` that
+   `dest.resolve()` is under `self.root.resolve()`. That second one is the
+   invariant that actually matters, and it should not depend on every
+   caller getting its own escaping right.
+
+### "Reasonable input" stops being a thing the moment the URL is public
+
+```python
+def legal_values(max_mark: float) -> set[float]:
+    steps = round(max_mark * 2)
+    return {i / 2 for i in range(steps + 1)}
+```
+
+This is fine. It has been fine for the entire project, because `max_mark`
+came from a form the instructor filled in about their own quiz, and quizzes
+are marked out of 5 or 10.
+
+`QuestionConfig.max` is a bare `float` with no bound. `legal_values(1e9)`
+asks Python for a set of two billion floats.
+
+Nothing changed in this function. What changed is that in step 11 the thing
+calling it stopped being *the instructor's own browser on their own laptop*
+and became *anyone on the internet*. Every implicit assumption about input
+that was load-bearing and invisible became a hole on the day the URL went
+public — and no test failed, because no test was ever going to guess `1e9`.
+
+The general shape: **deploying does not change your code, it changes who
+your callers are.** Worth re-reading input handling with that specific
+question — "what if this value is hostile rather than merely wrong?" —
+every time the audience widens.
+
+### Fixing one thing broke another, and the tests could not see it
+
+Step 6 got a genuinely good improvement on 2026-08-30: the capture button
+now shows a spinner and disables itself while a shot is in flight, so the
+instructor gets feedback where they are actually looking. The trade-off
+recorded at the time was throughput — captures no longer run in parallel.
+
+The trade-off *not* recorded is the one that matters:
+
+```ts
+const capturing = inFlightCount(entries) > 0;   // counts entries with status 'pending'
+disabled={!!cameraError || capturing}
+```
+
+An entry leaves `'pending'` only when its `fetch` settles. `scanImage` has
+no timeout and no `AbortSignal`. So a request that never settles at all —
+a dropped wifi association mid-upload, which is *the* likely failure on a
+phone-over-LAN setup — leaves one entry pending forever, which keeps
+`capturing` true forever, which disables the capture button **for the rest
+of the session**, recoverable only by reloading the page.
+
+Before the change this was survivable: captures raced independently, so a
+stuck one was just a stuck row in a list. The improvement is what made it
+fatal. And it compounds an *older* finding — an errored entry has no
+dismiss button — so the queue cannot drain either way.
+
+This is the most instructive frontend finding because nothing about it is
+sloppy. The change was well-motivated, correctly scoped, and its main
+trade-off was written down. The failure mode is simply one that does not
+occur on a fast local network, which is where all the testing happened.
+
+### Writing an invariant down does not enforce it
+
+CLAUDE.md has a section titled "Conventions and invariants" that opens with
+"Breaking one is a defect, not a style difference." The audit checked them.
+**Four are currently broken:**
+
+- *"Serial comparison strips leading zeros"* — `Review.tsx` queries the
+  by-serial index with the raw typed serial, so a saved `"007"` and a
+  rescanned `"7"` are never even compared. `crossCheck` normalizes
+  correctly; it just never receives the record. Worse, `types.ts` documents
+  `StudentRecord.serial` as "normalized: leading zeros stripped", which
+  describes the fix rather than the code.
+- *"Never store a wrong number"* — the Total field has no legal-value check
+  on **either** the Review or the Results screen. It is a plain text input,
+  so `"abc"` is typeable, `Number("abc")` is `NaN`, and IndexedDB's
+  structured clone stores `NaN` faithfully on a `confirmed: true` record.
+- *"Flag, never guess"* — an ID still containing `?` (which both
+  recognizers produce by contract for an unreadable digit) saves as
+  confirmed, shows no badge, and exports to Excel as a literal `12?4567`.
+- *"A failed scan is never a dead end"* — a transport-level failure renders
+  as static text with no Retake, no Review, and no dismiss.
+
+The privacy invariants, notably, **do** hold — ID never reaches Gemini,
+nothing persists per-request, the harvest write-order and constant-mtime
+defences both work. The difference is instructive: those are enforced by
+`assert` statements and tests written as attacks. The four broken ones are
+enforced by prose.
+
+### The drift class, and why it is worth a pass of its own
+
+Separately from bugs, a lot of comments had quietly stopped being true:
+
+- `backend/.env.example` recommended `MAX_UPLOAD_BYTES=5242880` and called
+  it "the 5 MB default". `config.py` uses 4 MB, with a long comment
+  explaining precisely why 5 is wrong (base64 inflates by 4/3 against
+  Lambda's 6 MB payload ceiling). The example file was recommending the
+  exact value the code's own comment argues against — and so was this file,
+  a few sections up.
+- `frontend/.env.example` described the backend as a Lambda Function URL
+  and gave a `lambda-url.us-east-1.on.aws` example. The deployed build uses
+  `VITE_API_BASE=""` — same origin — so anyone following it would build a
+  frontend pointing at a host that does not exist.
+- `deploy.sh`'s CloudFront comment block claimed the API was reachable only
+  through the CDN via OAC. Ninety lines below, the code says the opposite
+  and is correct: API Gateway is publicly invokable.
+- `.gitignore` still told the reader to "remove the save code in
+  app/main.py" — deleted in step 11.0.1.
+- `requirements.txt` said scipy was for `segment.py`'s connected-component
+  labelling. `segment.py` uses OpenCV for that and needs no scipy; the real
+  consumer is `preprocess.py`'s `ndimage.center_of_mass`, which is
+  load-bearing for MNIST-matched centering.
+
+None of these breaks anything today. All of them are the mechanism by which
+something breaks later, because the comment is what the next person trusts
+instead of re-deriving. All are now fixed, with the correction stated rather
+than silently overwritten — a comment that says "this used to say X, and X
+was wrong because Y" is worth more than one that was simply always right.
+
+### The part of an audit worth writing down explicitly
+
+`issues.md` ends with a section titled **"What this audit did NOT cover."**
+It names the files that were never opened: `local-stack.sh` beyond its
+header, the accuracy harnesses, the test bodies, the specs.
+
+That section exists because of a specific failure mode. An audit document
+with 43 findings *looks* exhaustive. If someone later asks "did anyone check
+`marks_accuracy.py`?", the honest answer is no — and without that section,
+the file's silence on the subject reads as "checked, nothing found."
+
+Which matters here more than usual: `accuracy.py` and `marks_accuracy.py`
+produce the 91.8% / 55.2% / 98.1% numbers that the entire decision to make
+the CNN the default rests on. A bug in either would not be an app defect;
+it would mean the *measurements are wrong*, which is a worse and much
+harder-to-notice class of problem than anything in the findings list.
+
+### One finding that was wrong, and the correction
+
+The first draft of the audit recorded, as its highest-severity item, that 25
+real student scripts and 24 plaintext student IDs were committed and pushed
+to GitHub. It laid out the contrast at length: the codebase goes to
+extraordinary lengths to make harvested crops unlinkable, while whole
+un-anonymized photographs sat in git.
+
+The premise was wrong. The IDs, serials and marks in those photos are
+**fabricated** — real handwriting, made-up values — which is exactly why
+they can live in the repo at all.
+
+Two things worth keeping from that:
+
+1. **State the correction in the document, do not quietly delete the
+   finding.** `issues.md` now says what it claimed, that it was wrong, and
+   why. A reader who saw the earlier version needs to know it was
+   withdrawn, and a reader who did not still benefits from knowing the
+   question was asked and answered.
+2. **The forward-looking half survived and was worth having.** The pilot
+   has not run yet. When it does, `handleExport` downloads an `.xlsx`
+   containing every student's ID, serial and marks — and the Results screen
+   explicitly tells the instructor to check it against their attendance
+   sheet, which is precisely how that file ends up sitting next to the
+   repo. Nothing ignored `*.xlsx`. That rule is now in `.gitignore`,
+   deliberately added *before* the pilot rather than after, because it is
+   the one item on the whole list whose cost changes character with time:
+   a `.gitignore` edit today, a history rewrite once a real class's export
+   has been committed.

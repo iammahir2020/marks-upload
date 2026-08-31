@@ -1,153 +1,201 @@
 # Issues
 
-Findings from a full-repo audit (2026-08-27): `code-review` (backend +
-frontend, targeted directly at `backend/` and `frontend/` since the
-default diff-based mode misses everything untracked in this not-yet-fully
-committed repo), `security-review`, and a pass against `fastapi-templates`,
-`frontend-patterns`, and `product-ui-design` for pattern-specific gaps.
-The top findings were spot-verified directly against the code before being
-recorded here — not just taken on the reviewing tool's word.
+Two audits, recorded together.
 
-Nothing here has been fixed yet. This is the record of what was found;
-check items off (or note why not) as they're addressed.
+**Audit 1 (2026-08-27)** — `code-review` (backend + frontend, targeted
+directly at `backend/` and `frontend/` since the default diff-based mode
+misses everything untracked in this not-yet-fully-committed repo),
+`security-review`, and a pass against `fastapi-templates`,
+`frontend-patterns`, and `product-ui-design`. Findings 1–15 below.
+
+**Audit 2 (2026-08-31)** — a full re-read of every source file in the repo
+after steps 3r.6, 11.0–11.5 and the live AWS deploy landed. Two jobs: check
+whether audit 1's findings still hold against the current code, and find
+what the last four days of work introduced. Findings N1–N28 below, followed
+by an explicit list of **what this audit did not cover** — several files
+were not opened, and that section says which, so their absence from the
+findings is not mistaken for a clean result.
+
+**Audit 2b (2026-08-31)** — a follow-up pass over version-control and build
+ignore hygiene (`.gitignore`, `frontend/.gitignore`,
+`backend/.dockerignore`), checking what is *actually tracked* rather than
+what the ignore files claim. Result: **the ignore files are in good shape**
+— every secret, credential, cert, crop directory and multi-gigabyte build
+artifact is correctly excluded and none is tracked, and the Docker build
+context is 2.0 MB with nothing sensitive in it. The gaps are forward-looking
+and small (**N26**, **N27**, **N28**).
+
+One correction to an earlier draft of this file: it recorded the committed
+`testset/` photo batch as a disclosure of real student data. Per the repo
+owner, the IDs, serials and marks in those photos are **fabricated** — real
+handwriting, made-up values. That finding was wrong and has been removed;
+**N26** now covers only the forward-looking gap, which is that a real
+pilot's outputs (an exported `.xlsx` above all) have nothing ignoring them
+yet.
+
+**Headline from audit 2: none of audit 1's 15 findings have been fixed.**
+All 15 still reproduce against current code; three of them are now *worse*
+than when first written (1, 4, 6), and one has partially shifted shape (5).
+Both test suites pass — 148 backend, 79 frontend — so every finding here is
+in territory the suites do not cover.
+
+The audit-1 "Security review — clean" verdict is **superseded**: N1 is a
+HIGH, verified, arbitrary-file-write on a now-publicly-deployed endpoint.
+
+Findings were verified by running the code, not taken on a tool's word.
+Where a finding was proven by execution it says so.
 
 ---
+
+# Part A — audit 1's findings, revalidated 2026-08-31
 
 ## High priority — real bugs
 
 ### 1. `Setup.tsx` crashes on non-integer input
 
-**File:** `frontend/src/Setup.tsx:42` (`handleQuestionCountChange`)
+**Status: STILL VALID, and worse than originally described.**
+**File:** [Setup.tsx:81-89](frontend/src/Setup.tsx#L81-L89) (`handleQuestionCountChange`)
 
-Typing `5.5` (or anything non-integer) into "Number of questions" runs
-`copy.length = Math.max(next, 0)` with `next = Number(e.target.value) =
-5.5`. Setting `array.length` to a non-integer throws
-`RangeError: Invalid array length` per the JS spec — the Setup screen
-crashes before `validateConfig` ever runs, on the very first screen of the
-app. A non-numeric string (`Number("abc") = NaN`) crashes the same way.
+Typing `5.5` into "Number of questions" runs `copy.length = Math.max(next, 0)`
+with `next = 5.5`. Setting `array.length` to a non-integer throws
+`RangeError: Invalid array length` — the Setup screen crashes before
+`validateConfig` ever runs, on the very first screen of the app.
 
-**Fix direction:** guard `handleQuestionCountChange` against non-integer
-input before mutating array length — e.g. `Number.isInteger(next)` check,
-or `Math.trunc`/reject and leave the previous count in place.
+Verified by execution (2026-08-31): `5.5` and `NaN` both throw
+`RangeError: Invalid array length`.
+
+The newly-noticed half is the line above it:
+
+```ts
+while (copy.length < next) copy.push(5);
+```
+
+`<input type="number">` accepts `99999999999`, which makes this loop push
+~10<sup>11</sup> elements before the `length` assignment is ever reached —
+the tab hangs and then dies. There is no upper bound on this field anywhere
+(see also N19).
+
+**Fix direction:** guard against non-integer and out-of-range input before
+mutating array length — `Number.isInteger(next) && next >= 1 && next <= 50`,
+or reject and leave the previous count in place.
 
 ### 2. Duplicate cross-check misses leading-zero duplicates
 
-**Files:** `frontend/src/Review.tsx` (`handleConfirm`), `frontend/src/db.ts`
-(`findRecordsBySerial`)
+**Status: STILL VALID, unchanged.**
+**Files:** [Review.tsx:130-133](frontend/src/Review.tsx#L130-L133) (`handleConfirm`), [db.ts:82-85](frontend/src/db.ts#L82-L85) (`findRecordsBySerial`)
 
-`handleConfirm` calls `findRecordsBySerial(candidate.serial)` with the
-*raw, un-normalized* typed serial. `db.ts`'s `findRecordsBySerial` does an
-exact-match `getAllFromIndex` lookup — no leading-zero stripping happens
-before this DB query runs. `validateMarks.ts`'s `crossCheck` *does*
-correctly normalize serials via `normalizeSerial`, but only compares
-against whatever `findRecordsBySerial` already retrieved.
+`handleConfirm` still calls `findRecordsBySerial(candidate.serial)` with the
+*raw, un-normalized* typed serial, and `findRecordsBySerial` still does an
+exact-match `getAllFromIndex` lookup. `validateMarks.ts`'s `crossCheck` does
+normalize via `normalizeSerial`, but only compares against whatever the DB
+query already returned.
 
-A record saved with serial `"007"` and a later rescan typed as `"7"` never
-even get compared — `findRecordsBySerial("7")` returns nothing, so the
-duplicate is silently saved as a second record. Directly undermines
-CLAUDE.md's stated invariant: "Serial comparison strips leading zeros. `2`,
-`02`, `002` are the same serial."
+A record saved with serial `"007"` and a later rescan typed as `"7"` are
+never compared — `findRecordsBySerial("7")` returns nothing, so the
+duplicate saves silently. Directly contradicts CLAUDE.md's stated invariant
+"Serial comparison strips leading zeros."
 
-**Fix direction:** normalize the serial before it's used as a lookup key
-(either store records with normalized serials, or query with the
-normalized value / use a range query), so the exact-match index lookup and
-the cross-check's own normalization agree.
+Note the `StudentRecord.serial` doc comment in
+[types.ts:23](frontend/src/types.ts#L23) already claims serials are stored
+"normalized: leading zeros stripped" — nothing in the write path does that.
+The comment describes the fix, not the code.
+
+**Fix direction:** normalize before the serial is used as an index key —
+store records with normalized serials (which would also make the type
+comment true), or query with the normalized value.
 
 ### 3. ID-OCR fallback never accepts a digit read correctly by the fallback pass
 
-**File:** `backend/app/id_ocr.py:116-125` (`read_digit`)
+**Status: STILL VALID. Impact reduced — `remote` path only.**
+**File:** [id_ocr.py:116-126](backend/app/id_ocr.py#L116-L126) (`read_digit`)
 
-The unconstrained fallback pass only accepts a result if `fallback_text in
-DIGIT_LOOKALIKES` — but `DIGIT_LOOKALIKES`'s keys are all *letters*
-(`"o"`, `"D"`, `"l"`, etc.), never digit characters. So when the fallback
-pass reads a crop correctly *as the actual digit* (e.g. a legible `"7"`
-that scored below `CONFIDENCE_FLOOR` on the whitelist pass, then gets read
-correctly and confidently — well above `FALLBACK_CONFIDENCE_FLOOR` — by
-the unconstrained pass), the check `fallback_text in DIGIT_LOOKALIKES` is
-`False`, and the function falls through to `return None, ...`, discarding
-a confidently-correct read as `?`.
+The unconstrained fallback pass still only accepts a result if
+`fallback_text in DIGIT_LOOKALIKES`, and `DIGIT_LOOKALIKES`'s keys are all
+*letters*. A fallback pass that reads a crop correctly *as the actual digit*
+fails that check and falls through to `return None`, discarding a
+confidently-correct read as `?`.
 
-This bug was introduced this session while building the look-alike
-fallback (learn.md step 2's "0"→"D", "1"→"l" fix) — the fallback was only
-ever tested against the letter-lookalike cases it was designed for, not
-against a case where the fallback pass reads the digit itself correctly.
+Since step 3r.6e made `cnn` the default, this only fires under
+`RECOGNIZER=remote` / `=both` — which is exactly the configuration a
+comparison run would use, so it would depress Tesseract's measured baseline
+in the very comparison the CNN default is meant to be validated against.
 
-**Fix direction:** also accept `fallback_text` directly when it's already
-a digit character (e.g. `fallback_text in WHITELIST`), in addition to the
-`DIGIT_LOOKALIKES` mapping — same confidence floor either way.
+**Fix direction:** also accept `fallback_text` when it is already a digit
+(`fallback_text in WHITELIST`), same confidence floor either way.
 
 ### 4. Review screen's Total field has no legal-value check
 
-**File:** `frontend/src/Review.tsx` (`hasMarkErrors`, ~line 71)
+**Status: STILL VALID, and now present in a second location.**
+**File:** [Review.tsx:51-69](frontend/src/Review.tsx#L51-L69) (`markErrors`, `total`)
 
-`hasMarkErrors` only iterates `config.questions` — the Total field is
-never validated the way per-question marks are. Typing `"abc"` into Total
-doesn't block "Confirm & next"; `total = Number("abc")` is `NaN`, and
-`commitSave` writes `StudentRecord.total = NaN` to IndexedDB as a
-`confirmed: true` record. Violates CLAUDE.md's "Flag, never guess" /
-"Never store a wrong number."
+`markErrors` still iterates only `config.questions`. The Total input is a
+plain text input with no `type`, so `"abc"` is typeable; `total =
+Number("abc")` is `NaN`; `hasMarkErrors` stays false so Confirm is enabled;
+and `commitSave` writes `StudentRecord.total = NaN` as a `confirmed: true`
+record. IndexedDB uses structured clone, which preserves `NaN` faithfully —
+it is genuinely stored, not coerced to null.
 
-**Fix direction:** extend the legal-value check (or at minimum a
-finite-number check) to the Total field, same as each question's mark.
+New in audit 2: the same gap exists on the Results screen's inline editor —
+see **N6**.
+
+**Fix direction:** apply the same legal-value/finite check to Total that
+each question already gets, in both components.
 
 ### 5. Conflict Overwrite/Save-anyway can target a stale record
 
-**File:** `frontend/src/Review.tsx` (`handleConfirm`, the conflict panel
-buttons, ~line 239)
+**Status: PARTLY VALID — the shape has shifted, the bug remains.**
+**File:** [Review.tsx:250-287](frontend/src/Review.tsx#L250-L287)
 
-If the instructor edits a field *after* a conflict banner appears (e.g.
-realizing the serial was misread and correcting it so it no longer
-actually conflicts), the Overwrite/Save-anyway buttons still use the
-`pendingConflict` captured *before* the edit — and Confirm is disabled
-while `pendingConflict` is set, so there's no way to re-run `crossCheck`
-against the corrected values before committing. Clicking "Overwrite
-earlier record" can overwrite the wrong record's real data with values
-that were never actually re-checked against it.
+The *values* written are no longer stale: `candidateForConflict`
+([Review.tsx:153](frontend/src/Review.tsx#L153)) is recomputed every render
+from current `studentId`/`serial`. But the *target* still is —
+`pendingConflict.conflicts[0].record.id` is the snapshot taken before any
+edit — and Confirm is still disabled while `pendingConflict` is set
+([Review.tsx:302](frontend/src/Review.tsx#L302)), so there is no way to
+re-run `crossCheck` against corrected values.
 
-**Fix direction:** re-run `crossCheck` against current field values at the
-moment Overwrite/Save-anyway is clicked (not reuse the panel's original
-snapshot), or clear `pendingConflict` on any field edit so Confirm has to
-be pressed again to get a fresh check.
+The live failure: the instructor sees a conflict, realizes the serial was
+misread, corrects it so it no longer conflicts — and "Overwrite earlier
+record" now writes the corrected record on top of an unrelated student's
+saved record.
+
+**Fix direction:** clear `pendingConflict` on any identity-field edit, so
+Confirm must be pressed again for a fresh check.
 
 ### 6. Network-level scan failures are a dead end
 
-**File:** `frontend/src/Scan.tsx` (queue entry list, ~line 215)
+**Status: STILL VALID, and now session-blocking.**
+**File:** [Scan.tsx:252-278](frontend/src/Scan.tsx#L252-L278)
 
-A capture that fails at the transport layer (`scanQueue`'s `'error'`
-status — dead backend, dropped wifi mid-upload) renders only static
-`"Failed: <message>"` text. The Review/Retake button block only renders
-for `status === 'done'` entries — an `'error'` entry has no Retake, no
-Review, no recovery action anywhere in the UI. Only backend-reported
-`status: "failed"` `ScanResult`s get routed to the Review screen's
-Retake/Enter-manually path; client-side/network failures don't. Undercuts
-CLAUDE.md's "A failed scan is never a dead end... a bad photo must never
-block the session."
+An `'error'` entry still renders only static `Failed: {entry.error}` text.
+The Review/Retake button block at line 270 is still gated on
+`entry.status === 'done'`, so a transport-layer failure has no Retake, no
+Review, and no recovery action anywhere.
 
-**Fix direction:** give `'error'` entries a visible retry/discard action —
-at minimum, let the instructor dismiss the entry and capture again without
-it silently sitting there unresolved.
+Worse since the 2026-08-30 capture-button change: see **N3** — a request
+that never settles at all now disables the capture button permanently.
+
+**Fix direction:** give `'error'` entries a retry/dismiss action, at minimum
+one that removes the entry so the instructor can capture again.
 
 ### 7. `POST /api/scan` blocks the event loop
 
-**File:** `backend/app/main.py:51` (`async def scan`)
+**Status: STILL VALID, unchanged, and now matters more.**
+**File:** [main.py:195-270](backend/app/main.py#L195-L270) (`async def scan`)
 
-Detection (OpenCV), local OCR (Tesseract), and the Gemini SDK call all run
-synchronously inside the `async def` handler with no thread-pool offload —
-the only `await` in the function is `await image.read()`. Confirmed
-against `fastapi-templates`' async-pattern guidance: a genuinely
-CPU/IO-bound synchronous call inside an async route handler runs on the
-single event-loop thread and blocks everything else.
+Detection (OpenCV), the ONNX inference session, and — on the remote path —
+Tesseract and the Gemini SDK all still run synchronously inside the
+`async def` handler. The only `await` is `await image.read()`.
 
-This silently defeats the frontend's own design: `scanQueue.ts` is built
-specifically so "the camera never blocks: multiple captures can be pending
-at once" (its own test name), issuing several `/api/scan` requests in
-flight — but since the server serializes on the blocking handler, request
-B can't even start until request A's full multi-second
-detection+OCR+Gemini round trip finishes.
+This defeats `scanQueue.ts`'s own design ("multiple captures can be pending
+at once"), and it now also interacts with the deployed shape: API Gateway's
+30 s hard timeout means a second request queued behind a first request's
+full detect+recognize cycle is materially closer to timing out than it was
+on the laptop.
 
-**Fix direction:** offload the synchronous pipeline via
-`starlette.concurrency.run_in_threadpool` (or make the route a plain `def`
-so FastAPI runs it in its default thread pool automatically).
+**Fix direction:** `starlette.concurrency.run_in_threadpool` around the
+pipeline, or make the route a plain `def` so FastAPI thread-pools it
+automatically.
 
 ---
 
@@ -155,88 +203,78 @@ so FastAPI runs it in its default thread pool automatically).
 
 ### 8. Malformed config JSON causes an unhandled 500
 
-**File:** `backend/app/main.py:57`
+**Status: STILL VALID, and the surface has grown.**
+**File:** [main.py:202](backend/app/main.py#L202)
 
-`QuizConfig.model_validate_json(config)` is unguarded. Verified against
-the installed `fastapi==0.141.1`: only `HTTPException`,
-`RequestValidationError`, and `WebSocketRequestValidationError` get
-default exception handlers — a raw `pydantic.ValidationError` raised
-inside the route body isn't one of them, so a malformed `config` field
-(stale frontend build, hand-crafted request) surfaces as a generic 500
-instead of a clean 4xx.
+`QuizConfig.model_validate_json(config)` is still unguarded. `/api/harvest`
+has since added **three more** unguarded parses on the same public surface
+([main.py:295-297](backend/app/main.py#L295-L297)): `config`, `original`,
+and `confirmed`. A raw `pydantic.ValidationError` inside a route body has no
+default handler, so all four surface as a generic 500.
 
-**Fix direction:** wrap the parse in try/except and raise `HTTPException`
-with a clear 400 on failure.
+There is no test covering a malformed config on either endpoint.
+
+**Fix direction:** parse inside try/except and raise `HTTPException(400)`.
 
 ### 9. A missing mark crop can desync the composite from the prompt
 
-**File:** `backend/app/marks.py` (`build_composite`, ~line 73)
+**Status: STILL VALID, unchanged.**
+**File:** [marks.py:56-109](backend/app/marks.py#L56-L109) (`build_composite`)
 
-If a mark-cell crop is ever missing (e.g. a zero-width crop from a
-boundary-computation edge case that doesn't trip `column_count_mismatch`),
-`build_composite` silently skips writing that tile (`if crop.size == 0:
-continue`) while `build_prompt` still unconditionally describes all N
-questions to Gemini. Gemini can then return a legal-looking value for a
-tile it was never actually shown, and `validate_payload` accepts it — it
-only range-checks against the legal set, it can't detect that the tile
-never existed in the composite. Unlike the ID-exclusion guarantee (which
-has an explicit `assert`), nothing catches this desync.
+Tiles are appended only `if crop_path.exists()`, while `build_prompt`
+unconditionally describes all N questions. Gemini can return a legal-looking
+value for a tile it was never shown, and `validate_payload` cannot detect
+that — it only range-checks. Unlike the ID-exclusion guarantee, which has an
+explicit `assert` two lines above, nothing catches this.
 
-**Fix direction:** assert (or otherwise fail loudly) if the number of
-tiles actually built doesn't match `question_maxes`' length, rather than
-silently proceeding with a mismatched composite/prompt pair.
+**Fix direction:** assert `len(labels) == len(question_maxes) + 2` (serial +
+questions + total) before the call, rather than silently proceeding with a
+mismatched composite/prompt pair.
 
 ### 10. No backend check that questions are in `q`-order
 
-**File:** `backend/app/main.py` (~line 80)
+**Status: STILL VALID, unchanged.**
+**File:** [main.py:241](backend/app/main.py#L241), [main.py:251-254](backend/app/main.py#L251-L254)
 
-`question_maxes`/column mapping is derived from `quiz.questions`' *array
-order*, not its `q` field, with nothing on the backend checking the two
-agree. Currently only prevented by `validateConfig.ts` always building
-`{q: i+1, max}` in order on the frontend — an unenforced convention, not a
-backend guarantee. Out-of-order `q` values would silently mislabel marks
-to the wrong question with no flag raised (each value still passes its
-own legal-value check, just against the wrong question's legal set).
+`question_maxes` is derived from `quiz.questions`' array order, and results
+are re-labelled `q=i+1` — with nothing checking the two agree. Out-of-order
+`q` values silently mislabel marks to the wrong question, each still passing
+its own legal-value check against the wrong question's legal set. Only
+`validateConfig.ts` prevents it today, which is a frontend convention on a
+public endpoint.
 
-**Fix direction:** assert `quiz.questions` is sorted by `q` (or sort by
-`q` explicitly) before deriving `question_maxes`.
+**Fix direction:** validate that `[q.q for q in quiz.questions] == list(range(1, n+1))`
+in the `QuizConfig` model, and fail loudly if not.
 
 ### 11. Preview blob URLs leak for the whole session
 
-**File:** `frontend/src/Scan.tsx:51` (the `previews` cleanup effect)
+**Status: STILL VALID, unchanged.**
+**File:** [Scan.tsx:67-72](frontend/src/Scan.tsx#L67-L72)
 
-```ts
-useEffect(() => {
-  return () => Object.values(previews).forEach((p) => URL.revokeObjectURL(p.url));
-}, []);
-```
+The cleanup effect still has an empty dependency array with an
+`eslint-disable` on it, so the closure captures `previews` as `{}` at mount
+and revokes nothing — not even on unmount. No other `revokeObjectURL` exists
+in the file. Every captured full-resolution JPEG accumulates for the whole
+session, including ones discarded by Retake.
 
-Empty dependency array means this closure captures `previews` as it was
-at mount (`{}`) and never sees later captures. No other
-`revokeObjectURL` call exists in the file, so every captured photo's blob
-URL accumulates for the entire session with no revocation path at all.
-
-**Fix direction:** revoke a preview's URL when it's superseded/no longer
-needed (e.g. on unmount of that specific entry, or via a ref that always
-holds the latest `previews` map), not via a mount-only empty-deps effect.
+**Fix direction:** hold `previews` in a ref that the unmount cleanup reads,
+and revoke an individual entry's URL when its scan is saved or dismissed.
 
 ### 12. Portrait-rotation direction is hardcoded from one device
 
-**File:** `frontend/src/Scan.tsx:110` (`capture`)
+**Status: STILL VALID, low impact — the backend net does appear to cover it.**
+**File:** [Scan.tsx:128](frontend/src/Scan.tsx#L128)
 
-`ctx.rotate(-Math.PI / 2)` — the comment itself says this "matches this
-device's actual capture orientation." A different phone/browser whose
-camera sensor rotates the other way (a real, documented cross-device
-`getUserMedia` inconsistency) gets captures rotated the wrong direction,
-with no per-device detection or EXIF check to catch it. The backend's
-4-way orientation retry (`detect_any_orientation`) is the safety net for
-this today, per learn.md step 6 — worth confirming that net still catches
-a wrong-direction rotation, not just a missing one.
+`ctx.rotate(-Math.PI / 2)` is still hardcoded with a comment saying it
+"matches this device's actual capture orientation."
 
-**Fix direction:** no immediate fix required if the backend's 4-way retry
-already covers this case (verify it does); otherwise, detect rotation
-direction rather than hardcoding it, or fall back to trying both
-directions.
+On re-reading `detect_any_orientation`, the net does hold for this case: a
+wrong-direction rotation produces `table_not_found` (not
+`column_count_mismatch`), which is the one reason that triggers the 4-way
+retry, and `_label_column_is_backwards` rejects the 180° false positive.
+So the cost is four wasted detection passes per capture, not a wrong read.
+
+**Fix direction:** none required. Leave as a known device-specific constant.
 
 ---
 
@@ -244,76 +282,884 @@ directions.
 
 ### 13. `genai.Client()` re-created every request
 
-**File:** `backend/app/marks.py:208` (`recognize`)
+**Status: STILL VALID, unchanged.** [marks.py:208](backend/app/marks.py#L208)
 
-A new SDK client is instantiated on every `/api/scan` request instead of
-being created once and reused. Wasted setup cost on the already-slowest
-part of the pipeline, across potentially dozens of requests per class
-session.
+`remote` path only, so no longer on the default hot path.
 
 ### 14. `QuizConfig.totalMax` accepted but never checked
 
-**File:** `backend/app/models.py:35`
+**Status: STILL VALID, unchanged.** [models.py:35](backend/app/models.py#L35)
 
-`totalMax` is required in every request payload but never read anywhere
-in the backend — `marks.py` always independently recomputes
-`sum(question_maxes)` for both the Gemini prompt and `validate_payload`'s
-total check. If a future frontend change (or a hand-crafted request) ever
-sends a `totalMax` that disagrees with the real sum, nothing notices.
+`totalMax` is required in every request and read nowhere in the backend;
+`marks.py` and `local.py` both independently recompute `sum(question_maxes)`.
+A `totalMax` disagreeing with the real sum goes unnoticed.
 
 ### 15. Failed-rotation debug artifacts reflect the wrong orientation
 
-**File:** `backend/app/detection.py:365` (`detect_any_orientation`)
+**Status: STILL VALID, unchanged.** [detection.py:568-577](backend/app/detection.py#L568-L577)
 
-All four rotation attempts reuse the same `out_dir`, so if all four fail,
-the on-disk `overlay.jpg`/`result.json` reflect whichever rotation was
-tried last (270°), not the original 0° the function actually returns as
-`failure_reason`. Currently low-impact: `main.py`'s `TemporaryDirectory`
-is deleted immediately after each request, so nothing today reads
-`out_dir` post-failure — would only matter if this function is ever
-called from a context that keeps `out_dir` around for debugging.
+All four rotation attempts still reuse the same `out_dir`, so after a total
+failure the on-disk `overlay.jpg`/`result.json` reflect the 270° attempt
+while the returned `failure_reason` is the 0° one. Still low-impact in the
+app (`TemporaryDirectory`), still a real trap for `batch_detect.py`.
 
----
-
-## Security review — clean
-
-No HIGH/MEDIUM findings cleared the confidence bar. Checked: API-key
-sourcing (`GEMINI_API_KEY` via env only, `genai.Client()`, never reaches
-the frontend or a response body), CORS config (`allow_origin_regex`
-matches localhost + private LAN ranges only, no `allow_credentials`, no
-auth/session/cookie surface to attack via CORS), and injection surfaces
-(Tesseract config strings built entirely from hardcoded constants —
-`OEM`/`PSM`/`WHITELIST` — never user input; no path traversal, since every
-file write uses a fixed filename or a server-generated timestamp, never
-client-controlled data).
-
-No-auth and local-only CORS are deliberate, documented design choices for
-a single-instructor local pilot (plan.md §9, §13) — not vulnerabilities
-introduced by recent changes.
+Second-order, noticed in audit 2: on a *successful* rotated attempt the
+returned dict's `"image"` key points at `_rotation_attempt.jpg`, which is
+unlinked immediately afterwards.
 
 ---
+
+## Security review (audit 1) — SUPERSEDED
+
+The 2026-08-27 verdict of "no HIGH/MEDIUM findings" was accurate for the
+code as it stood. It no longer is: `/api/harvest` did not exist in its
+current form, there was no public deployment, and the reviewed surface
+took no client-controlled strings into file paths. See **N1** and **N2**.
+
+What audit 1 checked and audit 2 re-confirmed as still clean: API-key
+sourcing (`GEMINI_API_KEY` via env only, never in a response body), the CORS
+regex (localhost + private LAN ranges, no `allow_credentials`), and
+Tesseract config strings (built from hardcoded constants, never user input).
 
 ## Design (`product-ui-design`) — ✅ fixed (2026-08-29)
 
-Mechanical scan (`scan-tells.py`) found 2 tells in
-`frontend/src/index.css`:
+Unchanged from audit 1, and re-verified: `index.css` is a real token system
+with two-layer tinted shadows and the petrol-teal accent, `scan-tells.py`
+passes clean. See CLAUDE.md's "Frontend design system".
 
-- A pure-black, single-layer `box-shadow` (`--shadow`, lines 11 & 44) —
-  should be tinted toward the background hue, two layers.
-- A purple/violet `--accent` (`#aa3bff` light / `#c084fc` dark) — in the
-  same family the skill flags as a default "AI accent" to avoid.
+---
 
-Both were leftover Vite-scaffold CSS custom properties, never referenced
-by any component (Setup.tsx/Scan.tsx/Review.tsx all used ad-hoc inline
-styles instead) — not an active visual defect at the time, but flagged as
-worth fixing before any real UI polish pass began, exactly so nobody
-inherited the purple accent later by assuming it was intentional.
+# Part B — new findings (audit 2, 2026-08-31)
 
-That polish pass happened (2026-08-29, via the `product-ui-design`
-skill): `index.css` was replaced entirely with a real token system
-(`--background`/`--foreground`/`--primary`/etc., two-layer tinted
-shadows, a deliberate petrol-teal accent), and every screen
-(Setup/Scan/Review/Results) was rebuilt on it. `scan-tells.py` now passes
-clean. See CLAUDE.md's "Frontend design system" section and learn.md for
-the walkthrough. The other findings in this file (bugs, medium/low
-priority) are unrelated to that pass and remain unaddressed.
+## HIGH
+
+### N1. Path traversal in `/api/harvest`: a crafted `serial` writes files outside the harvest root
+
+**Files:** [harvest.py:63-86](backend/app/harvest.py#L63-L86) (`_key`), [harvest.py:166-168](backend/app/harvest.py#L166-L168), [stores.py:58-66](backend/app/stores.py#L58-L66) (`LocalStore.put`)
+
+`_key` interpolates the **confirmed field value** straight into the storage
+key:
+
+```python
+return f"{source}/{field}/{tag}/{value}_{digest}.png"
+```
+
+`source` is sanitized by `_sanitize_source` — whose docstring says exactly
+why: *"`/api/harvest` is a public endpoint and this arrives in a form field
+— a `../..` here would otherwise escape the harvest root."* That reasoning
+applies verbatim to `value`, which is **not** sanitized. `HarvestFields.serial`
+is an unconstrained `str | None` straight off the wire, and `LocalStore.put`
+does `dest = self.root / key` then `mkdir(parents=True)` + `copyfile`.
+
+Verified by execution (2026-08-31):
+
+```
+harvest(..., confirmed_serial="../../../../escaped/PWNED", store=LocalStore(root))
+→ escaped/PWNED_73bf48fb3c46eb87f38779f251eb6cfc.png     # written OUTSIDE root
+→ harvested/                                              # empty
+```
+
+The written bytes are a cell crop of the caller's own uploaded image, so the
+content is effectively attacker-chosen too.
+
+The near-miss that makes this worth calling out: `test_harvest.py` contains
+`test_a_hostile_source_cannot_escape_the_harvest_root` — the exact threat
+was anticipated, tested, and fixed for one field, and the adjacent field on
+the same request was missed. The passing test reads as coverage of the
+class of bug when it covers one instance of it.
+
+Blast radius by backend:
+- **`local` (the laptop default, and the Docker default):** arbitrary file
+  write anywhere the process can write. HIGH.
+- **`s3` (the deployed config):** no traversal — S3 keys are literal — but
+  arbitrary key prefixes inside the bucket, which corrupts the
+  `<source>/<field>/<tag>/` layout `fetch-crops.sh` and the held-out-writer
+  evaluation both depend on. MEDIUM.
+
+**Fix direction:** sanitize `value` the same way `source` already is, inside
+`_key` so no future field can forget it — and additionally assert in
+`LocalStore.put` that `dest.resolve()` is under `self.root.resolve()`, since
+that is the invariant that actually matters and it should not depend on
+every caller getting its own escaping right.
+
+### N2. Unbounded `max` in `QuizConfig` → memory exhaustion on the public endpoint
+
+**Files:** [models.py:26-36](backend/app/models.py#L26-L36), [marks.py:46-49](backend/app/marks.py#L46-L49) (`legal_values`)
+
+`QuestionConfig.max` is a bare `float` with no bound, and `legal_values`
+materializes a set with `2 * max + 1` elements:
+
+```python
+def legal_values(max_mark: float) -> set[float]:
+    steps = round(max_mark * 2)
+    return {i / 2 for i in range(steps + 1)}
+```
+
+Verified by execution (2026-08-31): the model accepts
+`{"idDigits": 100000, "questions": [{"q": 1, "max": 1e9}]}` without
+complaint; `legal_values(500_000)` already allocates ~32 MB in 0.22 s, and
+scales linearly — `max=1e9` is 2 billion elements, tens of GB.
+
+Reachability: detection runs first, so this needs a photo whose column count
+matches the declared question count — but that is a five-column grid photo,
+and the app is publicly deployed with the template's own layout documented.
+`CNNRecognizer.read_marks` then calls `legal_values(max_mark)` per question
+plus `legal_values(sum(...))` for the total. The Lambda has 2048 MB; it
+OOM-kills. No auth stands in front of this, and the rate limiter keys on the
+attacker-controlled `X-Forwarded-For`.
+
+A smaller sibling on the same model: `idDigits` is unbounded too (drives a
+loop of `Path.exists()` calls), and the `config` form field itself has no
+size cap — `_reject_oversized` measures only `image_bytes`, so a
+chunked-encoding request with no `Content-Length` bypasses the middleware
+check and can carry an arbitrarily large `config` string into memory.
+
+**Fix direction:** bound the model — `idDigits: int = Field(ge=1, le=15)`,
+`max: float = Field(gt=0, le=100)`, `questions: list[...] = Field(min_length=1, max_length=30)`.
+These are quiz-grid facts, not arbitrary limits; the template physically
+cannot hold more.
+
+---
+
+## MEDIUM
+
+### N26. Nothing stops a real session's output from being committed
+
+**Status: PARTLY FIXED 2026-08-31.** The `.gitignore` half is done (see
+N27). Still open: the convention for whether a genuinely-real photo batch
+may ever live in the repo — now written into CLAUDE.md's "Things to avoid",
+so the question is settled before the data exists.
+
+**Files:** [.gitignore](.gitignore), [Results.tsx:77-87](frontend/src/Results.tsx#L77-L87), [generate_collection_sheet.py](backend/generate_collection_sheet.py)
+
+**Scope note (corrected 2026-08-31, per the repo owner):** the committed
+testset — `testset/images/real_class_*.jpeg`, `phone_*.jpg`,
+`real_class_info.json`, `labels.json` — carries **fabricated** IDs, serials
+and marks. They are real photographs of real handwriting, which is what
+makes them useful for detection and CNN accuracy work, but the identifying
+values in them are made up. There is no disclosure, nothing to purge from
+history, and nothing to check on GitHub. An earlier draft of this file
+recorded that as a HIGH finding; it was wrong and has been removed.
+
+What survives is forward-looking, and it is a real gap: **the pilot has not
+run yet, and when it does, its outputs will contain genuine student data
+that nothing currently keeps out of git.**
+
+Three artifacts, in descending order of risk:
+
+1. **The exported workbook.** `handleExport` downloads
+   `${quizName}.xlsx` — every student's ID, serial and marks for a whole
+   class, in one file. The browser puts it wherever downloads go, and if
+   that is ever inside this tree (or it gets moved here to check against the
+   attendance sheet, which is exactly what the Results screen tells the
+   instructor to do), **nothing ignores it.** There is no `*.xlsx` pattern
+   anywhere. This is the single most concentrated piece of real student data
+   the app will ever produce.
+2. **Filled-in collection sheets.** `generate_collection_sheet.py` writes to
+   the repo root by default (`--out ../collection_sheet.docx`). The blank
+   one is harmless; the photographed, filled-in ones are handwriting samples
+   from named people, and neither the `.docx` nor any scan of it is ignored.
+3. **Real photographs from an actual class.** The current batch is fine, but
+   the next batch may not be, and the naming convention (`real_class_*`)
+   gives no signal either way — a future `real_class_19.jpeg` with genuine
+   values would be committed exactly as easily as the fabricated ones were.
+
+The rest of the pipeline already takes this seriously —
+`backend/training_data/harvested/` is ignored with the comment *"real
+student/instructor handwriting — neither belongs in git"*, and
+`comparison_log/` alongside it. The gap is that both of those are files
+*the backend* writes, and all three above are files a *person* ends up
+holding.
+
+**Fix direction:** add `*.xlsx`, `*.docx` (with a `!marks-grid-template.docx`
+negation, since that one is a real deliverable) and `collection_sheet*` to
+`.gitignore` before the pilot runs — see **N27**, which is the same change.
+Separately, decide the convention now for whether a genuinely-real photo
+batch is ever allowed in the repo, and write it into CLAUDE.md next to the
+existing harvested-crops rule, so the question is settled before the data
+exists rather than after.
+
+### N3. A single hung upload disables the capture button for the rest of the session
+
+**Files:** [Scan.tsx:170](frontend/src/Scan.tsx#L170), [Scan.tsx:229-234](frontend/src/Scan.tsx#L229-L234), [scanQueue.ts:33-35](frontend/src/scanQueue.ts#L33-L35), [api.ts:51-54](frontend/src/api.ts#L51-L54)
+
+The 2026-08-30 capture-button change made `disabled={!!cameraError || capturing}`
+with `capturing = inFlightCount(entries) > 0`, and `inFlightCount` counts
+entries whose status is still `'pending'`. An entry leaves `'pending'` only
+when its `fetch` settles.
+
+`scanImage` has no `AbortSignal` and no timeout. A request that never
+settles — a dropped wifi association mid-upload is the common one, and the
+phone-on-LAN setup makes it likely — leaves one entry `'pending'` forever,
+which means `capturing` stays `true` forever, which means **the capture
+button is disabled for the rest of the session with no way to recover but a
+page reload.**
+
+Before the spinner change this was survivable (captures ran in parallel;
+a stuck one was just a stuck row). CLAUDE.md records the throughput
+trade-off that change made but not this one. It is the sharpest current
+violation of "a bad photo must never block the session," because it blocks
+*every* subsequent photo, and it compounds finding 6 (the stuck entry also
+has no dismiss action).
+
+**Fix direction:** `AbortSignal.timeout(60_000)` on both fetches in
+`api.ts`, so a wedged request becomes an `'error'` entry — and give
+`'error'` entries a dismiss action (finding 6) so the queue can drain.
+
+### N4. The ID path has no blank-cell guard; the marks path does
+
+**Files:** [local.py:65-91](backend/app/recognizers/local.py#L65-L91) (`read_id`), [preprocess.py](backend/cnn/preprocess.py) (`_to_canvas`), versus [segment.py:151-152](backend/cnn/segment.py#L151-L152)
+
+`segment_cell` guards blanks explicitly and returns `[]`, with a comment
+citing plan.md §16: *"A classifier always outputs something; feed it a blank
+cell and it returns a confident wrong digit."* `_decode_serial_cell` and
+`_decode_value_cell` both check that result and return `None`.
+
+`read_id` has no equivalent. A blank or near-blank ID cell goes straight
+into `preprocess_for_cnn` → `_to_canvas`, where an Otsu threshold on
+near-uniform paper produces an arbitrary binarization (Otsu always splits,
+even a unimodal histogram), and the resulting canvas is classified. The only
+thing standing between that and a fabricated digit is
+`CONFIDENCE_FLOOR`/`MARGIN_FLOOR` — floors calibrated in
+`cnn/accuracy.py` against **real handwritten digits**, never against blank
+input, and deliberately loosened to 0.75/0.6 on 2026-08-30.
+
+`_to_canvas` also returns an all-zero 28×28 canvas when it finds no ink at
+all, which is then fed to the model rather than short-circuited.
+
+This matters specifically because the ID is the field with no arithmetic
+check behind it — `id_ocr.py`'s own docstring makes that point — so a
+fabricated ID digit has nothing downstream to catch it.
+
+**Fix direction:** apply `segment_cell`'s own ink-fraction floor to the ID
+cell before classification, and return `?` + flag for a blank. Also return
+`None` from `_to_canvas` rather than an all-zero canvas, so callers cannot
+classify emptiness.
+
+### N5. A student ID containing `?` saves as a confirmed record and exports to Excel
+
+**Files:** [Review.tsx:39](frontend/src/Review.tsx#L39), [Review.tsx:119-149](frontend/src/Review.tsx#L119-L149), [Results.tsx:63-75](frontend/src/Results.tsx#L63-L75)
+
+Both recognizers return `?` for an unreadable ID position, by design and by
+contract ("an unreadable position becomes `?`, never a silently-dropped
+digit"). The review screen pre-fills that string into the Student ID input
+and flags the field visually — but nothing blocks Confirm on it.
+
+`handleConfirm` checks only that at least one identity field is non-empty.
+So `"12?4567"` is saved as `confirmed: true`, `unverifiedReason` returns
+`null` (both fields present, so no badge), and it lands in the exported
+Excel as a literal `12?4567`. Nothing downstream — sum check, cross-check,
+the unverified count — treats it as incomplete.
+
+More broadly there is no structural validation of `studentId` anywhere: not
+length against `config.idDigits`, not digits-only, on either the Review or
+the Results screen.
+
+**Fix direction:** treat an ID that is not exactly `idDigits` digits as
+blocking on Confirm (with the usual "enter manually" escape), and count it
+in `unverifiedReason` if it does get saved.
+
+### N6. The Results screen's inline Total edit has no legal-value check
+
+**File:** [Results.tsx:201](frontend/src/Results.tsx#L201), [Results.tsx:218-234](frontend/src/Results.tsx#L218-L234) (`commit`)
+
+Same class as finding 4, second location. `commit()` checks `hasMarkErrors`
+(questions only) and the both-identity-fields-empty case, then writes
+`total = Number(totalStr)` unvalidated. Typing anything non-numeric into the
+Total cell and tabbing away persists `NaN` onto an existing record — and
+this screen is the last one before export, where a bad value has nothing
+after it to catch it.
+
+**Fix direction:** the same finite + legal-value check as the question
+cells, sharing one helper with `Review.tsx`.
+
+### N7. The Excel download can be aborted on the target device
+
+**File:** [Results.tsx:77-87](frontend/src/Results.tsx#L77-L87) (`handleExport`)
+
+```ts
+const url = URL.createObjectURL(blob);
+const a = document.createElement('a');
+a.href = url; a.download = `${config.quizName || 'quiz'}.xlsx`;
+a.click();
+URL.revokeObjectURL(url);
+```
+
+Two known problems, both specific to the device this app is used on:
+
+1. `revokeObjectURL` fires synchronously in the same tick as `click()`. The
+   download itself is asynchronous; revoking the URL before the browser has
+   read from it is a documented way to get a silently-failed download,
+   particularly on iOS Safari. The fix is a `setTimeout(..., 0)` or a
+   `requestAnimationFrame`.
+2. The anchor is never appended to the DOM. `click()` on a detached anchor
+   is a no-op in some browsers, and iOS Safari handles `download` on blob
+   URLs inconsistently regardless.
+
+This is the one operation the whole application exists to perform, on the
+one screen reached once per class, at the moment the instructor most needs
+it to work — and it is the piece least covered by tests (jsdom's "Not
+implemented: navigation to another Document" warning in the current vitest
+run is this code path).
+
+Also minor, same function: `quizName` is used unescaped as a filename, so a
+quiz named `CSE211L/Q1` produces an invalid or path-bearing download name.
+
+**Fix direction:** append the anchor, click, remove it, and revoke on a
+timeout. Sanitize the filename. Verify by hand on the actual phone — this
+is not testable in jsdom.
+
+### N8. Harvested crops have no retention policy, while the logs do
+
+**File:** [deploy.sh:66-74](deploy.sh#L66-L74), [deploy.sh:141-150](deploy.sh#L141-L150)
+
+`deploy.sh` sets a 30-day retention on the CloudWatch log group with an
+explicit comment — *"New log groups default to Never expire, which is a slow
+privacy leak as much as a cost one"* — and that reasoning is correct.
+
+The crops bucket, which holds the actual student handwriting this project
+takes considerable care to keep unlinkable, gets `put-public-access-block`
+and nothing else. No lifecycle rule, no expiration, no versioning-noncurrent
+cleanup. The data with real privacy weight has weaker retention than the
+data deliberately scrubbed of it.
+
+That is an inconsistency rather than a vulnerability, but it is the kind
+this project has otherwise been rigorous about, and it grows monotonically
+for as long as the demo is up.
+
+**Fix direction:** add an S3 lifecycle rule with an expiration matched to
+how long the crops are actually useful for fine-tuning, and state that
+duration in `Setup.tsx`'s disclosure so the claim there stays complete.
+
+### N9. `RECOGNIZER=both` writes full student IDs to disk, in scan order
+
+**File:** [both.py:40-52](backend/app/recognizers/both.py#L40-L52) (`_log_disagreement`), [both.py:70-75](backend/app/recognizers/both.py#L70-L75)
+
+```python
+if cnn_result.student_id != remote_result.student_id:
+    _log_disagreement("student_id", cnn_result.student_id, remote_result.student_id)
+```
+
+This appends the complete recognized student ID, both recognizers' versions,
+with a UTC timestamp, to `comparison_log/comparisons.jsonl` — one line per
+scan, in scan order.
+
+Every other part of this codebase goes to real lengths to prevent exactly
+this: `harvest.py` shuffles write order and hashes crop content,
+`stores.py` flattens mtimes, `observability.py` denylists `student_id` as a
+key *and* regex-redacts any 4+ digit run, and `test_observability.py`
+asserts a real scan's logs contain no student ID. `both.py` writes the ID
+verbatim, and there is no test asserting otherwise.
+
+It is gitignored and only produced during a deliberate comparison run — but
+the comparison run is a step 3r.6 deliverable that is still outstanding and
+is meant to happen during a *real class*, which is the moment the file is
+most sensitive. Two adjacent notes:
+
+- `_log_disagreement` writes to a repo-relative path, so `RECOGNIZER=both`
+  on the deployed Lambda would raise `OSError: Read-only file system` inside
+  `read_id` and fail every scan. Not currently reachable (the deploy sets
+  `cnn`) but it is a one-env-var mistake away.
+- Its docstring calls this log "the one deliberate, permanent exception" to
+  statelessness "the same way `debug_uploads/` was" — `debug_uploads/` was
+  deleted in step 11.0.1 precisely because it turned out to be a privacy
+  defect, which makes that a poor precedent to invoke.
+
+**Fix direction:** log a per-position agreement mask rather than the values
+(`"cnn": "12?4567" → "positions_differing": [2, 5]`), which is what actually
+answers "where do the recognizers disagree" without recording anybody's ID.
+If the raw values are genuinely needed, route them through
+`observability._scrub` and say so.
+
+---
+
+## LOW
+
+### N10. `deploy.sh`'s CloudFront comment block contradicts what it deploys
+
+**Status: FIXED 2026-08-31.** `deploy.sh`'s CloudFront header rewritten to
+describe API Gateway and to state plainly that the backend is *not* private
+(with the OAC-vs-secret-header note for if that ever needs closing off); the
+stale `ORIGIN_REQ_ALL_EXCEPT_HOST` rationale corrected (Host exclusion still
+matters, but because API Gateway routes *by* Host, not because of Function
+URL SigV4); usage line and `local-stack.sh` updated. `aws/README.md` gained
+an API Gateway row. The underlying posture — a directly-reachable API URL —
+is accepted, now in writing.
+
+**File:** [deploy.sh:254-267](deploy.sh#L254-L267) versus [deploy.sh:346-352](deploy.sh#L346-L352)
+
+The section header still describes the pre-pivot design:
+
+> `/api/*` -> the Lambda **Function URL** … It is also what makes the Lambda
+> URL non-public: the URL stays on AWS_IAM and CloudFront signs each request
+> with Origin Access Control, **so nothing can call it directly.**
+
+Ninety lines later the code says the opposite, correctly: *"API Gateway is
+publicly invokable, so the API origin takes no OAC and no request signing."*
+
+The deployed reality is the second one: `https://<api-id>.execute-api.us-east-1.amazonaws.com/api/scan`
+is directly reachable, unauthenticated and bypassing CloudFront entirely.
+That is an acceptable posture for this demo — CloudFront adds no auth here
+anyway — but a reader who trusts the first comment will believe there is a
+control in place that is not.
+
+Same drift in [aws/README.md](aws/README.md): the grant table row reads
+"Lambda actions | create/update the function and **its Function URL**" and
+there is no API Gateway row at all, though the policy has one.
+
+**Fix direction:** rewrite the comment block to describe API Gateway, and
+either accept the direct API URL explicitly in writing or add a
+CloudFront-injected shared-secret header the origin checks.
+
+### N11. `preflight.sh` does not probe API Gateway, and its read-only check does not use the deployed harvest config
+
+**File:** [preflight.sh:84-90](preflight.sh#L84-L90), [preflight.sh:151-167](preflight.sh#L151-L167)
+
+Two gaps in the script whose entire purpose is "anything that would fail
+halfway through `./deploy.sh` fails here instead":
+
+1. The permission probes cover ecr, lambda, s3, iam and cloudfront — but not
+   `apigatewayv2`, which `deploy_backend` has called since the pivot. A
+   fresh deploy user whose policy is missing that grant passes preflight
+   with zero blockers and fails mid-deploy, after the ECR repo, image,
+   bucket, role and function already exist. This is the same class of
+   problem as the `iam:ListRoles` probe bug CLAUDE.md records, in the
+   opposite direction: that one over-probed, this one under-probes.
+2. The read-only-filesystem check runs the container with
+   `HARVEST_ENABLED=false`. Production runs `HARVEST_BACKEND=s3` with
+   harvesting **on**. So the check that exists to reproduce Lambda's
+   filesystem never exercises the one code path that writes anything —
+   `/api/harvest` is not called at all, under any configuration.
+
+**Fix direction:** add `probe "apigateway" blocking aws apigatewayv2 get-apis --region "$REGION"`,
+and point the read-only container at `local-stack.sh`'s MinIO with
+`HARVEST_BACKEND=s3` so a real harvest round-trips under `--read-only`.
+
+### N12. The deploy policy carries grants for two abandoned approaches, and one grant is account-wide
+
+**Status: DOCUMENTED, not fixed.** `aws/README.md` now names the dead
+grants (`lambda:*FunctionUrlConfig`, the CloudFront Functions statement) and
+adds API Gateway to a renamed "three grants that are wider than they look"
+section with the `/apis/*` scope spelled out. **The grants are still in
+`deploy-policy.json`** — removing them changes a live IAM policy and should
+be done deliberately, not as part of a docs pass.
+
+**File:** [aws/deploy-policy.json](aws/deploy-policy.json)
+
+`aws/README.md` states the policy is "derived from the API calls the script
+makes, not from a guess." Three statements no longer match that:
+
+- `lambda:CreateFunctionUrlConfig` / `GetFunctionUrlConfig` /
+  `UpdateFunctionUrlConfig` — `deploy.sh` makes no Function URL call.
+- `CloudFrontFunctionForSigningApiPostBodies` (`cloudfront:CreateFunction`,
+  `PublishFunction`, …) — no CloudFront Function is created anywhere; this
+  is left over from the abandoned request-signing approach.
+- `ApiGatewayForThisProject` is scoped to `arn:aws:apigateway:*::/apis` and
+  `/apis/*`, which is **every API Gateway API in the account** —
+  `apigateway:PATCH`/`PUT` on `/apis/*` can modify or re-target any other
+  API the account owns. Like CloudFront's create-time wildcard this may be
+  unavoidable, but unlike CloudFront it is not called out in the README's
+  own "The two grants that are wider than they look" section.
+
+**Fix direction:** delete the two dead statement groups, and add the API
+Gateway scope to the README's wide-grants section with the reason.
+
+### N13. `./deploy.sh all` can never set `ALLOWED_ORIGINS`
+
+**File:** [deploy.sh:96-99](deploy.sh#L96-L99), [deploy.sh:410-415](deploy.sh#L410-L415)
+
+`ALLOWED_ORIGINS` is appended to the Lambda's environment only
+`if [ -n "${SITE_URL:-}" ]`, and `SITE_URL` is only ever read from the
+caller's environment — nothing in the script sets it. In `all` mode
+`deploy_backend` runs *before* `deploy_cdn`, so the CloudFront domain is not
+known yet, and `deploy_backend` never runs again.
+
+The deployed function therefore always keeps `DEFAULT_ALLOWED_ORIGIN_REGEX`
+(localhost + private LAN), which step 11.1.1 built `ALLOWED_ORIGINS`
+specifically to replace. It is harmless *today* only because the frontend is
+same-origin behind CloudFront, so no CORS check ever runs — meaning the
+config seam is untested in production and would surprise anyone who later
+splits the origins.
+
+**Fix direction:** have `deploy_cdn` export the domain and re-apply
+`update-function-configuration`, or reorder `all` to cdn → backend → frontend.
+
+### N14. `/api/harvest` is only best-effort on the client side
+
+**File:** [main.py:273-336](backend/app/main.py#L273-L336)
+
+The endpoint's docstring says "Best-effort — a detection failure here just
+means nothing gets harvested for this scan, not a failed save." That holds
+for detection, which is explicitly checked. It does not hold for anything
+else: `stores.build_store()` raises `ValueError` on a missing
+`HARVEST_BUCKET`, `S3Store.put` raises on a throttle/permission/network
+error, and `harvest()` raises on a malformed crop — all unguarded, all
+becoming a 500.
+
+Nothing breaks for the user, because `harvestScan` swallows everything
+client-side. But that means an S3 misconfiguration in production is
+completely silent: crops stop being collected, the frontend never notices,
+and the only signal is the absence of a `harvest` log line.
+
+**Fix direction:** wrap the body in try/except, return
+`{"harvested": False}`, and `obs.log_event("harvest_failed", reason=...)` so
+the failure is visible in CloudWatch instead of invisible everywhere.
+
+### N15. The production image installs the test dependencies
+
+**File:** [requirements.txt](backend/requirements.txt), [Dockerfile](backend/Dockerfile)
+
+`pytest==9.1.1` and `httpx==0.28.1` are in `requirements.txt`, which the
+Dockerfile installs wholesale. `.dockerignore` correctly excludes `tests/`,
+so the image ships a test runner with nothing to run. Contrary to the split
+the project otherwise maintains carefully (`requirements-cnn.txt` for
+training, `requirements-deploy.txt` for the container).
+
+**Fix direction:** a `requirements-dev.txt` for pytest/httpx, matching the
+existing convention.
+
+### N16. The production recognizer imports a dev accuracy harness for two constants
+
+**File:** [local.py:23-24](backend/app/recognizers/local.py#L23-L24)
+
+```python
+from cnn.accuracy import CONFIDENCE_FLOOR as ID_CONFIDENCE_FLOOR
+from cnn.accuracy import MARGIN_FLOOR as ID_MARGIN_FLOOR
+```
+
+`cnn/accuracy.py` is a CLI tuning harness — it imports `argparse`,
+`tempfile`, `app.detection`, and computes a `TESTSET` path pointing at a
+directory the container does not contain. It is pulled into the default
+recognizer's import graph at Lambda cold-start time purely to read two
+floats. Its own docstring says "Standalone: … No `app/recognizers/` import
+here on purpose", and the dependency now runs the other way.
+
+Any import-time work added to that harness later — loading `labels.json`,
+argument parsing at module scope — breaks production startup with no
+obvious connection to the change.
+
+**Fix direction:** move `CONFIDENCE_FLOOR`/`MARGIN_FLOOR` (with their
+calibration comment, which is the valuable part) into a small
+`cnn/thresholds.py` that both `accuracy.py` and `local.py` import.
+
+### N17. Re-harvesting a crop under a different label leaves both labels in the corpus
+
+**File:** [harvest.py:63-86](backend/app/harvest.py#L63-L86) (`_key`)
+
+The content hash makes re-harvesting idempotent, which is the property the
+first corpus had to be thrown away for lacking. But the hash is the
+*suffix*; `field`, `tag` and `value` are all path segments ahead of it. So
+the same crop bytes harvested twice with different outcomes produce two
+different keys:
+
+```
+src/serial/confirmed/5_<digest>.png
+src/serial/corrected/7_<digest>.png
+```
+
+Both survive. The training set then contains one image with two
+contradictory labels — the realistic route being a scan confirmed too
+quickly, then re-photographed and corrected, which is a normal thing to do.
+
+`fetch-crops.sh`'s summary would not surface it (it counts per field/tag
+independently), and it would show up only as unexplained fine-tuning noise.
+
+**Fix direction:** either put the digest first in the key so a re-harvest
+overwrites regardless of label, or have `fetch-crops.sh` detect and report
+digests appearing under more than one label.
+
+### N18. `build_composite` crashes on an unreadable crop file
+
+**File:** [marks.py:87-95](backend/app/marks.py#L87-L95)
+
+```python
+images = [cv2.imread(str(path)) for _, path in sources]
+...
+h, w = img.shape[:2]
+```
+
+`cv2.imread` returns `None` for a file that exists but is truncated or
+unreadable — which is possible here, since these are files another part of
+the pipeline just wrote. `None.shape` is an `AttributeError`, uncaught, so
+it becomes a 500 rather than a clean `model_error`. Remote path only. Same
+pattern, unchecked, in [marks_ocr.py:37-38](backend/app/marks_ocr.py#L37-L38)
+and [local.py:139](backend/app/recognizers/local.py#L139) — the CNN path
+does check `path.exists()` first but not the read result.
+
+### N19. `validateConfig` has no upper bounds
+
+**File:** [validateConfig.ts:25-41](frontend/src/validateConfig.ts#L25-L41)
+
+`idDigits` and `questionCount` are checked as positive integers with no
+ceiling, and `questionMaxes` entries only as positive numbers. This is the
+client half of **N2**, and the enabling condition for finding **1**'s hang.
+
+**Fix direction:** bound both, matching whatever bounds the Pydantic models
+gain — the two definitions of "a valid quiz" should not be able to disagree.
+
+### N20. Stale comments (nits, no behaviour change)
+
+**Status: FIXED 2026-08-31.** All three corrected, each stating what it
+used to say and why that was wrong rather than being silently overwritten.
+
+- [.gitignore](.gitignore): the `debug_uploads/` block still reads
+  "TEMPORARY step 6 debugging only … Remove this **and the save code in
+  app/main.py** once step 6 is confirmed working." That save code was
+  deleted in step 11.0.1 and the directory no longer exists.
+- [requirements.txt](backend/requirements.txt): `scipy` is annotated
+  "cnn/segment.py's connected-component labelling". `segment.py` uses
+  `cv2.connectedComponentsWithStats`; the real scipy consumer is
+  `cnn/preprocess.py`'s `ndimage.center_of_mass`, which is load-bearing for
+  MNIST-matched centering — worth naming correctly, since the comment is the
+  only record of why the dependency exists.
+- [both.py:43](backend/app/recognizers/both.py#L43): calls
+  `comparison_log/` a deliberate exception "the same way `debug_uploads/`
+  was" — `debug_uploads/` was removed as a defect, not retired as a success.
+
+### N21. `validate_payload` never validates the serial it accepts
+
+**File:** [marks.py:153-161](backend/app/marks.py#L153-L161)
+
+Every mark goes through `legal_values`; the serial goes through nothing. It
+is flagged only if it is `None` or whitespace — so `"abc"`, `"12.5"`, or a
+2 KB string all pass straight into `MarksResult.serial`, into the review
+screen's pre-filled input, and (if confirmed unchanged) into IndexedDB, the
+Excel export, and `/api/harvest`'s key path. The CNN path cannot produce a
+non-digit serial by construction, but Gemini can, and `marks_ocr.py`'s
+whitelist pass is the only place any digit constraint is applied at all.
+
+This is the upstream half of **N1** and a sibling of **N5**: nothing in this
+project validates an identity string's *shape* at any layer.
+
+**Fix direction:** reject a serial that is not 1–3 digits in
+`validate_payload`, flagging rather than guessing, same as every other field.
+
+### N22. The deploy smoke test hardcodes a testset photo it does not check for
+
+**File:** [deploy.sh:196-202](deploy.sh#L196-L202), [preflight.sh:156](preflight.sh#L156)
+
+Both scripts hardcode `testset/images/filled_file.jpeg`. `deploy.sh` guards
+it with `if [ -f "$photo" ]` and silently skips the smoke test when absent —
+so a deploy whose end-to-end check never ran looks identical to one that
+passed. `preflight.sh` does not guard it at all and would report the
+read-only-filesystem check as a failure if the file moved.
+
+The values in that photo are fabricated (see **N26**), so there is no
+privacy dimension here — but the testset is explicitly a working directory
+that gets reorganised (three synthetic images were copied in from
+`synthetic_scripts/` during step 0), and a silent skip is the wrong
+behaviour for the one check that proves the deployed container actually
+serves a scan.
+
+**Fix direction:** fail loudly rather than skipping, and point both at a
+`synthetic_scripts/` image so the check does not depend on a photo batch
+that may be curated away.
+
+### N23. `deploy.sh` writes its distribution config to a predictable `/tmp` path
+
+**File:** [deploy.sh:355](deploy.sh#L355), [deploy.sh:395](deploy.sh#L395)
+
+```bash
+cat > /tmp/$PROJECT-dist.json <<JSON
+...
+aws cloudfront create-distribution --distribution-config "file:///tmp/$PROJECT-dist.json"
+```
+
+A fixed, world-guessable path written and then read back. On a shared or
+multi-user machine that is a symlink/TOCTOU target — another user can
+pre-create `/tmp/marks-scanner-dist.json` as a symlink and either capture
+the write or substitute the distribution config that gets created.
+
+Low, because this is a solo project on a single laptop. Recorded because it
+is a one-line fix and the script otherwise handles its inputs carefully.
+
+**Fix direction:** `mktemp` and clean up on exit.
+
+### N24. `decode_value` checks that a decimal point exists, not where it is
+
+**File:** [decode.py:68-101](backend/cnn/decode.py#L68-L101)
+
+```python
+if expects_decimal != (has_decimal_at is not None):
+    continue
+```
+
+The candidate filter compares decimal *presence* only; `has_decimal_at` is
+an index and its value is discarded. For the legal sets this project
+actually uses (`x` and `x.5`) the decimal is always in the same position, so
+this cannot currently mis-decode — the constraint is redundant rather than
+wrong. It becomes a real gap the moment a legal set contains two values with
+the same digits and a differently-placed point (any quarter-mark or
+two-decimal scheme).
+
+**Fix direction:** compare the index against the candidate's own decimal
+position, so the check means what its variable name says.
+
+### N25. `ResultsRow` writes to IndexedDB on every blur, changed or not
+
+**File:** [Results.tsx:218-234](frontend/src/Results.tsx#L218-L234), [Results.tsx:239-261](frontend/src/Results.tsx#L239-L261)
+
+`onBlur={commit}` is on all six-plus inputs per row, and `commit()`
+unconditionally calls `onUpdate` → `saveRecord` → `db.put` plus a full
+`setRecords` map. Tabbing across a row to read it rewrites the record once
+per field and re-renders the whole table each time.
+
+Harmless at 30 records. Worth noting only because it also means a record's
+`capturedAt` row is rewritten by a pure read-through, and because a future
+"last modified" field would be silently wrong.
+
+**Fix direction:** compare against the current record and return early if
+nothing changed.
+
+### N27. Ignore-file hygiene: small gaps (the rest is clean)
+
+**Status: FIXED 2026-08-31.** Root `.gitignore` gained `.vscode/`,
+`.idea/`, `.DS_Store`, `.pytest_cache/`, `*.xlsx` and
+`collection_sheet*.docx`, with a `!marks-grid-template.docx` negation.
+Verified: a `CSE211L Quiz 1.xlsx` and a `collection_sheet.docx` are both
+ignored, the template is still tracked and not ignored, and nothing
+previously tracked became newly ignored.
+
+Checked 2026-08-31 across `.gitignore`, `frontend/.gitignore`,
+`backend/.dockerignore`. **The substantive protections all hold** —
+`backend/.env`, `backend/certs/`, `backend/training_data/` (8.7 MB of
+crops), `comparison_log/`, `aws/deploy-policy.generated.json`, `venv/`,
+`node_modules/`, `cnn/data/` (2.2 GB) and `testset/debug/` are all correctly
+ignored and none is tracked. The Docker build context is 2.0 MB / 40 files
+with `.env`, `certs/`, `training_data/` and `comparison_log/` all excluded,
+and `digit_cnn.onnx` (1.8 MB) is correctly tracked so the image needs no
+download at boot. All 20 currently-untracked files are legitimate sources
+awaiting a commit — no junk, no secrets.
+
+Remaining gaps, all minor:
+
+- **The root `.gitignore` has no editor/OS patterns.** `.vscode/`, `.idea/`
+  and `.DS_Store` appear only in `frontend/.gitignore`, so they are ignored
+  under `frontend/` and nowhere else. None exists right now, but this
+  project is being worked on in VS Code, so a root `.vscode/` is one
+  settings change away from being committed.
+- **`.pytest_cache/` is not in any project ignore file.** It is currently
+  ignored only by `backend/.pytest_cache/.gitignore`, a file *pytest
+  generates for itself*. That works, but it means the protection is a side
+  effect of the tool rather than a project decision, and it disappears if
+  the directory is ever cleaned and recreated by something that does not
+  write that file.
+- **No `*.xlsx` or `*.docx` pattern.** The app's whole output is a
+  downloaded workbook, and `generate_collection_sheet.py` writes to the repo
+  root by default (`../collection_sheet.docx`). Neither is ignored, and both
+  are exactly the kind of file that gets produced during a session, sits in
+  the working tree, and is swept up by `git add -A`. This is the concrete
+  half of **N26** — see there for why it is worth doing before the pilot
+  rather than after. Note `marks-grid-template.docx` is a tracked
+  deliverable, so a `*.docx` rule needs a `!marks-grid-template.docx`
+  negation after it.
+- `frontend/.gitignore` does not cover `.env`/`.env.local`; the root file's
+  `.env` and `.env.local` entries do cover it, so this is fine as-is, just
+  worth knowing it depends on the root file.
+
+**Fix direction:** add `.vscode/`, `.idea/`, `.DS_Store`, `.pytest_cache/`,
+`*.xlsx` and `collection_sheet.docx` to the root `.gitignore`.
+
+### N28. Both `.env.example` files document values the code does not use
+
+**Status: FIXED 2026-08-31.** `backend/.env.example` now says 4 MB with
+the base64-inflation reasoning; `frontend/.env.example` now documents
+`VITE_API_BASE=""` (same origin) and why the empty string is a real value.
+`learn.md` carried the same 5 MB error and was corrected too.
+
+**Files:** [backend/.env.example](backend/.env.example), [frontend/.env.example](frontend/.env.example)
+
+Neither contains a real secret — both are clean placeholder files, which is
+the important part. But both document a configuration that is no longer
+true:
+
+- `backend/.env.example` says *"the 5 MB default"* and shows
+  `MAX_UPLOAD_BYTES=5242880`. [config.py:106](backend/app/config.py#L106)
+  sets `4 * 1024 * 1024`, with a long comment explaining precisely why it is
+  4 MB and not 5 (base64 inflation against Lambda's 6 MB payload ceiling).
+  The example file recommends the exact value the code's own comment argues
+  against.
+- `frontend/.env.example` describes the backend as *"a Lambda Function
+  URL"* and gives
+  `VITE_API_BASE=https://xxxx.lambda-url.us-east-1.on.aws` as the hosted
+  setting. The deployed build uses `VITE_API_BASE=""` (same origin, via
+  CloudFront routing `/api/*`), which `deploy.sh` sets and `api.ts`'s
+  `apiBase()` documents carefully as a real value distinct from unset.
+  Anyone following this file would build a frontend pointing at a host that
+  does not exist.
+
+Same doc-drift family as **N10** and **N20**, listed separately because
+`.env.example` is the file a new contributor copies verbatim.
+
+---
+
+## What this audit did NOT cover
+
+Stated so the absence of findings in these areas is not read as a clean
+bill of health.
+
+**Files read in full:** all of `backend/app/` (12 modules), `backend/cnn/`'s
+`decode.py`, `segment.py`, `preprocess.py`, `id_infer.py`, all of
+`frontend/src/`'s non-test sources (13 files), `Dockerfile`,
+`.dockerignore`, `requirements*.txt`, `.gitignore`, `deploy.sh`,
+`preflight.sh`, `fetch-crops.sh`, `dev.sh`, `aws/deploy-policy.json`,
+`aws/README.md`.
+
+**Not read at all:**
+
+- `local-stack.sh` — first 50 lines only (the header and config block).
+  It runs the deployed shape locally against MinIO and is the one place
+  `HARVEST_BACKEND=s3` is exercised end to end, so it is a meaningful gap.
+- `aws/MONITORING.md`.
+- The standalone harnesses and one-offs: `detect.py`, `batch_detect.py`,
+  `id_ocr_accuracy.py`, `harvest_real_photos.py`,
+  `generate_collection_sheet.py`, `gen_dev_cert.py`, and `cnn/`'s
+  `accuracy.py` (beyond its import block and threshold comments),
+  `marks_accuracy.py`, `train.py`, `model.py`, `inspect_preprocess.py`.
+  These do not run in production, but `harvest_real_photos.py` writes into
+  the real corpus and `accuracy.py`/`marks_accuracy.py` produce the numbers
+  the CNN-default decision rests on — a bug in either would mean the
+  measurements in CLAUDE.md are wrong, which is a different and arguably
+  more important kind of defect than the ones listed above.
+- `frontend/vite.config.ts`, `index.css`, `main.tsx`, `setupTests.ts`.
+- **The test suites themselves.** I ran both and listed every test name, but
+  audited test *content* only where a finding required it (`test_harvest.py`
+  for N1, `test_observability.py` for N9). Tests were not reviewed for
+  whether they assert the right thing — and N1 is a direct example of a
+  passing test that reads as broader coverage than it has, so this gap
+  matters more than usual here.
+- **The specs.** `plan.md`, `step.md`, `learn.md`, `README.md` and
+  `stack-reference.md` (~500 KB combined) were not checked for drift against
+  the code. Only CLAUDE.md's claims were spot-verified, and three of those
+  turned out stale (N10, N20).
+
+**Also not done:** no dynamic testing against the live deployment. N1 and N2
+were reproduced locally; neither was fired at
+`https://d2n2meq17rr1oi.cloudfront.net`, since that is the user's own
+production infrastructure and probing it is their call, not mine.
+
+---
+
+## Suggested order of work
+
+Nothing here is required for the laptop pilot to keep working, but four
+items gate anything else:
+
+0. **N26 + N27's `.gitignore` lines — before the pilot runs, not after.**
+   A one-line-per-pattern change, and the only item on this list whose cost
+   goes up sharply if it is done late: once a real class's exported workbook
+   has been committed, the fix stops being a `.gitignore` edit and becomes a
+   history rewrite. Cheap now, expensive later, and the trigger is a date
+   rather than a decision.
+1. **N1** and **N2** — the endpoint is publicly deployed *now*, and both are
+   verified-reproducible. N1 is a small, well-understood patch plus a test
+   that covers the field class rather than one field.
+2. **1**, **N3**, **6** — the three that can end a live grading session:
+   a crash on the first screen, a permanently-disabled capture button, and
+   a queue entry with no way out.
+3. **4** / **N6** / **N5** and **N7** — everything between a confirmed value
+   and the exported file. These are the ones that produce a *wrong mark in
+   a real gradebook*, which is the failure this project's invariants exist
+   to prevent.
+
+Everything else is genuine but survivable.

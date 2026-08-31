@@ -9,24 +9,27 @@ implementation of that protocol, not a second call site here.
 """
 from __future__ import annotations
 
-import os
 import tempfile
-from datetime import datetime, timezone
+import time
 from pathlib import Path
 from typing import Annotated
 
-from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.requests import Request
 
-# Loaded here, explicitly, so RECOGNIZER can be set in backend/.env rather
-# than only as a shell variable. It already happened to work via marks.py's
-# own load_dotenv, but only as a side effect of RemoteRecognizer being
-# imported eagerly below — making the CNN path lazy would have silently
-# broken .env-based selection. Load it where it is actually depended on.
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-
+# Imported first, deliberately: config.py calls load_dotenv at import, and
+# every setting below (RECOGNIZER included) is resolved from it. That used
+# to be an explicit load_dotenv here, for the same reason — RECOGNIZER is
+# read at import time, and making the sub-recognizer imports lazy nearly
+# broke .env-based selection as a side effect. One module, loaded once,
+# before anything reads a variable (step 11.1).
+from . import config as config_module  # noqa: E402
 from . import harvest as harvest_module  # noqa: E402
+from . import observability as obs  # noqa: E402
+from . import ratelimit  # noqa: E402
+from . import stores  # noqa: E402
 from .detection import detect_any_orientation
 from .models import HarvestFields, QuestionMark, QuizConfig, ScanResult
 from .recognizers.base import Recognizer
@@ -57,7 +60,7 @@ def _resolve_recognizer() -> Recognizer:
     The sub-recognizers are still imported lazily, inside their own
     branches, so that RECOGNIZER=remote keeps working on a machine with no
     CNN dependencies installed at all."""
-    name = os.getenv("RECOGNIZER", "cnn")
+    name = config_module.RECOGNIZER
     if name == "remote":
         return RemoteRecognizer()
     if name == "cnn":
@@ -73,31 +76,120 @@ def _resolve_recognizer() -> Recognizer:
 
 recognizer: Recognizer = _resolve_recognizer()
 
-# TEMPORARY — step 6 phone debugging only. Diagnosing why real phone
-# captures produce table_not_found where a direct file upload of the same
-# grid works fine, and the backend is stateless by design (plan.md §9) so
-# there is normally nothing left to inspect after a request. Saves every
-# upload here so real captures can actually be looked at. Remove this block
-# once step 6 is confirmed working — it is a deliberate, temporary
-# exception to statelessness, not a permanent feature.
-DEBUG_UPLOADS_DIR = Path(__file__).resolve().parent.parent / "debug_uploads"
+# Step 11.4. Built here rather than per request so the counters persist
+# across calls within one process — which is the only place they can
+# persist at all (see ratelimit.py on what that is worth on Lambda).
+limiter = ratelimit.SlidingWindowLimiter(
+    config_module.RATE_LIMIT_REQUESTS,
+    config_module.RATE_LIMIT_WINDOW_SECONDS,
+)
+
+# Only the two endpoints that do real work. A limit on everything would
+# also throttle CORS preflights, which browsers send automatically and
+# which cost nothing to answer — turning a generous limit into a
+# surprisingly tight one for no security benefit.
+_LIMITED_PATHS = frozenset({"/api/scan", "/api/harvest"})
+
+
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    """Size cap and rate limit, in that order (step 11.4.1, 11.4.2).
+
+    Middleware rather than a route dependency for one specific reason: the
+    size check has to happen BEFORE the body is read, and a dependency
+    runs after FastAPI has already parsed the multipart form — by which
+    point an oversized upload is in memory and the cap has done nothing.
+    """
+    if request.method == "POST" and request.url.path in _LIMITED_PATHS:
+        # Content-Length is a claim, not a fact — but rejecting on it is
+        # free and catches the honest oversized upload. The real
+        # enforcement is the post-read check in the handlers, which sees
+        # the actual bytes.
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > config_module.MAX_UPLOAD_BYTES:
+            obs.log_event("rejected_oversize", path=request.url.path,
+                          declared_kb=int(declared) // 1024)
+            return JSONResponse(
+                {"detail": "Image too large."},
+                status_code=413,
+            )
+
+        if config_module.RATE_LIMIT_ENABLED:
+            retry_after = limiter.check(ratelimit.client_ip(request))
+            if retry_after is not None:
+                obs.log_event("rate_limited", path=request.url.path,
+                              retry_after_s=int(retry_after) + 1)
+                return JSONResponse(
+                    {"detail": "Too many requests. Please slow down."},
+                    status_code=429,
+                    headers={"Retry-After": str(max(1, int(retry_after) + 1))},
+                )
+            limiter.prune()
+
+    return await call_next(request)
+
+
+def _log_scan(
+    status: str,
+    failure_reason: str | None,
+    ms: dict[str, int],
+    started: float,
+    quiz: QuizConfig,
+    image_bytes: bytes,
+    low_confidence_fields: list[str],
+) -> None:
+    """One line per scan, carrying facts about the request and never its
+    content. `low_confidence_fields` is a list of FIELD NAMES ("q1",
+    "student_id") — which is exactly the useful signal and none of the
+    sensitive one. See observability.py for why this is enforced rather
+    than merely intended."""
+    obs.log_event(
+        "scan",
+        status=status,
+        failure_reason=failure_reason,
+        recognizer=config_module.RECOGNIZER,
+        questions=len(quiz.questions),
+        id_digits=quiz.idDigits,
+        image_kb=len(image_bytes) // 1024,
+        ms_detect=ms.get("detect"),
+        ms_read_id=ms.get("read_id"),
+        ms_read_marks=ms.get("read_marks"),
+        ms_total=int((time.perf_counter() - started) * 1000),
+        flagged_count=len(low_confidence_fields),
+        flagged=low_confidence_fields,
+    )
+
+
+def _reject_oversized(image_bytes: bytes) -> None:
+    """The real cap. Content-Length can be absent or a lie; this sees what
+    actually arrived. Raised as 413 so a client can tell "your photo is too
+    big" apart from "the scan failed"."""
+    if len(image_bytes) > config_module.MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large.")
 
 # The phone (LAN) and the dev machine (localhost) are different origins even
 # on the same laptop (plan.md §9 "Running locally") — allow both without
 # hardcoding one machine's specific LAN address, since that changes per
 # network. Matches localhost/127.0.0.1 and the three private IP ranges.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=(
-        r"^https?://(localhost|127\.0\.0\.1"
-        r"|192\.168\.\d{1,3}\.\d{1,3}"
-        r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
-        r"|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})"
-        r"(:\d+)?$"
-    ),
-    allow_methods=["POST"],
-    allow_headers=["*"],
-)
+#
+# ALLOWED_ORIGINS replaces that regex with an explicit allowlist for a
+# hosted frontend, whose public domain the regex rejects outright (step
+# 11.1.1). Unset — the laptop case — keeps the regex exactly as it was.
+_origins = config_module.allowed_origins()
+if _origins is None:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=config_module.DEFAULT_ALLOWED_ORIGIN_REGEX,
+        allow_methods=["POST"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_origins,
+        allow_methods=["POST"],
+        allow_headers=["*"],
+    )
 
 
 @app.post("/api/scan")
@@ -109,11 +201,10 @@ async def scan(
     # rides as a JSON string in a form field (stack-reference.md).
     quiz = QuizConfig.model_validate_json(config)
     image_bytes = await image.read()
+    _reject_oversized(image_bytes)
 
-    # TEMPORARY — see DEBUG_UPLOADS_DIR comment above.
-    DEBUG_UPLOADS_DIR.mkdir(exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-    (DEBUG_UPLOADS_DIR / f"{stamp}.jpg").write_bytes(image_bytes)
+    ms: dict[str, int] = {}
+    started = time.perf_counter()
 
     # A fresh temp directory per request, deleted before this function
     # returns — nothing persists across requests or after one completes.
@@ -131,23 +222,28 @@ async def scan(
         out_dir = tmp_path / "out"
 
         question_count = len(quiz.questions)
-        det = detect_any_orientation(image_path, question_count, quiz.idDigits, out_dir)
+        with obs.timed(ms, "detect"):
+            det = detect_any_orientation(image_path, question_count, quiz.idDigits, out_dir)
 
         # Never call Gemini after table_not_found or column_count_mismatch
         # (plan.md §9) — protects the quota and the ID's privacy property
         # at once, since the composite is never built and Gemini is never
         # reached on either path.
         if det["status"] != "ok":
+            _log_scan("failed", det["failure_reason"], ms, started, quiz, image_bytes, [])
             return ScanResult(status="failed", failure_reason=det["failure_reason"])
 
         cells_dir = out_dir / "cells"
 
-        id_result = recognizer.read_id(cells_dir, quiz.idDigits)
+        with obs.timed(ms, "read_id"):
+            id_result = recognizer.read_id(cells_dir, quiz.idDigits)
 
         question_maxes = [q.max for q in quiz.questions]
-        marks_result = recognizer.read_marks(cells_dir, question_maxes)
+        with obs.timed(ms, "read_marks"):
+            marks_result = recognizer.read_marks(cells_dir, question_maxes)
 
         if marks_result.status != "ok":
+            _log_scan("failed", marks_result.failure_reason, ms, started, quiz, image_bytes, [])
             return ScanResult(status="failed", failure_reason=marks_result.failure_reason)
 
         low_confidence_fields = list(id_result.low_confidence_fields) + list(marks_result.low_confidence_fields)
@@ -161,6 +257,8 @@ async def scan(
         # be for it; 0 is an explicit sentinel rather than an ambiguous
         # extra "Qn+1".
         total = QuestionMark(q=0, value=marks_result.total)
+
+        _log_scan("ok", None, ms, started, quiz, image_bytes, low_confidence_fields)
 
         return ScanResult(
             status="ok",
@@ -178,16 +276,27 @@ async def harvest_endpoint(
     config: Annotated[str, Form()],
     original: Annotated[str, Form()],
     confirmed: Annotated[str, Form()],
+    source: Annotated[str | None, Form()] = None,
 ) -> dict[str, bool]:
     """Step 3r.6c: called from the review screen on Confirm, alongside
     (never blocking) the actual save. Best-effort — a detection failure
     here just means nothing gets harvested for this scan, not a failed
     save; the instructor's record is already safe in IndexedDB by the
-    time this fires."""
+    time this fires.
+
+    `source` (step 11.2.5) is an opaque per-browser id the frontend
+    generates once and stores in IndexedDB. It is optional: an older
+    frontend, or a request without it, files crops under `unknown/`
+    rather than being assigned something server-side, because one shared
+    backend would label every faculty member identically."""
+    if not config_module.HARVEST_ENABLED:
+        return {"harvested": False}
+
     quiz = QuizConfig.model_validate_json(config)
     original_fields = HarvestFields.model_validate_json(original)
     confirmed_fields = HarvestFields.model_validate_json(confirmed)
     image_bytes = await image.read()
+    _reject_oversized(image_bytes)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -200,11 +309,12 @@ async def harvest_endpoint(
         if det["status"] != "ok":
             return {"harvested": False}
 
-        # Reads harvest_module.HARVEST_DIR fresh at call time rather than
-        # relying on harvest()'s own default parameter (bound once, at
-        # function-definition time) — this is what lets tests point
-        # harvesting at a tmp_path via monkeypatch without polluting the
-        # real repo directory.
+        # Built fresh per request rather than once at import, so tests can
+        # point harvesting at a tmp_path (and a redeployed environment sees
+        # current config) without a module-level default bound at
+        # function-definition time.
+        store = stores.build_store()
+
         harvest_module.harvest(
             out_dir / "cells",
             quiz.idDigits,
@@ -217,7 +327,10 @@ async def harvest_endpoint(
             confirmed_fields.questions,
             original_fields.total,
             confirmed_fields.total,
-            harvest_dir=harvest_module.HARVEST_DIR,
+            store=store,
+            source=source,
         )
 
+    obs.log_event("harvest", harvested=True, questions=question_count,
+                  tagged=bool(source))
     return {"harvested": True}

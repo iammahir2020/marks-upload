@@ -287,7 +287,7 @@ reports success is a defect; a genuinely unusable photo that returns
 | Serial + mark recognition | Gemini API via `google-genai`, free tier | Structured JSON, one call per script. Note `google-generativeai` is the retired SDK — `google-genai` (`from google import genai`) is the current one. |
 | Template | A `.docx` table, maintained by hand | No generator to build or keep in sync. |
 | Database | None | Session lives in IndexedDB until export. |
-| Hosting | None — both halves run on the instructor's laptop for the pilot | No account, no deploy step, no cold start. See "Running locally" in section 9. |
+| Hosting | None for the pilot — both halves run on the instructor's laptop. A free-tier hosted demo on AWS (Lambda behind API Gateway; S3 + CloudFront) is `step.md` step 11, see section 13 | No account, no deploy step, no cold start. See "Running locally" in section 9. The laptop path stays supported; hosting is additive, and sized to AWS's always-free tiers rather than to credits. **Shipped 2026-08-31** — API Gateway, not the Function URL this plan originally specified; see section 13 for why. |
 
 This table is the baseline (Gemini + Tesseract) stack and stays accurate for
 the `RemoteRecognizer` path. Section 16 adds a second local path (a small
@@ -421,6 +421,29 @@ than in a classroom:
 
 Moving to a hosted instance later changes the origins and the key's location.
 It changes nothing else, which is the point of keeping the backend stateless.
+
+**That prediction held, with two caveats found when it was actually
+specced** (`step.md` step 11). The origins are indeed the main change — the
+CORS regex here matches only localhost and private LAN ranges, and a public
+frontend is rejected by it — while the key's location stops mattering at
+all, since the default recognizer makes no API call. The caveats are both
+about statelessness being *less* true than this paragraph assumes:
+
+- ~~The `debug_uploads/` capture added during step 6 phone debugging writes
+  every upload to disk.~~ **Resolved (step 11.0.1, 2026-08-30):** the block
+  is gone from `main.py` and the directory — 605 real scripts, 99 MB — is
+  deleted. Verified adversarially rather than assumed: a real scan through
+  the endpoint now writes nothing at all under `backend/`.
+- Section 16's harvester deliberately persists labelled cell crops. That is
+  wanted, but it means the deployed backend needs durable storage — and no
+  mainstream free tier provides a persistent disk, so those crops have to
+  go to object storage rather than the container filesystem.
+
+On the chosen target (AWS Lambda, section 13) both of these stop being
+judgement calls: the filesystem is read-only outside `/tmp`, so either
+write path fails outright on the first scan. The stateless property this
+section claims has to become literally true before the app will run at
+all — which is a better forcing function than any amount of documentation.
 
 ### Rate limiting and retries
 
@@ -570,16 +593,86 @@ above stays relevant because `RECOGNIZER=remote` is still supported, and
 because the browser-side-cropping upgrade is what the stronger claim needs
 regardless of recognizer.
 
+**Hosting weakens this, and the wording has to follow** (`step.md` step
+11). On the laptop, "the backend sees the ID but it is your own machine" is
+a genuine answer. On a hosted demo it is someone else's machine, handling
+other faculty's students' scripts. What step 11 commits to instead:
+
+- **No whole script is stored anywhere.** The photo is processed in memory
+  and discarded. This required deleting the `debug_uploads/` capture first
+  (section 9), which made the claim false — **done in step 11.0.1
+  (2026-08-30)**, so the claim is now true on the laptop as well.
+- **What persists is individual labelled cell crops** — one digit each,
+  with no name, no ID, and no shared key linking one student's crops
+  together. Step 11.0.2 closed the one remaining link: the crops were
+  written in loop order, so file mtimes reconstructed an ID that the
+  per-crop UUIDs were meant to scatter. **Done 2026-08-30** — every crop
+  now gets a constant mtime, and the ~700 crops already collected before
+  the fix were backfilled to match, since those are exactly the corpus
+  11.2 uploads to S3. The leak was confirmed real before fixing, not
+  assumed: 2 of the 18 real class IDs were recoverable verbatim from the
+  mtime-ordered digit stream, and neither is afterwards.
+- **Faculty are told this in the interface**, not in a document. Their
+  students' handwriting becomes training data; that is a disclosure
+  obligation, not a footnote.
+
+The honest summary for a hosted demo is "no third party AI service sees a
+script, nothing is stored, and loose unlabelled digits are kept to improve
+recognition" — not "your data never leaves your device".
+
 ## 13. MVP scope
 
 In scope: setup, proportional grid detection, scan loop with queued
 uploads, local ID recognition, review/edit with sum-check and identity
 cross-checks, failure handling, Excel export.
 
+**Scope extension (2026-08-30): a free-tier hosted demo.** Hosting was out
+of scope below, and the reasoning for that — one instructor, one laptop, no
+account to keep alive — was right for the pilot. The goal changed: other
+faculty trying it on their own phones, on their own networks. That is
+`step.md` step 11, and it does not alter the laptop workflow, which remains
+the supported path. Two things make it affordable that weren't true when
+this section was written: section 16's CNN is now the default, so there is
+no API key to share and no shared quota for faculty to exhaust between
+them; and the app idles at 124 MB, which fits a free tier. One constraint
+shapes the whole step — **no mainstream free tier offers a persistent
+disk**, so harvested crops (section 16) must go to object storage rather
+than the app host, or they are lost on every redeploy.
+
+**Target: AWS** (decided 2026-08-30). The design deliberately sits inside
+AWS's *always-free* tiers — Lambda for the backend (1M requests + 400,000
+GB-s/month, permanent), S3 + CloudFront for the frontend (1 TB
+egress/month, permanent), S3 for the crops — rather than spending the
+available credits, so the demo survives their expiry. Measured against this
+workload that is roughly 100,000 free scans a month against a realistic
+load of a few hundred. Lambda sharpens the disk constraint above rather
+than softening it: its filesystem is read-only outside `/tmp`, so the two
+write paths named in section 9 raise `OSError` there instead of quietly
+losing data.
+
+**Deployed 2026-08-31, with one deviation from what this section
+originally specified.** The plan said "Lambda behind a Function URL",
+chosen over API Gateway on cost and its 29-second timeout. That could not
+be made to work on this account, which refuses Function URL invocation by
+any non-IAM principal: `AuthType NONE` with a correct public resource
+policy returned 403, CloudFront's service principal with a correct OAC
+grant (verified principal, action, `FunctionUrlAuthType` and a matching
+`SourceArn`) also returned 403, and only a directly IAM-signed request
+succeeded. **API Gateway fronts the Lambda instead.** The costs the plan
+worried about turned out not to bind — ~$0 at a few hundred requests a
+month — but the 29–30s timeout is a real constraint against a measured
+~9s cold start, which is why `deploy.sh` wires in a warm-up rather than
+leaving it as advice. The live URL is <https://d2n2meq17rr1oi.cloudfront.net>;
+CloudFront serves the S3 frontend and routes `/api/*` to API Gateway, one
+origin, so there is no CORS anywhere.
+
 Deferred:
 - Client-side detection and cropping (OpenCV.js), so raw photos never
   leave the device. Worth doing before other faculty use a hosted
-  instance.
+  instance. **Still deferred as step 11 proceeds without it** — the
+  accepted position is that a hosted demo handles photos in memory and
+  stores none, which is weaker than "never leaves the device" and must be
+  stated to users rather than glossed (section 12).
 - Roster import for range validation and coverage checking. Skipped
   deliberately to avoid file-upload complexity.
 - Local digit classifier for marks too (TFLite/ONNX) — only if Gemini
@@ -626,6 +719,17 @@ recognition code behind a shared interface, then adds a local CNN behind
 that same interface as a second, selectable implementation. It does not
 renumber or replace steps 4–10 above; those proceed the same regardless of
 whether the CNN track is picked up.
+
+`step.md` step 11 (free-tier demo deployment) sits after step 10 and is
+likewise additive — see the scope note in section 13. Its first substep
+(11.0) is not deployment work at all: removing the temporary
+`debug_uploads/` capture, which stored whole scripts and contradicted the
+stateless-backend property section 9 commits to, and closing an ordering
+leak in the harvester that let file mtimes reconstruct a student ID the
+per-crop UUIDs were meant to prevent. Both were defects independent of
+hosting, worth doing whether or not step 11 proceeded — **and both are now
+done (2026-08-30)**, shipped on their own as phase A ahead of any
+deployment work.
 
 ## 15. Resolved decisions
 
@@ -1031,6 +1135,31 @@ means discarding every label from the pilot, which is the period these
 labels matter most. One 30-student class yields roughly 210 labelled ID
 digits — three or four quizzes is enough to fine-tune meaningfully.
 
+**A hosted demo turns this into the fastest path to 3r.6b.** Collecting
+from four writers has been the blocker; a handful of faculty each running a
+class produces far more diverse handwriting than any collection sheet
+would, as an ordinary by-product of use. Two constraints come with it
+(`step.md` step 11): the crops must be written to object storage — S3 on
+the chosen AWS target — rather than the app's own disk, since a Lambda
+filesystem is read-only outside `/tmp` and no free tier keeps a filesystem
+across redeploys anyway. The volume is trivial, roughly 50 KB per student,
+so 10 GB holds on the order of 200,000. And the people using it have to be
+told plainly that their students' handwriting is being kept (section 12).
+
+**Multi-writer collection needs a source tag, which the harvester does not
+currently write.** `harvest.py` names crops `<value>_<uuid>.png` with no
+writer or session information — adequate for one instructor, and actively
+disabling for several, because the held-out-writer evaluation this section
+requires below becomes impossible once everyone's crops pool anonymously
+into one bucket. It also cannot be reconstructed later, so it has to be in
+place *before* faculty start filling it. The layout becomes
+`harvested/<source-id>/<field>/{confirmed,corrected}/<value>_<uuid>.png`,
+with the id **per-faculty**: coarse enough that a prefix holds a whole
+class mixed together and identifies no student, fine enough to hold out one
+writer entirely. It must be random and client-generated — a per-scan id
+would regroup one student's digits and undo the unlinkability described in
+section 12.
+
 **Fine-tuning:** freeze the conv layers, retrain the classifier head at a
 low learning rate (~1e-4), hold out a real, unseen-writer photo set to
 measure against. Two separate fine-tuned heads on the same base model —
@@ -1079,6 +1208,31 @@ model worse on students, not better. Per-writer tagging exists so this is
 measurable rather than a surprise: hold out an unseen writer entirely and
 measure against them, not against a random split of samples collected
 together.
+
+**The per-writer tagging this risk depends on was never actually built** —
+found 2026-08-30 while planning the hosted demo. `harvest.py` writes
+`<value>_<uuid>.png`, so the mitigation described above cannot currently be
+carried out on harvested data at all. `step.md` step 11.2.4 adds it. Two
+things follow. First, everything harvested up to that point is untagged and
+can only be treated as one undifferentiated pool. Second, this is the
+clearest instance in the project of a stated mitigation quietly not
+existing in code: the risk was correctly identified here, and the paragraph
+reads as though something guards against it.
+
+**Class imbalance in harvested data is not hypothetical.** Measured across
+the 727 crops collected by 2026-08-30: ID digits range from 20 (`4`) to 80
+(`2`), a 4× spread, and marks are far worse — whole numbers appear 33–58
+times each while **half marks appear only ~8 times each**, roughly 6×
+under-represented despite being the harder case the constrained decoder
+exists for. Fine-tuning without weighted sampling would bias the model
+toward what it already reads most easily.
+
+**The confirmed/corrected split can be polluted by how data is loaded.**
+`harvest_real_photos.py` posts `original == confirmed`, so its whole batch
+lands in `confirmed/` regardless of what the model would have read. Those
+crops remain valid *labelled data*, but `corrected/` is not a complete
+record of model failures, and oversampling it does not mean what this
+section assumes unless the loader preserved a true original.
 
 **A stray pen dot could read as a decimal point.** The sum check (section
 10) catches it — a `4` read as `4.5` throws the total off by exactly

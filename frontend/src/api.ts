@@ -1,5 +1,6 @@
 // POST /api/scan (step.md step 6.4). Mirrors backend/app/models.py's
 // ScanResult exactly.
+import { getSourceId } from './db';
 import type { QuizConfig } from './types';
 
 export interface QuestionMark {
@@ -19,14 +20,24 @@ export interface ScanResult {
 
 const DEFAULT_API_PORT = 8000;
 
-// The frontend and backend are different origins on the same laptop
-// (plan.md §9 "Running locally") — derive the backend's address from
-// wherever this page itself was loaded (works over localhost or the LAN
-// IP alike) rather than hardcoding one. VITE_API_BASE overrides this for
-// a nonstandard setup (a different backend port, etc).
+// Three cases, and the empty one is deliberate:
+//
+//   unset   — the laptop. Derive the backend's address from wherever this
+//             page was loaded, so localhost and the LAN IP both work with
+//             nothing hardcoded (plan.md §9 "Running locally").
+//   ""      — SAME ORIGIN. Requests become relative (`/api/scan`), which
+//             is what the deployed setup uses: CloudFront serves the
+//             frontend and routes /api/* to the Lambda, so there is no
+//             second origin and therefore no CORS at all.
+//   a URL   — an explicit backend elsewhere.
+//
+// Checking `!== undefined` rather than truthiness is the whole point: an
+// empty string is a real answer here, and `if (override)` would silently
+// treat it as "unset" and fall through to hostname:8000 — which, hosted,
+// is a port nothing listens on.
 function apiBase(): string {
   const override = import.meta.env.VITE_API_BASE as string | undefined;
-  if (override) return override;
+  if (override !== undefined) return override.replace(/\/+$/, '');
   return `${window.location.protocol}//${window.location.hostname}:${DEFAULT_API_PORT}`;
 }
 
@@ -77,6 +88,12 @@ export async function harvestScan(
     formData.append('config', JSON.stringify(config));
     formData.append('original', JSON.stringify(original));
     formData.append('confirmed', JSON.stringify(confirmed));
+    // A per-browser writer tag (step 11.2.5) — see db.ts's getSourceId
+    // for why it is random, per-faculty, and generated here rather than
+    // on the server. Inside the try because reading IndexedDB can throw
+    // (private browsing, blocked storage) and this whole function is
+    // best-effort: an untagged harvest is far better than a lost one.
+    formData.append('source', await getSourceId());
 
     await fetch(`${apiBase()}/api/harvest`, { method: 'POST', body: formData });
   } catch {

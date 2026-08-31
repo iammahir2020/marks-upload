@@ -20,4 +20,10 @@ python-docx==1.2.0  # step 0's marks-grid-template.docx row-height fix, and
 # they are genuinely optional, and nothing under app/ imports them. Verified
 # by poisoning `torch` in sys.modules and constructing CNNRecognizer clean.
 onnxruntime==1.23.2  # runs cnn/checkpoints/digit_cnn.onnx
-scipy==1.15.3        # cnn/segment.py's connected-component labelling
+scipy==1.15.3        # cnn/preprocess.py's ndimage.center_of_mass. Load-bearing,
+                     # not incidental: MNIST centres a glyph by centre of mass,
+                     # not bounding-box centre, and matching that is worth
+                     # several points of real accuracy (plan.md §16).
+                     # (This said "cnn/segment.py's connected-component
+                     # labelling" until 2026-08-31 — segment.py uses OpenCV's
+                     # connectedComponentsWithStats and needs no scipy at all.)

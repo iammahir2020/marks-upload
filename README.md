@@ -135,8 +135,9 @@ In broad strokes, as of 2026-08-30:
 
 - **Working end to end.** Setup → camera capture → upload queue → review
   → save → results → Excel export all run, against both recognizer paths.
-  Backend: **84 pytest tests passing**. Frontend: **67 vitest tests
-  passing**.
+  Backend: **148 pytest tests passing**. Frontend: **79 vitest tests
+  passing**. Passing suites are not the same as a defect-free app — see
+  the known-issues bullet below.
 - **Verified against real photos.** 30 test images including an 18-photo
   batch from an actual class, which exposed and got fixes for two real
   detection bugs (a neighbouring script's ID row, visible at the frame
@@ -145,6 +146,13 @@ In broad strokes, as of 2026-08-30:
   3r.6e) — the app runs with no API key, no quota and no network. See
   "Two recognition paths" above for the numbers it was decided on and the
   two caveats carried with it.
+- **The hosted demo (step 11) is DEPLOYED and live** at
+  <https://d2n2meq17rr1oi.cloudfront.net> — CloudFront serving an S3
+  frontend with `/api/*` routed to API Gateway → Lambda, same origin so no
+  CORS. Structured JSON logging feeds CloudWatch. The two privacy defects
+  it uncovered are fixed, and the whole thing is still verifiable offline
+  through `./local-stack.sh`. What remains is 11.7: using it as a user, on
+  a phone, on mobile data.
 - **Not finished.** Step 10 (full rehearsal) hasn't started. The test set
   is still short of its own target for awkward conditions. The CNN track's
   remaining work — fine-tuning on harvested handwriting, and a real
@@ -152,13 +160,25 @@ In broad strokes, as of 2026-08-30:
   participation and can't be simulated. That comparison run matters more
   now that the CNN is the default, not less: it is the only thing that
   would validate the choice on marks and serial rather than on the ID.
-- **Known issues are tracked**, not silently carried:
-  [issues.md](issues.md) records a full-repo audit (real bugs, security
-  review, design-tell scan), spot-verified but not yet fixed.
-- **One deliberate temporary exception to statelessness**: `main.py`
-  currently writes every upload to `backend/debug_uploads/` (gitignored)
-  for phone-capture debugging. It's marked TEMPORARY in the code and
-  should be removed when step 6 closes.
+- **Known issues are tracked**, not silently carried, and there are more of
+  them than the passing test suites suggest. [issues.md](issues.md) is the
+  open-defect register: 15 findings from a 2026-08-27 audit — **none fixed,
+  all still reproducing** — plus 28 more from a full re-read on 2026-08-31.
+  Two are verified by execution and matter most now the endpoint is public:
+  a path traversal in `/api/harvest` and an unbounded `QuizConfig.max` that
+  can exhaust memory. **148 backend and 79 frontend tests pass**, so all of
+  it sits outside their coverage. Four of the invariants listed below are
+  currently violated in code; the register says which.
+- **No whole script is stored anywhere.** A scan is processed in a
+  per-request temp directory and discarded. The one exception used to be
+  `backend/debug_uploads/`, a temporary step-6 phone-debugging capture that
+  wrote every upload to disk; it was deleted in step 11.0.1 along with the
+  605 real scripts it had accumulated. What still persists by design is
+  individual labelled cell crops (step 3r.6c's harvester) — one digit each,
+  with no name, no ID, and no key linking one student's crops together.
+  Crops are also written in a **random order**, because collection order is
+  ID order and any store that records arrival time re-sorts them back into
+  it — see Invariants.
 
 ## Repository layout
 
@@ -173,6 +193,16 @@ marks-upload/
 ├── Cnn migration.md         # Original design note for the CNN path — superseded by plan.md §16
 ├── marks-grid-template.docx # The grid the instructor pastes into the question paper
 ├── dev.sh                   # Runs both dev servers together, stops both on Ctrl+C
+├── local-stack.sh           # Runs the DEPLOYED shape locally: container on a
+│                            # read-only FS + MinIO standing in for S3
+├── deploy.sh                # Step 11 AWS deploy (ECR/Lambda/S3) — idempotent
+├── preflight.sh             # Pre-deploy checks — creates nothing, exits with
+│                            # the number of blockers
+├── aws/                     # Least-privilege IAM policy for the deploy user
+│                            # (deploy-policy.json) + MONITORING.md, the
+│                            # CloudWatch queries for a live session
+├── fetch-crops.sh           # Pulls harvested crops (disk/MinIO/S3) into one
+│                            # training set and reports its class balance
 │
 ├── backend/
 │   ├── app/
@@ -190,7 +220,7 @@ marks-upload/
 │   │   ├── accuracy.py · marks_accuracy.py          # accuracy harnesses against testset/
 │   │   ├── inspect_preprocess.py                    # visual check of preprocessing output
 │   │   └── checkpoints/digit_cnn.onnx               # the trained model actually used at runtime
-│   ├── tests/               # 84 pytest tests; Gemini always mocked from fixtures/, never live
+│   ├── tests/               # 148 pytest tests; Gemini always mocked from fixtures/, never live
 │   ├── detect.py            # CLI harness: run detection on one image, write debug overlays
 │   ├── batch_detect.py      # Same, across the whole testset in one run
 │   ├── id_ocr_accuracy.py   # Tesseract ID-accuracy harness
@@ -214,7 +244,7 @@ marks-upload/
 │       ├── scanQueue.ts     # Upload-queue reducer + nextToReview()
 │       ├── validateConfig.ts · validateMarks.ts · results.ts   # Pure, unit-tested logic
 │       ├── types.ts         # Mirrors backend/app/models.py
-│       └── *.test.ts(x)     # 67 vitest tests
+│       └── *.test.ts(x)     # 79 vitest tests
 │
 ├── testset/                 # 30 labelled test photographs
 │   ├── images/               # 2 originals, 7 phone captures, 18 from a real class, 3 synthetic
@@ -228,7 +258,7 @@ marks-upload/
 ```
 
 Gitignored and not in the repo: `venv/`, `node_modules/`, `.env`,
-`certs/`, `debug/`, `debug_uploads/`, `comparison_log/`,
+`certs/`, `debug/`, `comparison_log/`,
 `backend/training_data/harvested/`, the EMNIST download, and
 `synthetic_scripts/fonts/`.
 
@@ -310,11 +340,191 @@ page, on port 8000. Override with `VITE_API_BASE` if the backend runs
 somewhere else. CORS is a regex matching `localhost`, `127.0.0.1` and all
 three private LAN ranges, so no address is hardcoded anywhere.
 
+### Run it the way it deploys
+
+`./dev.sh` runs the laptop workflow: source on disk, auto-reload, crops
+harvested to a local directory. That is the right loop for building.
+
+`./local-stack.sh` runs the **deployed shape** instead, entirely offline —
+the real container image on a read-only filesystem with only `/tmp`
+writable (exactly how AWS Lambda mounts it), harvesting over the S3 API to
+a local MinIO, `ALLOWED_ORIGINS` set as it will be in production, rate
+limiting on, and a production frontend *build* rather than the dev server.
+
+```bash
+./local-stack.sh up       # MinIO + backend container, then builds the frontend
+cd frontend && npx vite preview --host --port 5173   # leave running
+
+./local-stack.sh crops    # what has landed in the bucket
+./local-stack.sh logs     # backend request log
+./local-stack.sh down     # stop — collected crops SURVIVE in a named volume
+./local-stack.sh reset    # stop and wipe the collected crops too
+```
+
+Two things that will otherwise waste your time:
+
+- **Accept the certificate warning twice** on the phone — once for the page
+  (`https://<lan-ip>:5173`) and once for the API (`https://<lan-ip>:8443`).
+  Nothing prompts you for the second one; scans just fail. Visit the API
+  URL directly in the phone browser first.
+- **The container is a build artifact.** After changing backend code, run
+  `docker build -t marks-backend backend/` before `./local-stack.sh up`, or
+  you are testing the previous version.
+
+This is what caught the S3 ordering leak described under Invariants — a
+real S3 implementation stamping real timestamps, which no stubbed test
+could have reproduced.
+
+### Redeploying after a change
+
+`deploy.sh` is idempotent, so redeploying is just running it again. Which
+part you run depends on what you changed:
+
+```bash
+export AWS_PROFILE=marks-scanner
+
+./deploy.sh backend     # backend/ changed: rebuild image, push, update Lambda
+./deploy.sh frontend    # frontend/ changed: build, sync to S3, invalidate CDN
+./deploy.sh all         # both, plus the CloudFront distribution (idempotent)
+```
+
+Four things worth knowing, because each has bitten at least once:
+
+- **The container is the artifact.** A backend source change does nothing
+  until the image is rebuilt and pushed — `./deploy.sh backend` does that,
+  but running only `frontend` after a backend edit deploys nothing new.
+- **`VITE_API_BASE` is inlined at build time.** The frontend deploy builds
+  with it empty (same origin), so `/api/*` stays relative. Editing it after
+  a build has no effect; you have to rebuild.
+- **The API is never cached, the frontend is.** `deploy.sh frontend`
+  invalidates `index.html`, `sw.js` and `registerSW.js` — the only files
+  whose names don't change. Hashed assets need no invalidation because a
+  new build produces new filenames.
+- **It's a PWA, so a phone may hold the old version.** The service worker
+  is uploaded with `no-cache`, but a phone that already has the app open
+  can need a reload (or a close-and-reopen) before it picks up a new build.
+
+After a backend deploy the first request pays a **~9 s cold start**. The
+deploy ends with a smoke test that doubles as the warm-up, so the first
+*human* request isn't the slow one.
+
+### Getting the crops back, for fine-tuning
+
+Harvested crops end up in one of three places depending on how the app ran
+— the laptop's own disk, `local-stack.sh`'s MinIO, or a real S3 bucket once
+deployed. The key layout is identical in all three on purpose, so they
+merge into one training set and the training code never needs to know
+where any given crop came from:
+
+```bash
+./fetch-crops.sh merge                 # local disk only
+./fetch-crops.sh local                 # local disk + local-stack's MinIO
+AWS_PROFILE=marks-scanner \
+  ./fetch-crops.sh s3 marks-scanner-crops-105322541848   # + the live bucket
+```
+
+The deployed bucket is the one real classroom use fills. Each faculty
+member's browser gets its own random source id, so a pull looks like:
+
+```
+pilot-real-class                            229   # the 18-photo batch
+d6ca05c6-519d-4fe4-833b-184e3051a3b4         34   # one phone
+30770caf-442c-4a04-87d0-87f673f17f98         28   # another
+```
+
+Everything lands in `backend/training_data/all/` (gitignored), laid out as
+
+```
+<source-id>/<field>/<confirmed|corrected>/<value>_<uuid>.png
+```
+
+The label is the filename up to the first underscore — there is no
+annotation file that can drift out of sync with the images. `<source-id>`
+is per-faculty, which is the axis to hold out when measuring whether
+fine-tuning generalises to an unseen writer (plan.md §16).
+
+It also prints what it actually pulled, because two properties of this
+dataset will quietly ruin a fine-tuning run if you don't look first:
+
+```
+by tag:      confirmed 689,  corrected 48
+ID digits:   rarest 20, commonest 82   ! imbalanced (4.1x)
+marks:       290 whole, 31 half        ! half marks are 9.4x rarer
+```
+
+Half marks being ~9x rarer matters most: they are exactly the values the
+model finds hardest to tell apart from whole ones. And `corrected` crops
+are the model's real failures, worth weighting above `confirmed` ones —
+except that `harvest_real_photos.py` posts `original == confirmed`, so its
+entire batch files as `confirmed` regardless of what the model would have
+read. Valid labelled data; not a valid list of failures.
+
+**Fine-tuning itself (step 3r.6b) is not built, and shouldn't be run yet.**
+Three reasons, in order of how much they matter:
+
+1. **There isn't enough data.** ~290 crops against EMNIST's 240,000.
+   Fine-tuning on this would overfit or cause catastrophic forgetting, and
+   would most likely make the model *worse* than the 91.8% per-digit it
+   currently gets. Several real class sessions' worth is the realistic bar.
+2. **Half marks are ~10x rarer than whole marks** — and they're exactly
+   the values the model finds hardest. Training on this distribution
+   teaches it that half marks barely exist. Step 3r.6a's blank collection
+   sheet generator (`backend/generate_collection_sheet.py`) exists to fix
+   this deliberately, and is still unused.
+3. **The method is undecided.** Which head to fine-tune, how to hold out a
+   source to measure generalisation honestly, and how to weight `corrected`
+   above `confirmed` are open questions in plan.md §16. Guessing at them
+   produces a model whose choices nobody vetted.
+
+So the loop today is: **collect** (real sessions), **pull** (above), and
+**look at the balance report** before deciding anything. The pull prints
+the class balance for exactly that reason.
+
+### Deploying
+
+Check first — `./preflight.sh` creates nothing and validates everything
+that could fail halfway through a deploy: tooling, AWS identity and
+per-service permissions, whether the target names are free, that the image
+builds for `linux/amd64` and carries the adapter, model, and `boto3` but
+*not* `torch`, that a real scan succeeds on a read-only root, that
+`VITE_API_BASE` actually reaches the frontend bundle, and that both test
+suites pass. It exits with the number of blockers.
+
+```bash
+./preflight.sh
+./deploy.sh backend      # ECR build+push, Lambda, API Gateway, crops bucket
+./deploy.sh cdn          # CloudFront distribution (S3 + /api/* -> API Gateway)
+./deploy.sh frontend     # needs API_URL, and CloudFront permissions
+```
+
+`deploy.sh` is idempotent — re-running updates in place, which step 11's
+own Done-when requires (harvested crops must survive a redeploy).
+
+**It is deployed and live**: <https://d2n2meq17rr1oi.cloudfront.net>
+
+```
+phone ──► CloudFront ──┬──► S3 (frontend, private, read via OAC)
+                       └──► API Gateway ──► Lambda ──► S3 (crops)
+                            /api/*
+```
+
+One origin serves both, so the frontend and API share a domain and there is
+**no CORS anywhere**. `/api/*` has caching explicitly disabled — a cached
+scan response would serve one student's marks for another's script.
+
+**Why API Gateway and not a Lambda Function URL**, which the plan
+originally specified: this AWS account refuses Function URL invocation by
+anything except an IAM principal. Verified three ways — public (`NONE`)
+with a correct public resource policy returned 403; CloudFront's service
+principal with a correct OAC grant returned 403; only a directly IAM-signed
+request succeeded. API Gateway sidesteps Function URL auth entirely. See
+[aws/MONITORING.md](aws/MONITORING.md) for where to watch it run.
+
 ### Tests
 
 ```bash
-cd backend && source venv/bin/activate && pytest   # 84 tests, fully offline
-cd frontend && npx vitest run                      # 67 tests (npx vitest for watch mode)
+cd backend && source venv/bin/activate && pytest   # 148 tests, fully offline
+cd frontend && npx vitest run                      # 79 tests (npx vitest for watch mode)
 cd frontend && npm run lint                        # oxlint
 cd frontend && npm run build
 ```
@@ -412,6 +622,15 @@ These come from the specs and are load-bearing. Breaking one is a defect,
 not a style difference — [CLAUDE.md](CLAUDE.md) has the full list with
 reasoning.
 
+> **Four of them are broken in code right now** (audit, 2026-08-31). They
+> are still the rules — the code is wrong, not the rule — but do not read
+> this list as a description of how the app behaves today. Marked ⚠️ below,
+> with the finding number in [issues.md](issues.md):
+> leading-zero serial comparison (#2), never-store-a-wrong-number (#4, N6),
+> flag-never-guess for an ID that still contains `?` (N5), and
+> a-failed-scan-is-never-a-dead-end (#6, N3). The privacy invariants were
+> re-checked in the same audit and **do** hold.
+
 - **Detection is proportional, never fixed-coordinate.** Kernel lengths
   are a fraction of image dimensions; cell boundaries come from detected
   line positions, never from dividing table width by column count.
@@ -426,11 +645,28 @@ reasoning.
   stale behind an edit.
 - **IndexedDB indexes on serial and studentId must permit duplicates** — a
   repeated serial is exactly what the cross-check exists to surface.
-- **Serial comparison strips leading zeros.** `2`, `02`, `002` are one
-  serial.
+- ⚠️ **Serial comparison strips leading zeros.** `2`, `02`, `002` are one
+  serial. *(Broken: the by-serial lookup uses the raw typed value — #2.)*
 - **At least one of `studentId` / `serial` must be non-null** to save.
+- ⚠️ **Flag, never guess.** Low-confidence reads become blank plus a flag,
+  never a filled-in best guess. *(Broken: the Total field has no
+  legal-value check on either edit screen, so `NaN` can be stored — #4,
+  N6; and an ID still containing `?` saves as confirmed — N5.)*
+- ⚠️ **A failed scan is never a dead end.** *(Broken: a transport-level
+  failure has no Retake or dismiss, and one hung upload disables the
+  capture button for the rest of the session — #6, N3.)*
 - **Never export a blank as `0`.** It reads as a mark of zero and nothing
   downstream catches it.
+- **Harvested crops are written in a random order, and carry a constant
+  mtime.** Both defend the same property and neither is cosmetic: a
+  student's ID digits are collected in ID order, so any store recording
+  *when* each crop arrived re-sorts them straight back into the ID. The
+  constant mtime handles a local disk; it cannot handle S3, where
+  `LastModified` is stamped server-side at millisecond precision —
+  measured against a real S3 API, sorting one harvest's crops by
+  LastModified reproduced a student ID digit for digit. Hence the shuffle,
+  which works on any backend. Both are guarded by tests written as the
+  attack rather than as the implementation.
 
 ## Deliberately not built
 

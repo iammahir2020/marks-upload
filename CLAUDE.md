@@ -22,10 +22,10 @@ source of truth.
 | File | What it is |
 |---|---|
 | [plan.md](plan.md) | Architecture, data models, screens, API contract, resolved decisions |
-| [step.md](step.md) | Execution plan — steps 0–10, each with a *Before you start*, substeps, a test, and a *Done when* bar. Step numbers match plan §14. Ends with the Progress table. |
+| [step.md](step.md) | Execution plan — steps 0–11, each with a *Before you start*, substeps, a test, and a *Done when* bar. Steps 0–10 match plan §14; step 11 (hosted demo) is a later, deliberate extension and runs in three independently-shippable phases. Ends with the Progress table. |
 | [stack-reference.md](stack-reference.md) | Library-level notes from Context7: exact calls, starting parameter values, known traps |
 | [learn.md](learn.md) | Plain-language walkthrough of what each finished step's code actually does, for learning alongside the build. Updated after each step — see "How to work here." |
-| [issues.md](issues.md) | A full-repo audit (2026-08-27): real bugs, security review, design-tell scan — spot-verified, not fixed yet. Read before assuming a screen/endpoint is correct just because its own step's Done-when bar passed. |
+| [issues.md](issues.md) | **The open-defect register — read it before trusting any screen or endpoint.** Two audits: 2026-08-27 (15 findings) and a full re-read on 2026-08-31 (28 more, N1–N28). **None of the original 15 have been fixed; all still reproduce, and three are now worse.** Two new ones are verified by execution and matter most because the endpoint is public: a path traversal in `/api/harvest` (N1) and an unbounded `QuizConfig.max` that can exhaust memory (N2). Both test suites pass, so everything in that file is outside their coverage. It also carries an explicit "what this audit did NOT cover" section naming the files never opened. |
 | `marks-grid-template.docx` | The grid the instructor pastes into the question paper |
 
 Commands below are the ones the specs call for. Once a step has actually
@@ -85,6 +85,32 @@ Because `cnn` is the default, **`onnxruntime` and `scipy` moved into
 training-only in `requirements-cnn.txt`; nothing under `app/` imports it,
 so the running app still never needs it.
 
+**A hosted demo is now specced as step 11** (2026-08-30), after the user
+asked about sharing this with other faculty. It is a deliberate extension
+beyond plan.md §13's MVP scope; the laptop workflow stays the supported
+path and nothing about it changes. Target is **AWS**, sized to the
+*always-free* tiers rather than to the user's $140 of credits so it
+survives their expiry: Lambda container behind **API Gateway** for the
+backend (the plan said Function URL — see the deviation note below),
+S3 + CloudFront for the frontend, S3 for harvested crops. **Phases A and B
+are done (2026-08-30), and phase C's code-side pieces (11.4 hardening,
+11.5 disclosure) are done too; **the AWS deploy itself (11.6/11.7) is not
+started**
+and needs the user's own account. Phase A fixed two live privacy defects
+(`debug_uploads/` deleted, harvester mtime leak closed); phase B added the
+config seams, the S3 store with per-faculty source tagging, and a container
+verified under `docker run --read-only --tmpfs /tmp`. **Phase C is done and
+the app is LIVE at <https://d2n2meq17rr1oi.cloudfront.net>** —
+CloudFront serving an S3 frontend, with `/api/*` routed to API Gateway →
+Lambda, one origin so there is no CORS. Structured JSON logging feeds
+CloudWatch (`aws/MONITORING.md` has the queries). **The deployed shape
+differs from the spec in one important way**: step 11.6.2 called for a
+Lambda Function URL, but this account refuses Function URL invocation by
+anything except an IAM principal — public and CloudFront-OAC both return
+403 with textbook-correct policies — so API Gateway fronts the Lambda
+instead. See step.md's step 11 row for the full account, learn.md for the
+reasoning.
+
 ## Stack
 
 Decided and justified in plan §7 and §15 — these are settled decisions, not
@@ -92,7 +118,7 @@ defaults to revisit casually.
 
 | Layer | Choice | Notes |
 |---|---|---|
-| Backend | Python + FastAPI, `uvicorn`, `python-multipart` | Stateless. Runs on the instructor's laptop for the pilot — no hosting. |
+| Backend | Python + FastAPI, `uvicorn`, `python-multipart` | Stateless (genuinely, since 11.0.1). The laptop is still the supported path; step 11 phase B added a container that also runs on AWS Lambda, unchanged, behind the Lambda Web Adapter. |
 | Image processing | `opencv-python-headless` | Table detection, deskew, cell splitting. Headless substituted for `opencv-python` — no GUI display code (`imshow`) is used anywhere in the pipeline, only file writes, and headless avoids pulling in system Qt/GTK libs on a server. |
 | **Recognition (default)** | local digit CNN, `onnxruntime` + `scipy` | `RECOGNIZER=cnn`, the default since step 3r.6e — ID, serial and marks all read on-device. No key, no quota, no network. |
 | Local ID OCR (`remote` path) | `pytesseract`, `--psm 10`, digit whitelist | Keeps the student ID off the network |
@@ -121,7 +147,10 @@ only; install the binary separately (`apt install tesseract-ocr`) before step
 Created starting step 0.1. Backend through step 3's rate-limited fallback
 plus steps 2r.0/2r/3r's full local CNN path, and frontend through step 9's
 Results screen and Excel export (code done, a real full-class export/
-reconcile still pending), all exist. Step 10 doesn't yet. The CNN
+reconcile still pending), all exist. Step 10 doesn't yet. **Step 11's
+phases A and B do** — `app/config.py`, `app/stores.py`, the `Dockerfile`,
+and per-faculty source tagging through `db.ts`'s `getSourceId()`; phase C
+(the AWS deploy itself) does not. The CNN
 track (steps 2r.0/2r/3r/3r.6,
 plan.md §16) — **no longer optional, it is the default path since
 3r.6e**: `app/recognizers/` (2r.0's interface, 3r's `local.py`
@@ -182,6 +211,16 @@ marks-upload/
 ├── plan.md · stack-reference.md · step.md · CLAUDE.md · learn.md
 ├── Cnn migration.md            # folded into plan.md §16 / step.md — see note above
 ├── dev.sh                       # run both servers together — see Commands
+├── local-stack.sh               # step 11 — the DEPLOYED shape, locally: container on a
+│                                # read-only FS + MinIO standing in for S3
+├── deploy.sh                    # step 11.6 — idempotent AWS deploy (ECR/Lambda/S3)
+├── preflight.sh                 # step 11.6 — pre-deploy checks; creates NOTHING,
+│                                # exits with the blocker count
+├── aws/deploy-policy.json       # least-privilege IAM policy for the deploy user,
+│                                # derived from deploy.sh's actual API calls.
+│                                # aws/README.md explains each grant
+├── fetch-crops.sh               # pulls crops (disk/MinIO/S3) into training_data/all/
+│                                # and reports source/tag/class balance
 ├── marks-grid-template.docx
 ├── testset/
 │   ├── images/                 # real photographs — step 0's two, 7 real phone
@@ -220,12 +259,21 @@ marks-upload/
 │   ├── generate_collection_sheet.py  # step 3r.6a — blank .docx handwriting-sample sheet generator
 │   ├── harvest_real_photos.py  # 2026-08-30 — one-off: feeds the real_class_*
 │   │                           # batch through /api/harvest (original == confirmed)
-│   ├── debug_uploads/          # gitignored, TEMPORARY (step 6 phone debugging) —
-│   │                           # every real upload saved since the backend is
-│   │                           # otherwise stateless; remove once step 6 closes
-│   ├── training_data/harvested/ # gitignored — step 3r.6c's real, per-Confirm labelled crops
-│   ├── .env.example            # copy to .env, fill in GEMINI_API_KEY
+│   │                           # (debug_uploads/ lived here until step 11.0.1
+│   │                           # deleted it — see "The backend is stateless")
+│   ├── training_data/all/      # gitignored — fetch-crops.sh's merged training set
+│   ├── training_data/harvested/ # gitignored — step 3r.6c's labelled crops. RESET
+│   │                           # 2026-08-31: 229 crops, one source, 211 confirmed /
+│   │                           # 18 corrected. Keys are content-addressed (dedupe).
+│   │                           # Every crop carries a constant mtime (11.0.2)
+│   ├── Dockerfile              # step 11.3 — slim base + Lambda Web Adapter, no apt layer
+│   ├── .dockerignore           # keeps venv/ (1.5G) and cnn/data/ (2.2G) out of the build context
+│   ├── .env.example            # copy to .env, fill in GEMINI_API_KEY; step 11.1's seams documented too
 │   ├── app/
+│   │   ├── config.py           # step 11.1 — THE only place under app/ that reads the environment
+│   │   ├── observability.py    # structured JSON logs for CloudWatch; scrubs IDs by design
+│   │   ├── ratelimit.py        # step 11.4 — per-IP sliding window + client-IP extraction
+│   │   ├── stores.py           # step 11.2 — LocalStore / S3Store behind one put(key, src)
 │   │   ├── models.py           # step 4 — ScanResult, QuestionMark, QuizConfig; HarvestFields (3r.6c)
 │   │   ├── detection.py        # step 1 — the make-or-break component
 │   │   ├── id_ocr.py           # step 2 — local, never leaves the laptop
@@ -252,9 +300,15 @@ marks-upload/
 │   │   ├── test_cnn_segment.py # step 3r — synthetic cell images, no model needed
 │   │   ├── test_cnn_decode.py  #   step 3r — synthetic probability vectors, no model needed
 │   │   ├── test_both_recognizer.py  # step 3r.6d — fake sub-recognizers, no network/model
+│   │   ├── test_config.py      # step 11.1 — asserts an unset env IS the laptop app
+│   │   ├── test_stores.py      # step 11.2 — key construction; boto3 stubbed, never real AWS
+│   │   ├── test_ratelimit.py   # step 11.4 — limiter maths + 413/429 behaviour incl. CORS-on-429
+│   │   ├── test_observability.py # asserts a real scan's logs contain no student ID
 │   │   ├── test_harvest.py     #   step 3r.6c — harvest() unit tests
 │   │   └── test_harvest_endpoint.py #  step 3r.6c — /api/harvest against a real photo
 │   ├── requirements.txt        # includes python-docx (step 0's template fix, step 3r.6a's generator)
+│   ├── requirements-deploy.txt # step 11.2 — boto3, container only. NOT provided by a custom
+│   │                           # Lambda image the way it is by the managed runtime
 │   ├── requirements-cnn.txt    # step 2r — torch/torchvision/onnx: TRAINING only.
 │   │                           # onnxruntime/scipy moved to requirements.txt when the
 │   │                           # CNN became the default (3r.6e) — inference needs them
@@ -281,7 +335,8 @@ marks-upload/
     └── src/
         ├── types.ts            # QuizConfig, StudentRecord — mirrors app/models.py
         ├── db.ts               # IndexedDB (idb) — step 5.2; resetAll() (2026-08-30)
-        │                       # clears both stores for a full session reset
+        │                       # clears records+config; getSourceId() (11.2.5) lives in a
+        │                       # separate `meta` store (DB v2) that resetAll deliberately spares
         ├── api.ts              # POST /api/scan client (step 6.4); harvestScan,
         │                       # POST /api/harvest client (step 3r.6c)
         ├── validateConfig.ts   # pure form-validation logic, unit-tested
@@ -289,7 +344,8 @@ marks-upload/
         │                       # identity cross-check (plan.md §10) — step 7
         ├── results.ts          # step 9.1/9.2 — sort by serial then ID, unverified-record rule
         ├── scanQueue.ts        # upload-queue reducer — step 6.3
-        ├── Setup.tsx           # step 5.3–5.4
+        ├── Setup.tsx           # step 5.3–5.4; saved-session notice + View +
+        │                       # Reset everything (2026-08-31)
         ├── Scan.tsx            # camera + upload queue — step 6; capture-button
         │                       # spinner/disable and Retake dead-row fix (2026-08-30)
         ├── Review.tsx          # review/edit/save screen (step 7); fires harvestScan
@@ -317,8 +373,8 @@ cd backend && source venv/bin/activate && python detect.py <image-path> --questi
 cd backend && source venv/bin/activate && python batch_detect.py ../testset/images --questions 5 --id-digits 7 --out ../testset/debug/
 cd backend && source venv/bin/activate && python id_ocr_accuracy.py
 
-# Backend tests — offline, Gemini always mocked (84 tests as of the
-# real_class_* batch's detection-regression cases, 2026-08-30)
+# Backend tests — offline, Gemini always mocked, never any AWS (148 tests
+# as of observability, 2026-08-31)
 cd backend && source venv/bin/activate && pytest
 
 # CNN accuracy harnesses (steps 2r/3r, plan.md §16). These need NO extra
@@ -349,9 +405,40 @@ python cnn/train.py --epochs 8 --out cnn/checkpoints                  # EMNIST D
 RECOGNIZER=remote uvicorn app.main:app --reload --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
 RECOGNIZER=both uvicorn app.main:app --reload --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
 
+# Step 11.6 — check before deploying. Creates nothing; exit code is the
+# number of blockers. Run it under the deploy profile, not your default:
+# it is the NEW user's permissions that matter.
+AWS_PROFILE=marks-scanner ./preflight.sh
+AWS_PROFILE=marks-scanner ./deploy.sh backend
+
+# Step 11.3 — the deployable container. --read-only --tmpfs /tmp reproduces
+# Lambda's filesystem on this laptop, which is the whole point: it catches a
+# missed write path in a second instead of through CloudWatch after a deploy.
+cd backend && docker build -t marks-backend .
+docker run --rm -p 9000:8000 --read-only --tmpfs /tmp -e HARVEST_ENABLED=false marks-backend
+curl -X POST http://localhost:9000/api/scan -F image=@../testset/images/filled_file.jpeg \
+  -F 'config={"quizName":"d","idDigits":7,"totalMax":25,"questions":[{"q":1,"max":5},{"q":2,"max":5},{"q":3,"max":5},{"q":4,"max":5},{"q":5,"max":5}]}'
+
 # Step 3r.6a — blank handwriting-sample sheet (not the marks-grid template).
 # Print, get real people to fill it in, photograph it — none of that is scriptable.
 python generate_collection_sheet.py --out ../collection_sheet.docx
+
+# Redeploy after a change. Idempotent; the container is the artifact, so a
+# backend edit does nothing until `backend` rebuilds and pushes the image.
+export AWS_PROFILE=marks-scanner
+./deploy.sh backend      # backend/ changed
+./deploy.sh frontend     # frontend/ changed (builds, syncs S3, invalidates CDN)
+./deploy.sh all          # both + the distribution
+
+# Pull harvested crops into ONE training set, from whichever of the three
+# places they landed. Prints source/tag/class balance — look at that before
+# fine-tuning: half marks are currently ~9x rarer than whole ones, and the
+# harvest_real_photos.py batch is all tagged "confirmed" regardless of what
+# the model would have read (it posts original == confirmed).
+./fetch-crops.sh merge                 # local disk only
+./fetch-crops.sh local                 # + local-stack.sh's MinIO
+AWS_PROFILE=marks-scanner \
+  ./fetch-crops.sh s3 marks-scanner-crops-105322541848   # + the live bucket
 
 # Feed an already-ground-truthed batch of real photos into the same
 # harvesting pipeline the live Review screen uses on Confirm — needs a
@@ -377,7 +464,8 @@ uvicorn app.main:app --reload --host 0.0.0.0 --ssl-keyfile certs/key.pem --ssl-c
 # Frontend — HTTPS and LAN binding are on by default via vite.config.ts,
 # no --host flag needed
 cd frontend && npm run dev
-cd frontend && npx vitest run   # 67 tests as of the "Reset everything" button, 2026-08-30; or `npx vitest` for watch mode
+cd frontend && npx vitest run   # 79 tests as of Setup's saved-session notice, 2026-08-31
+                                # (use `npm run build` to typecheck — see the tsc caveat below); or `npx vitest` for watch mode
 cd frontend && npm run build
 ```
 
@@ -436,6 +524,22 @@ pure functions; camera/PWA/export by hand on the real phone.
 These come from the specs and are load-bearing. Breaking one is a defect, not
 a style difference.
 
+> **Four of them are currently broken in code (audit, 2026-08-31).** They
+> are still the rules — the code is wrong, not the rule — but do not read
+> this section as a description of how the app behaves today:
+>
+> | Invariant | Broken by | issues.md |
+> |---|---|---|
+> | Serial comparison strips leading zeros | `Review.tsx` queries the by-serial index with the raw typed serial, so `"007"` and `"7"` never meet | #2 |
+> | Never store a wrong number / flag, never guess | the Total field has no legal-value check on **either** the Review or the Results screen — `Number("abc")` is stored as `NaN` on a `confirmed: true` record | #4, N6 |
+> | Flag, never guess | an ID still containing `?` saves as confirmed and exports to Excel with no flag | N5 |
+> | A failed scan is never a dead end | a transport-level failure has no Retake/dismiss anywhere, and a request that never settles now disables the capture button for the rest of the session | #6, N3 |
+>
+> The privacy invariants below (ID never reaches Gemini, backend is
+> stateless, harvest write-order and mtime) were re-checked in that audit
+> and **do** hold — with one exception noted at `RECOGNIZER=both`, which
+> writes student IDs verbatim to `comparison_log/` (N9).
+
 **Detection is proportional, never fixed-coordinate.** Morphological kernel
 lengths are a fraction of image width/height (`cols // 30` as the starting
 divisor), never a pixel constant. The grid is pasted into a question paper,
@@ -490,7 +594,35 @@ marks. Never as ordinary small fields — the instructor is holding the script
 and this is the highest-value check in the workflow.
 
 **The backend is stateless.** Nothing written to disk, no globals carrying
-request data between calls.
+request data between calls. This used to be false in two places, and both
+are now resolved. `main.py`'s TEMPORARY `debug_uploads/` block, which wrote
+every upload to disk, was deleted in step 11.0.1 (2026-08-30) along with
+the 605 real scripts / 99 MB it had accumulated — verified by running a
+real scan and confirming nothing lands under `backend/` at all. Step
+3r.6c's harvester still persists labelled cell crops, which is wanted, but
+step 11.2 moved that behind a `Store` seam: `HARVEST_BACKEND=s3` writes to
+object storage and touches no filesystem, `HARVEST_ENABLED=false` disables
+it entirely, and `local` remains the laptop default. Confirmed by running
+the container under `--read-only`: the local backend raises `OSError:
+[Errno 30] Read-only file system`, the S3 backend does not.
+
+**Harvested crops are written in a random order, on purpose.**
+`harvest.py`'s `_write_unordered` shuffles before writing. This is not
+tidiness and not an optimisation target: crops are collected in ID order,
+so any store that records *arrival time* re-sorts them back into that
+order. `CONSTANT_MTIME` handles that on a local disk, but **cannot on S3**,
+where `LastModified` is stamped server-side at millisecond precision —
+measured against a real S3 API, sorting one harvest's ID crops by
+LastModified reproduced the student ID digit for digit. Guarded by
+`test_harvest.py::test_write_order_does_not_reconstruct_a_student_id`.
+
+**Harvested crops carry a constant mtime, on purpose.** `harvest.py`'s
+`CONSTANT_MTIME` / `os.utime` is not cosmetic and not a bug: the per-crop
+`uuid4` was meant to make one student's ID digits unlinkable, but they are
+written in loop order, so sorting by mtime put them straight back in order
+(2 of the 18 real class IDs were recoverable verbatim this way before the
+fix). `tests/test_harvest.py::test_mtime_ordering_cannot_reconstruct_a_student_id`
+guards it as the attack, not the implementation. Don't "clean it up".
 
 **A Gemini failure tries a local OCR fallback before giving up.** This is
 a `remote`-path rule — it lives inside `RemoteRecognizer` and does not run
@@ -547,6 +679,105 @@ all-blank result as if it were a normal scan.
   photo leaves the *phone* for the laptop either way. What the default did
   change is that nothing leaves the **laptop** — so "no third party ever
   sees a script" is now accurate, while "never leaves the device" is not.
+- **Don't replace the content hash in a harvested crop's key with a
+  uuid.** `harvest.py`'s `_key` hashes the crop's own bytes so a re-harvest
+  overwrites instead of duplicating. This is not a micro-optimisation: the
+  first corpus had to be thrown away because a testing session
+  re-photographed two scripts dozens of times and every Confirm harvested
+  again, leaving a digit histogram that described one student ID rather
+  than handwriting. Dedupe must stay keyed on **content, never on the
+  label** — two students' `7`s must both survive, or the corpus loses the
+  variation it exists to capture.
+- **Don't harvest test data into the real namespace.** Sources prefixed
+  `test-` (`harvest.py`'s `TEST_SOURCE_PREFIX`) are dropped by
+  `fetch-crops.sh` unless `INCLUDE_TEST=1`. Verification crops previously
+  shared a namespace with real ones and could not be separated afterwards.
+- **Don't commit a real session's output.** `.gitignore` covers `*.xlsx`
+  and `collection_sheet*.docx` as of 2026-08-31 — added *before* the pilot
+  runs, because afterwards the fix stops being a `.gitignore` edit and
+  becomes a history rewrite. An exported workbook is every student's ID,
+  serial and marks in one file, and the Results screen explicitly tells the
+  instructor to check it against their attendance sheet, which is exactly
+  how it ends up sitting in this tree. Note the committed `testset/`
+  photos are **not** an instance of this: their IDs, serials and marks are
+  fabricated (real handwriting, made-up values), which is why they can live
+  in git at all. If a genuinely-real batch is ever added, it belongs
+  outside git with the crops. (issues.md N26.)
+- **Don't loosen the deploy policy to make a check pass.** `preflight.sh`
+  once probed `iam:ListRoles` — account-wide, deliberately absent from
+  `aws/deploy-policy.json`, and never called by `deploy.sh` — and reported
+  a blocker on a correct policy. Fix the probe, not the policy. Probes must
+  also treat `NoSuchEntity`/`NotFound` as a PASS: before a first deploy
+  nothing exists, and "authorised but absent" is not "denied".
+- **Don't tag harvested crops per scan.** Multi-writer collection needs a
+  source tag (step 11.2.4) so plan.md §16's held-out-writer evaluation is
+  possible at all — but it must be **per-faculty**, random, and
+  client-generated. A per-scan or per-student id would regroup one
+  student's seven ID digits and undo the unlinkability step 11.0.2 exists
+  to create. Coarse enough to isolate nobody, fine enough to hold out one
+  writer. **Built in 11.2.5** as `db.ts`'s `getSourceId()`. It lives in the
+  `meta` store, *not* beside the quiz config, because `resetAll()` clears
+  that store — a tag regenerated on every "Reset everything" would split
+  one writer across unrelated prefixes and defeat its own purpose. Don't
+  move it there, and don't add it to `resetAll()`.
+- **Don't verify the frontend with a bare `npx tsc --noEmit`.** The root
+  `tsconfig.json` is a solution file (`"files": []` plus references), so
+  that command typechecks *nothing* and passes on genuinely broken code.
+  Use `npm run build` (which runs `tsc -b`) or `tsc -p tsconfig.app.json`.
+- **Don't state that everything stays on the device.** `Setup.tsx` said
+  exactly that from step 5 until 11.5 corrected it, while `/api/harvest`
+  had been saving labelled cell crops server-side since 3r.6c. The true
+  statement has two halves and both must stay: the *photograph* is never
+  stored, and *individual cells* are kept with their confirmed values to
+  train and tune recognition. `Setup.test.tsx` pins the always-visible
+  line and asserts it is NOT inside the collapsible `<details>` — a
+  returning instructor has that section collapsed and would otherwise
+  never see it.
+- **Don't assume a stubbed dependency exists at runtime.** `test_stores.py`
+  stubs `boto3` (correctly — its subject is key construction), and every
+  test passed while the built image had no boto3 in it at all. AWS docs say
+  the Lambda runtime provides it; that's the *managed* runtime, not a
+  custom container on a slim base. It's in `requirements-deploy.txt` now.
+  The general rule: a stub proves the call is right, never that the library
+  will be there.
+- **Don't assume anything outside `/tmp` is writable once deployed.** The
+  step-11 target is AWS Lambda, whose filesystem is read-only everywhere
+  else. Both former offenders are handled — 11.0.1 deleted
+  `debug_uploads/`, and 11.2 put harvesting behind a Store — but the
+  *default* is still `local`, so a deployment MUST set `HARVEST_BACKEND=s3`
+  or `HARVEST_ENABLED=false`. Don't guess whether a new write path is safe:
+  `docker run --read-only --tmpfs /tmp` answers it in a second. The
+  `TemporaryDirectory` in the scan handler is fine — it lands in `/tmp`.
+- **Don't size the hosted demo against the AWS credits.** They expire
+  (18 Aug 2027) and a Free-plan account closes even sooner (~18 Feb 2027,
+  6 months from issue — the credits' expiry date is not the account's
+  lifetime). The design targets AWS's *always-free* tiers instead, which
+  are permanent: Lambda's 1M requests + 400,000 GB-s and CloudFront's 1 TB
+  egress per month. Credits are the safety net, not the funding.
+- **Don't count CORS preflights against the rate limit.** Browsers send
+  them automatically and they cost nothing to answer; throttling them
+  turns a generous budget into a tight one for no benefit. And a 429 must
+  still carry CORS headers, or the browser reports an opaque failure
+  instead of the real status — that depends on `CORSMiddleware` wrapping
+  the `guard` middleware, which is an ordering property of how they're
+  registered in `main.py` and is pinned by a test.
+- **Don't reintroduce a Lambda Function URL on this account.** step.md
+  11.6.2 argued for one over API Gateway, and it was right in the abstract
+  — but this account refuses Function URL invocation by any non-IAM
+  principal. Proven three ways: `AuthType NONE` with a correct public
+  resource policy → 403; CloudFront's service principal with a correct OAC
+  grant (verified principal, action, `FunctionUrlAuthType` and a matching
+  `SourceArn`) → 403; a directly IAM-signed request → 200. Hours went into
+  proving a correct configuration was correct. API Gateway is what works.
+- **Don't add `CustomErrorResponses` to the distribution.** The usual SPA
+  fallback (403 → `/index.html`, 200) applies **distribution-wide**, not
+  per behaviour, so it silently rewrites API errors into an HTML page with
+  a 200 status — a failed scan looks like a success returning gibberish.
+  This app has no client-side routing and needs no fallback.
+- **Don't let `/api/*` become cacheable.** It is pinned to the AWS-managed
+  `CachingDisabled` policy. A cached scan response would serve one
+  student's marks for another's script — the worst failure this app has.
+  Verify with two different photos after any distribution change.
 - **Don't swap out a component's whole render tree to show an overlay
   screen if anything underneath holds a live browser resource.** `Scan.tsx`
   did this with an early `return <Review />` and it silently unmounted

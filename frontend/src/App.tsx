@@ -14,7 +14,17 @@ function App() {
   const [screen, setScreen] = useState<'scan' | 'results'>('scan');
 
   if (!config) {
-    return <Setup onStart={setConfig} />;
+    return (
+      <Setup
+        onStart={setConfig}
+        // Setup can send you straight to Results for records saved in an
+        // earlier session, without passing through the scan screen.
+        onViewResults={(saved) => {
+          setConfig(saved);
+          setScreen('results');
+        }}
+      />
+    );
   }
 
   if (screen === 'results') {

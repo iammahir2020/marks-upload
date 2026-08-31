@@ -1,0 +1,14 @@
+# Dependencies the DEPLOYED container needs and the laptop does not
+# (step 11.2/11.3). Kept separate from requirements.txt for the same
+# reason requirements-cnn.txt is: the laptop workflow should not install
+# what it will never import.
+#
+# Installed by the Dockerfile, on top of requirements.txt.
+#
+# Why this file exists at all, since AWS docs say boto3 ships in the Lambda
+# runtime: that is true of the *managed* Python runtime and the
+# public.ecr.aws/lambda/python base image. This deployment is a custom
+# container on a plain slim base (see the Dockerfile's own note on why),
+# where nothing is provided for you. Found the honest way — by running the
+# built image and importing boto3, which failed.
+boto3==1.40.47
