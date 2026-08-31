@@ -107,6 +107,37 @@ if [ -n "$ACCOUNT" ]; then
   fi
 fi
 
+# --- Crops retention (issues.md N8) -----------------------------------------
+#
+# deploy.sh deliberately does NOT set this: it is one-time bucket config, and
+# automating it would mean granting the deploy user
+# s3:PutLifecycleConfiguration permanently — effectively a delayed delete on
+# every harvested crop. So it is set once by an admin, which means it can be
+# forgotten, which is exactly what this check is for.
+#
+# It is not cosmetic. Setup.tsx tells the instructor their students' crops
+# are "deleted automatically after a year". If no rule exists, the app is
+# making a promise the infrastructure does not keep — the same shape of
+# defect step 11.5 already corrected once.
+head_ "Crops retention"
+if [ -n "$ACCOUNT" ]; then
+  CROPS="$PROJECT-crops-$ACCOUNT"
+  LIFECYCLE="$(aws s3api get-bucket-lifecycle-configuration --bucket "$CROPS" 2>&1)"
+  case "$LIFECYCLE" in
+    *NoSuchBucket*)
+      pass "s3://$CROPS does not exist yet (first deploy creates it; set retention after)" ;;
+    *NoSuchLifecycleConfiguration*)
+      warn "s3://$CROPS has NO retention rule — Setup.tsx promises deletion after a year. See aws/README.md" ;;
+    *AccessDenied*|*not\ authorized*)
+      warn "cannot read s3://$CROPS lifecycle (needs s3:GetLifecycleConfiguration) — verify by hand" ;;
+    *Expiration*)
+      DAYS="$(echo "$LIFECYCLE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Rules"][0]["Expiration"]["Days"])' 2>/dev/null || echo "?")"
+      pass "crops expire after ${DAYS} days" ;;
+    *)
+      warn "crops lifecycle present but has no Expiration — crops are kept forever" ;;
+  esac
+fi
+
 # --- The artifact ----------------------------------------------------------
 
 head_ "Container image"

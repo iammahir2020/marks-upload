@@ -10,19 +10,51 @@ fail with `AccessDenied` on a name the policy doesn't cover.
 
 ## Create the user
 
+The policy is a **managed policy, not an inline one**, and that is forced
+rather than chosen: an inline user policy is capped at **2048 bytes** and
+this document is ~3.8 KB compact. `aws iam put-user-policy` fails outright
+with `LimitExceeded`. Managed policies allow 6144.
+
+(This file documented `put-user-policy` until 2026-08-31 — instructions
+that could never have worked for a policy this size. Found when applying a
+one-line change to the real account, which already used a managed policy;
+the two had simply never been reconciled.)
+
 ```bash
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 sed "s/ACCOUNT_ID/$ACCOUNT_ID/g" aws/deploy-policy.json > /tmp/marks-deploy-policy.json
 
-aws iam create-user --user-name marks-scanner-deploy
-
-aws iam put-user-policy \
-  --user-name marks-scanner-deploy \
+aws iam create-policy \
   --policy-name marks-scanner-deploy \
   --policy-document file:///tmp/marks-deploy-policy.json
 
+aws iam create-user --user-name marks-scanner-deploy
+aws iam attach-user-policy \
+  --user-name marks-scanner-deploy \
+  --policy-arn "arn:aws:iam::$ACCOUNT_ID:policy/marks-scanner-deploy"
+
 # Prints the only copy of the secret you will ever get.
 aws iam create-access-key --user-name marks-scanner-deploy
+```
+
+### Updating the policy later
+
+A managed policy is versioned, and **the new version must be made default
+or nothing changes**. AWS also allows only five versions, so prune before
+adding a sixth. Note IAM is eventually consistent — a new version can take
+a few seconds to take effect, so a permission check straight afterwards may
+still show `AccessDenied`.
+
+```bash
+ARN="arn:aws:iam::$ACCOUNT_ID:policy/marks-scanner-deploy"
+sed "s/ACCOUNT_ID/$ACCOUNT_ID/g" aws/deploy-policy.json > /tmp/marks-deploy-policy.json
+
+aws iam create-policy-version --policy-arn "$ARN" \
+  --policy-document file:///tmp/marks-deploy-policy.json --set-as-default
+
+# If you hit the five-version limit:
+aws iam list-policy-versions --policy-arn "$ARN"
+aws iam delete-policy-version --policy-arn "$ARN" --version-id vN
 ```
 
 Then put the key in its own profile rather than overwriting your default:
@@ -30,7 +62,7 @@ Then put the key in its own profile rather than overwriting your default:
 ```bash
 aws configure --profile marks-scanner
 AWS_PROFILE=marks-scanner ./preflight.sh
-AWS_PROFILE=marks-scanner ./deploy.sh backend
+AWS_PROFILE=marks-scanner ./deploy.sh all
 ```
 
 ## What each grant is for, and which ones are load-bearing
@@ -43,7 +75,7 @@ AWS_PROFILE=marks-scanner ./deploy.sh backend
 | API Gateway actions | create the HTTP API that fronts the function | Account-wide — see below |
 | `iam:CreateRole` + `PutRolePolicy` | create the function's execution role | One role |
 | **`iam:PassRole`** | hand that role to Lambda at create time | **One role, and only to `lambda.amazonaws.com`** |
-| S3 bucket actions | create the crops and site buckets, upload the frontend | Two buckets |
+| S3 bucket actions | create the crops and site buckets, upload the frontend, read the crops retention rule | Two buckets |
 | CloudFront actions | the distribution that gives the site real HTTPS | Account-wide — see below |
 
 The policy also still carries `lambda:*FunctionUrlConfig`. Those are
@@ -82,11 +114,42 @@ property of the account rather than of the policy. If this key is ever
 used somewhere with other APIs, scope `/apis/*` down to the created API's
 id after the first deploy.
 
+## One-time setup this script does NOT do: crops retention
+
+`Setup.tsx` tells the instructor that harvested cells are **"deleted
+automatically after a year"**. Nothing in `deploy.sh` makes that true — set
+it once, from an **admin profile**, after the first deploy has created the
+bucket:
+
+```bash
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket "marks-scanner-crops-$ACCOUNT_ID" \
+  --lifecycle-configuration '{"Rules":[{"ID":"expire-harvested-crops","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":365}}]}'
+```
+
+**Why it is not in `deploy.sh`.** It is one-time bucket configuration, not
+per-deploy state — the same kind of thing as `put-public-access-block`,
+which is why that one sits inside the create-only block. Automating it would
+mean granting the deploy user `s3:PutLifecycleConfiguration` permanently,
+and that is effectively a **delayed delete on every harvested crop**:
+whoever holds the key could schedule the whole bucket for expiry. The
+"no delete permissions" property below is worth more than the convenience.
+
+The user *can* read the rule (`s3:GetLifecycleConfiguration`), which is
+harmless and is what lets `preflight.sh` warn when the rule is missing — so
+this cannot be quietly forgotten while the app keeps promising a year.
+
+If you change the period, change `Setup.tsx`'s wording with it. They are one
+fact stated twice.
+
 ### What is deliberately absent
 
 - **No delete permissions** beyond `DeleteObject` (needed by `s3 sync
   --delete` for the frontend) and `lambda:DeleteFunction`. This user cannot
-  delete a bucket, a repository, or a role.
+  delete a bucket, a repository, or a role — and specifically **cannot set a
+  lifecycle rule**, which would be a delayed delete on the crops bucket. See
+  the retention section above.
 - **It CAN read the crops bucket** (`s3:GetObject`), which is a deliberate
   convenience rather than an oversight: it lets
   `AWS_PROFILE=marks-scanner ./fetch-crops.sh s3 <bucket>` pull training

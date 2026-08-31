@@ -1321,8 +1321,9 @@ The register is [issues.md](issues.md). Summary as of the second audit:
 | **Fixed — pair pass** | 11 whose fix spans both sides, done as pairs: **N1**, **N2**, 7, 8, 10, 14, N8, N13, N14, N21, N29. **Both HIGH findings closed.** |
 | **Fixed — dormant pass** | 4 that only fire on `remote`/`both`: **3**, 9, 13, **N9** — cleared *ahead of* this step's own comparison run. See below. |
 | **Fixed — hot-path pass** | **N4** and **N18**, the two correctness risks live on the default `cnn` path. N4: a blank ID cell was classified anyway, and the real blank grid returned a fabricated `4` clearing both the confidence and margin floors — demonstrated, not inferred. `cnn/accuracy.py` now runs the same gate, so the harness measures what the app does. |
+| **Fixed — deploy pass** | **N30** — `aws/README.md`'s user-creation commands could never have worked (`put-user-policy` caps at 2048 bytes; the policy is ~3.8 KB). Found by following them. |
 | **Fixed — cnn-path pass** | N16, N17, N24, 15 — the last four on the default path. N24 exposed a wrong existing test (it passed a decimal index the real pipeline never produces, which only passed because the index was discarded). |
-| Still open | **4, all Low, all deploy/infra** — N11, N15, N22, N23. **Nothing open on the `cnn` path and nothing in the frontend.** |
+| Still open | **8.** Four Low deploy/infra (N11, N15, N22, N23), plus **N31-N34 from the first live grading session** — two of them High. The desk audits closed everything on the `cnn` path; these four came from using the deployed app on real scripts, which is the only way they could have. See issues.md's "Start here". |
 | Test suites | **246 backend + 119 frontend**, from 148 + 79. Both passed before the audits, which is the point worth internalising rather than a footnote. |
 
 **Why the dormant four were done first, and why it matters to this step.**

@@ -161,10 +161,11 @@ In broad strokes, as of 2026-08-30:
   now that the CNN is the default, not less: it is the only thing that
   would validate the choice on marks and serial rather than on the ID.
 - **Known issues are tracked**, not silently carried:
-  [issues.md](issues.md) is the open-defect register. 44 findings across two
-  audits; **37 fixed** on 2026-08-31, including both HIGH ones and every
-  finding that touches the default `cnn` path. **4 remain open — all Low,
-  all deploy/infra.** Backend and frontend suites went 148/79 →
+  [issues.md](issues.md) is the open-defect register. 49 findings across two
+  audits plus two found while deploying; **38 fixed** on 2026-08-31, including both HIGH ones and every
+  finding that touches the default `cnn` path. **8 remain open** — four Low deploy/infra items, plus four
+  from the first live grading session (two High), which are the ones to
+  work on next. Backend and frontend suites went 148/79 →
   **246/119**, and both passed before the audits too, which is why a full
   read-through found 44 things they did not.
 - **No whole script is stored anywhere.** A scan is processed in a

@@ -87,24 +87,21 @@ deploy_backend() {
       "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
   }
 
-  # Retention, applied every run rather than only at creation (issues.md N8).
-  # The log group already got 30 days with an explicit "a log that never
-  # expires is a slow privacy leak" rationale — and the bucket holding the
-  # actual student handwriting had none at all, which is the wrong way round.
+  # Crops retention (issues.md N8) is deliberately NOT set here.
   #
-  # A year is long enough to fine-tune across more than one semester's
-  # collection and short enough that the corpus does not accumulate
-  # indefinitely. If this changes, Setup.tsx's disclosure states the same
-  # period to the instructor and must change with it.
-  aws s3api put-bucket-lifecycle-configuration --bucket "$CROPS_BUCKET" \
-    --lifecycle-configuration "{
-      \"Rules\": [{
-        \"ID\": \"expire-harvested-crops\",
-        \"Status\": \"Enabled\",
-        \"Filter\": {\"Prefix\": \"\"},
-        \"Expiration\": {\"Days\": ${CROPS_RETENTION_DAYS:-365}}
-      }]}" >/dev/null 2>&1 \
-    || echo "    could not set crops retention (needs s3:PutLifecycleConfiguration)"
+  # It is one-time bucket configuration, not per-deploy state — the same
+  # kind of thing as put-public-access-block above, which is why that one
+  # sits inside the create-only block. Automating it here would mean
+  # granting this deploy user s3:PutLifecycleConfiguration permanently, and
+  # that is effectively a DELAYED DELETE on every harvested crop: whoever
+  # holds it can schedule the whole bucket for expiry. aws/README.md claims
+  # this user has no delete permissions beyond DeleteObject, and that claim
+  # is worth more than the convenience.
+  #
+  # Set once from an admin profile — aws/README.md has the command.
+  # preflight.sh checks the rule exists and warns if it does not, so it
+  # cannot be silently forgotten while Setup.tsx promises a year's
+  # retention to the instructor.
 
   say "Execution role"
   if ! have aws iam get-role --role-name "$ROLE_NAME"; then

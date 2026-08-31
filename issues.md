@@ -58,9 +58,9 @@ Where a finding was proven by execution it says so.
 
 ## At a glance
 
-44 findings: 43 from the two audits, plus N29 found while mapping backend
-findings to their frontend counterparts. **37 fixed, 2 partly fixed, 1
-accepted, 4 open.** Grouped by state rather than by number, so the
+49 findings: 43 from the two audits, plus N29 found while mapping backend
+findings to their frontend counterparts, N30 found while deploying, and **N31-N34 found in the first live grading session**.
+**38 fixed, 2 partly fixed, 1 accepted, 8 open.** Grouped by state rather than by number, so the
 actionable set is the first thing on the page. Search the `#` to jump to a
 finding's full entry in Part A or Part B below.
 
@@ -85,15 +85,36 @@ Three rounds of fixes on 2026-08-31:
 
 What is left — **every open finding is now Low**:
 
-- **4 are deploy/infra**, recognizer-independent — N11, N15, N22, N23.
-- **0 touch the `cnn` path.** Every finding on the path the app actually
-  runs is closed.
+- **4 from the live session** (N31–N34), two of them High — see "Start
+  here" below. These are the ones to work on next.
+- **4 are deploy/infra**, recognizer-independent — N11, N15, N22, N23, all
+  Low and none blocking.
+
+Everything the two desk audits found on the `cnn` path is closed; what is
+open now came from using the thing.
 - **0 are frontend, 0 are dormant, and nothing High or Med-on-a-hot-path
   remains open anywhere.**
 
 Suites: **246 backend, 119 frontend** — from 148/79 before the audits. They
 passed then too, which is the point worth internalising rather than a
 footnote.
+
+### Start here — from the first live session (2026-08-31)
+
+Found by actually grading on the deployed URL, which is why none of them
+appear above: every one needs a real script, a real phone and a real
+instructor working at speed. They are the first thing to pick up.
+
+| # | Finding | Why it is first | Sev |
+|---|---|---|---|
+| **N31** | Harvest mislabels a crop when the instructor works around an out-of-range mark | Silently corrupts training data, self-selecting for the hardest crops, and irreversible once mixed in. The first corpus was already thrown away once for a lesser version of this. | **High** |
+| **N32** | `decode_serial` discards a confident digit along with an uncertain sibling | The top day-to-day friction. Measured: 14/17 serials are correct at raw argmax, only 11/17 survive. Reported as "leading zeros fail" — they don't; they are the most reliable glyph and get thrown away with their partner. | **High** |
+| **N33** | An out-of-range mark is an unexplained blank | It is what pushes the instructor into N31's workaround, so the two want fixing together. | Med |
+| **N34** | Live detection failures cannot be debugged | Blocks any work on detection accuracy — a live failure leaves a log line and no image, by design. Needs a decision before code. | Med |
+
+Also confirmed in that session: **serial normalization on export works**
+(`008` → `8`), which was the `#2` fix deployed the same day. Recorded here
+because it was reported as an open issue and is not one.
 
 ### Open — deploy and infra (recognizer-independent)
 
@@ -141,6 +162,15 @@ silently mislabel training data.
 | # | Finding | Why |
 |---|---|---|
 | 12 | Portrait rotation hardcoded | Re-checked: a wrong-direction rotation yields `table_not_found`, which is the one reason that triggers the 4-way retry, and `_label_column_is_backwards` catches the 180° case. Cost is wasted detection passes, not a wrong read. |
+
+### Fixed 2026-08-31 — deploy pass
+
+Found by actually deploying, which is the only thing that executes the
+setup documentation.
+
+| # | Finding | Fix |
+|---|---|---|
+| N30 | README's user-creation commands cannot work | **Fixed 2026-08-31.** `put-user-policy` is capped at 2048 bytes and the policy is ~3.8 KB, so the documented setup was never runnable; the real account used a managed policy all along. Corrected, with the versioning traps documented. |
 
 ### Fixed 2026-08-31 — cnn-path pass
 
@@ -836,27 +866,44 @@ is not testable in jsdom.
 
 ### N8. Harvested crops have no retention policy, while the logs do
 
-**Status: FIXED 2026-08-31 (pair pass).** `deploy.sh` applies an S3 lifecycle rule expiring the crops bucket at `CROPS_RETENTION_DAYS` (default 365), re-applied every run rather than only at creation. **And the frontend half**, which is what makes it honest: `Setup.tsx`'s disclosure now states the period in both the collapsible section and the always-visible line, with a comment tying it to `CROPS_RETENTION_DAYS` so the two move together — the same failure mode 11.5 already caught once.
-
-**File:** [deploy.sh:66-74](deploy.sh#L66-L74), [deploy.sh:141-150](deploy.sh#L141-L150)
+**Status: FIXED 2026-08-31 (pair pass), with the mechanism corrected before deploying.**
 
 `deploy.sh` sets a 30-day retention on the CloudWatch log group with an
 explicit comment — *"New log groups default to Never expire, which is a slow
-privacy leak as much as a cost one"* — and that reasoning is correct.
+privacy leak as much as a cost one"* — and that reasoning is correct. The
+crops bucket, holding the actual student handwriting this project takes
+considerable care to keep unlinkable, had no lifecycle rule at all. The data
+with real privacy weight had weaker retention than the data deliberately
+scrubbed of it.
 
-The crops bucket, which holds the actual student handwriting this project
-takes considerable care to keep unlinkable, gets `put-public-access-block`
-and nothing else. No lifecycle rule, no expiration, no versioning-noncurrent
-cleanup. The data with real privacy weight has weaker retention than the
-data deliberately scrubbed of it.
+**Both halves are needed and both are now present**: a 365-day expiry on the
+bucket, and `Setup.tsx` stating the period to the instructor in both the
+collapsible disclosure and the always-visible line, comment-tied so they
+move together.
 
-That is an inconsistency rather than a vulnerability, but it is the kind
-this project has otherwise been rigorous about, and it grows monotonically
-for as long as the demo is up.
+**The first attempt put the lifecycle call in `deploy.sh`, and that was
+wrong.** Caught at deploy time, not before: the call needs
+`s3:PutLifecycleConfiguration`, which the least-privilege deploy policy does
+not grant. The reflex fix — widen the policy — is the bad one here, because
+that permission is effectively **a delayed delete on every harvested crop**:
+whoever holds the deploy key could schedule the whole bucket for expiry. It
+would have silently undercut `aws/README.md`'s own stated property that this
+user has no delete permissions beyond `DeleteObject`.
 
-**Fix direction:** add an S3 lifecycle rule with an expiration matched to
-how long the crops are actually useful for fine-tuning, and state that
-duration in `Setup.tsx`'s disclosure so the claim there stays complete.
+A lifecycle rule is *one-time bucket configuration*, not per-deploy state —
+the same kind of thing as `put-public-access-block`, which is why that one
+already sits inside `deploy.sh`'s create-only block. So:
+
+- `deploy.sh` does **not** set it, and says why at the point someone would
+  look for it.
+- `aws/README.md` carries the one-time admin command.
+- The policy grants only `s3:GetLifecycleConfiguration` (read), which is
+  harmless.
+- **`preflight.sh` checks the rule exists and warns when it does not** —
+  because a manual step can be forgotten, and forgetting this one means the
+  app promises the instructor a deletion that never happens. That is the
+  same shape of defect step 11.5 already corrected once, so it gets a guard
+  rather than a note.
 
 ### N9. `RECOGNIZER=both` writes full student IDs to disk, in scan order
 
@@ -939,6 +986,173 @@ there is no API Gateway row at all, though the policy has one.
 **Fix direction:** rewrite the comment block to describe API Gateway, and
 either accept the direct API URL explicitly in writing or add a
 CloudFront-injected shared-secret header the origin checks.
+
+### N30. `aws/README.md`'s user-creation instructions cannot work
+
+**Status: FIXED 2026-08-31.**
+
+**File:** [aws/README.md](aws/README.md)
+
+The setup section documented creating the deploy user's permissions with
+`aws iam put-user-policy`. An **inline** user policy is capped at **2048
+bytes**; `deploy-policy.json` is ~3.8 KB compact, so that command fails
+outright with `LimitExceeded`. It has never been runnable for a policy this
+size, and the policy has only grown since.
+
+The real account was set up with a **managed** policy (attached, already on
+v3), so nothing was broken — the document and the account had simply never
+been reconciled. Found by following the file's own instructions to apply a
+one-line change, which is the only way this kind of drift surfaces: the
+document is only executed when someone sets the project up from scratch,
+and that has happened once.
+
+Corrected to `create-policy` + `attach-user-policy`, plus a section on
+updating it later, which carries three traps the original had no reason to
+mention: a new version does nothing unless `--set-as-default`, AWS allows
+only **five** versions so old ones need pruning, and IAM is eventually
+consistent — a permission check immediately after publishing can still
+return `AccessDenied` (observed here; it passed ~10 s later).
+
+### N31. Harvesting mislabels a crop when the instructor works around an out-of-range mark
+
+**Severity: HIGH.** Found in the first live session (2026-08-31).
+**Files:** [harvest.py:170-176](backend/app/harvest.py#L170-L176), [decode.py](backend/cnn/decode.py) (`decode_value`), [Review.tsx](frontend/src/Review.tsx)
+
+A student writes `7` in a question marked out of 5. Verified behaviour:
+
+- `decode_value` scores only *legal* values, so nothing matches and it
+  returns `None` — blank plus a flag. Correct, and working as designed.
+- The Review screen refuses `7`: `isLegalValue(7, 5)` is false, so Confirm
+  is blocked.
+- If the instructor leaves the field blank, `harvest()` skips that crop
+  entirely (`if confirmed_value is None: continue`). Also safe.
+
+**The hole is the third path.** To get past the block, the instructor types
+a *legal* value — say `5`. The crop of a handwritten **7 is then harvested
+with the label `5`**. `harvest()` labels with the confirmed value and has no
+way to know the ink disagrees.
+
+This is the same class of corpus damage that forced the first corpus to be
+thrown away, and it is worse in one respect: a duplicate-heavy histogram is
+visible in `fetch-crops.sh`'s balance output, whereas a confidently
+mislabelled digit is invisible and trains the model to read 7 as 5.
+
+It is also **self-selecting for the worst cases**: it fires precisely where
+a student's handwriting or a marking error produced something unusual —
+exactly the crops a fine-tuning run would weight most heavily.
+
+**Fix direction.** `decode_value` already distinguishes "blank cell" (no
+glyphs) from "glyphs present, no legal value matches" — it just discards
+that distinction by returning `None` for both. Surface it, then:
+
+- **Refuse to harvest that crop.** We know the ink corresponds to no legal
+  label, so no label we could attach is trustworthy.
+- Feed it to N33's message, so the instructor is told what happened rather
+  than being pushed into the workaround.
+
+Do **not** make `7` enterable. An out-of-range mark is a grading error on
+the paper; surfacing it is right, recording it is not (plan.md §4, and
+CLAUDE.md's "never store a wrong number").
+
+### N32. `decode_serial` is all-or-nothing, so a confident digit is discarded with an uncertain sibling
+
+**Severity: HIGH.** Found in the first live session (2026-08-31).
+**File:** [decode.py:104-137](backend/cnn/decode.py#L104-L137) (`decode_serial`)
+
+Reported as "serials with a leading zero (02, 04) mostly don't work". The
+measurement says leading zeros are **not** the problem — they are the most
+reliable glyph in the field. Measured over every labelled serial:
+
+```
+true=07   0(c=1.00,m=1.00)  7(c=0.78,m=0.67)  -> WHOLE FIELD BLANKED
+true=02   0(c=1.00,m=1.00)  2(c=1.00,m=1.00)  -> ok
+true=05   0(c=1.00,m=1.00)  5(c=1.00,m=1.00)  -> ok
+```
+
+The `0` scores 1.00 confidence in six of seven leading-zero cases. What
+fails is `decode_serial`'s rule that **any** uncertain glyph returns `None`
+for the entire field — so a perfectly-read `0` is thrown away because its
+partner scored 0.78. The instructor sees an empty box and reasonably
+concludes the zero was not recognised.
+
+The compounding is the real cost: at ~90% per-glyph pass, a two-digit
+serial reads ~81% of the time and a three-digit one ~73%. Measured end to
+end: **11 of 17 labelled serials survive the floors, though 14 of 17 are
+correct at raw argmax.**
+
+Note the inconsistency with the ID, which handles this correctly:
+`read_id` returns `12?4567` and the instructor fixes one character.
+
+**Do not "fix" this by lowering the floors** — swept against the same data:
+
+| floors | reads | correct | **confidently wrong** | correct-but-flagged |
+|---|---|---|---|---|
+| 0.90 / 0.80 (current) | 11 | 11 | **0** | 3 |
+| 0.75 / 0.60 (the ID's) | 14 | 13 | **1** | 1 |
+
+Two extra reads cost the zero-confidently-wrong bar this field currently
+*meets*. A wrong serial silently mislabels a script's position and corrupts
+the identity cross-check; a blank one is flagged and retyped. The floors
+are correct as they are — `cnn/thresholds.py`'s note calling them "the
+first numbers to revisit" is **wrong and should be corrected when this is
+picked up**.
+
+**Fix direction:** return the confident digits with `?` for uncertain
+positions, mirroring `read_id`. `isValidSerial` already blocks Confirm on a
+partial value, so N5's pattern carries over with no data-model change.
+
+Separately, one case (`99`) segmented as a **single** glyph — a
+segmentation merge bug, worth its own look.
+
+### N33. An out-of-range mark is an unexplained blank
+
+**Severity: MEDIUM.** Found in the first live session (2026-08-31).
+**Files:** [decode.py:68-101](backend/cnn/decode.py#L68-L101), [Review.tsx](frontend/src/Review.tsx)
+
+Three different situations produce an identical empty, flagged field:
+
+1. the cell is blank — the student wrote nothing
+2. the writing is illegible
+3. **the writing is legible and out of range** — a `7` where the max is 5
+
+Only the third is a *grading error the instructor needs to act on*, and it
+is the one the app says least about. The instructor sees a blank box, no
+explanation, and a Confirm button that refuses every value they try to type
+that matches the paper — which is what pushes them into **N31**'s
+workaround.
+
+**Fix direction:** carry the reason out of `decode_value` and say it —
+"looks like a mark above the maximum; check the script". Same information
+N31 needs to suppress the harvest, so the two want doing together.
+
+### N34. Live detection failures cannot be debugged
+
+**Severity: MEDIUM.** Found in the first live session (2026-08-31).
+
+`table_not_found` and `column_count_mismatch` fired several times during
+live scanning before eventually succeeding — consistent with the earlier
+phone session, where 2 of 8 captures failed detection.
+
+The finding is not the failure rate itself; detector tuning is step 1's
+job and it is expected to need real photos. The finding is that **we cannot
+do that work**, because the backend is stateless by design and the
+observability log deliberately records facts rather than content. A live
+failure leaves a log line saying `table_not_found` and **no image**.
+
+So the loop that step 1 depends on — look at the overlay, adjust, re-run
+`batch_detect.py` — cannot be entered at all for failures that only happen
+on real captures in the field.
+
+This is a genuine tension, not an oversight: `debug_uploads/` was deleted
+in step 11.0.1 precisely because retaining whole scripts is the thing this
+project will not do, and that decision stands.
+
+**Fix direction — needs a decision, not just code.** The cheapest honest
+option is out-of-band: the instructor saves the failing photos from the
+phone's own camera roll and they go into `testset/images/` with labels,
+where the existing harness can work on them. Anything automated means
+retaining whole scripts server-side and would need its own disclosure. **Do
+not build the automated version without deciding that deliberately.**
 
 ### N11. `preflight.sh` does not probe API Gateway, and its read-only check does not use the deployed harvest config
 

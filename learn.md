@@ -2035,7 +2035,7 @@ screen transitions, not get torn down and rebuilt by a conditional
 
 ---
 
-## Step 8 — Scan loop wiring (in progress — code done, phone test pending)
+## Step 8 — Scan loop wiring (in progress — code done, real-device sessions run, formal bar not met)
 
 Step 7 built a Review screen that works; step 6 already kept the camera
 alive underneath it. What was still missing was the thing step 8 is
@@ -2125,6 +2125,25 @@ not the feel. Step 8's actual Done-when bar — ten scripts end to end
 without touching the keyboard except to correct a misread, then a hard
 refresh at record six with the first five surviving — is explicitly a
 real-device test, and hasn't been run.
+
+> **Updated 2026-08-31.** Real-device sessions have now happened — one on
+> the laptop over the LAN, one against the deployed URL on real scripts —
+> and they are the source of most of what the last few sections of this file
+> describe. Step 8's own bar is still **not** formally met: nobody has run
+> ten scripts end to end and hard-refreshed at record six.
+>
+> One clause of that bar looks unrealistic as written, and it is worth
+> noticing why. *"Without touching the keyboard except to correct a
+> misread"* assumed misreads would be occasional. Measured over a real
+> session, `student_id` was flagged on **five of six** successful scans —
+> which matches the 55.2% whole-ID exact-match figure, and means the
+> instructor is typing on most scripts. The loop mechanics work; the
+> recognition accuracy is what makes the bar hard, and that is a step 3r.6b
+> fine-tuning problem rather than a step 8 one.
+>
+> The sessions also produced timings worth having: **110–265 ms end to end**,
+> of which detection is 78–211 ms and recognition 30–45 ms. Whatever is slow
+> about this app, it is not the scan.
 
 ---
 
@@ -3531,6 +3550,15 @@ cell holds two digits that have to be split apart, and `segment.py`'s
 merge rule is tuned for one glyph per box. That's a hypothesis to test,
 not a diagnosis.
 
+> **Tested later, and mostly wrong** — see "The first live session" at the
+> end of this file. The classifier is fine (14 of 17 serials are correct at
+> raw argmax) and segmentation is implicated in only one case. The dominant
+> cause is neither: `decode_serial` returns `None` for the *whole field* if
+> any single glyph misses its floor, so a perfectly-read digit is discarded
+> along with an uncertain neighbour. Worth leaving the original guess
+> visible — it was a reasonable place to look, and it was not where the
+> problem was.
+
 ### Why it was flipped anyway
 
 Because accuracy isn't the only axis, and the other axis is one-sided:
@@ -4800,6 +4828,12 @@ This section is not a step. It is what happened when, with the app deployed
 and every step's Done-when bar met, every source file in the repo was read
 straight through looking for defects.
 
+**Read it as a snapshot of what was *found*.** Everything below describes
+the code as it stood at that moment, in the present tense, because that is
+when it was written. The next section covers fixing it — 38 of the 49
+findings are closed, including every one described here. Where a passage
+says "is not sanitized" or "has no equivalent", it now means *was*.
+
 The headline is worth sitting with before any individual finding:
 
 > **148 backend tests and 79 frontend tests all pass. The audit found 43
@@ -4840,7 +4874,7 @@ Then they wrote a test for it — `test_a_hostile_source_cannot_escape_the_harve
 Look at the f-string again. `value` also arrives from the client, on the
 same request, in the same function, one variable along. It is
 `HarvestFields.serial`, an unconstrained `str | None` straight off the
-wire. It is not sanitized.
+wire. It was not sanitized.
 
 ```
 harvest(..., confirmed_serial="../../../../escaped/PWNED", store=LocalStore(root))
@@ -5029,3 +5063,416 @@ Two things worth keeping from that:
    the one item on the whole list whose cost changes character with time:
    a `.gitignore` edit today, a history rewrite once a real class's export
    has been committed.
+
+---
+
+## Fixing the audit — five passes, and what each one taught
+
+38 of the 49 findings are closed. The interesting part is not the count, it
+is that grouping the work by **what a fix actually touches** kept producing
+better decisions than working down the list by severity would have.
+
+### Pass 1: the frontend (12 findings)
+
+The ones fixable without the backend. Four of them were violations of rules
+CLAUDE.md already stated as load-bearing, which is the lesson from the
+previous section made concrete.
+
+Two are worth reading the code for.
+
+**The serial fix needed a database migration, and nearly did not get one.**
+Normalizing on write is one line:
+
+```ts
+await db.put('records', { ...record, serial: normalizeSerial(record.serial) });
+```
+
+But records saved *before* that line existed still held `"007"`. Half the
+index normalized and half not is arguably worse than neither, because the
+lookup now misses exactly the older records a returning instructor most
+needs matched. So the fix is really three things — normalize on write, query
+normalized, and a **DB v3 migration** that rewrites what is already there:
+
+```ts
+if (oldVersion < 3) {
+  const store = transaction.objectStore('records');
+  store.openCursor().then(function migrate(cursor) {
+    if (!cursor) return;
+    const normalized = normalizeSerial(cursor.value.serial);
+    if (normalized !== cursor.value.serial) {
+      cursor.update({ ...cursor.value, serial: normalized });
+    }
+    return cursor.continue().then(migrate);
+  });
+}
+```
+
+**An existing test had to change, and that was the signal it was right.**
+`Review.test.tsx` asserted a saved serial of `'07'`. It had been *pinning
+the bug*. When a fix breaks a test, the first question is which of the two
+is wrong — here the test was encoding the defective behaviour as expected.
+
+**The blob-URL fix has a trap in it worth knowing about.** The obvious
+version — release each preview as soon as its scan is saved — silently
+breaks harvesting, because `Review.commitSave` re-fetches that same blob URL
+to send the crop *after* `onSaved` returns. So `releasePreview` is called on
+Retake and dismiss, never on save. A cleanup that frees a resource someone
+else is about to read is worse than the leak.
+
+### Pass 2: pairs (11 findings) — and the technique worth stealing
+
+These were the findings whose fix spans both sides of the wire. Doing one
+half is sometimes *worse* than doing neither, because it creates the
+appearance of a fix.
+
+The clearest case: bounding the quiz config. The frontend half went in
+during pass 1 (`MAX_QUESTIONS` and friends in `validateConfig.ts`), which
+makes the form unable to *produce* a bad config — while the endpoint still
+*accepted* one from any caller. Anyone reading the frontend would conclude
+the problem was solved.
+
+Fixing the backend half means the same three numbers exist in two languages,
+which is a drift waiting to happen. They cannot be shared. So:
+
+```python
+def _ts_const(name: str) -> float:
+    """Pull `export const NAME = <number>;` out of the TypeScript source."""
+    source = VALIDATE_CONFIG_TS.read_text()
+    match = re.search(rf"export const {name}\s*=\s*([0-9.]+)\s*;", source)
+    assert match, f"{name} not found in {VALIDATE_CONFIG_TS.name} — was it renamed?"
+    return float(match.group(1))
+```
+
+**A Python test that reads the TypeScript file and fails if the numbers
+disagree.** Verified by changing one side alone and watching it go red. It
+is slightly odd-looking, and it is the only thing that actually prevents the
+drift — a comment saying "keep these in sync" prevents nothing.
+
+The same shape showed up in `deploy.sh`. The `ALLOWED_ORIGINS` fix means the
+Lambda's environment is set *twice* — once at create/update, once after
+CloudFront exists — and `update-function-configuration` **replaces** the
+environment rather than merging into it. Two hand-maintained copies of that
+variable list would mean the second call silently dropping whatever the
+first knew about. So there is one `lambda_env()` function and the list
+appears exactly once in the file. The fix would otherwise have introduced
+the very class of bug it was fixing.
+
+**Where the audit's own suggestion was wrong.** The finding for the path
+traversal said to sanitize the `value`. That fixes the instance. The fix
+that survives the next field being added is to sanitize inside `add()` —
+the single funnel every field passes through — *and* to assert containment
+in the store:
+
+```python
+root = self.root.resolve()
+if not dest.resolve().is_relative_to(root):
+    raise ValueError(f"harvest key escapes the store root: {key!r}")
+```
+
+Because "no crop is written outside the root" is the property that matters,
+and it should not depend on every present and future caller escaping its
+own strings correctly. The original bug was *exactly* a caller forgetting.
+
+### Pass 3: the hot path (2 findings) — demonstrate, don't reason
+
+`read_id` classified blank cells. The reasoning was sound: `_to_canvas`
+thresholds with `THRESH_OTSU`, Otsu always splits a histogram including a
+unimodal one, so blank paper produces "ink" that gets classified.
+
+Sound reasoning is not evidence. So I ran the real blank grid through the
+recognizer with the new gate bypassed:
+
+```
+WITHOUT the gate: student_id='??????4'   ← a fabricated 4, from paper noise
+WITH the gate:    student_id='???????'
+```
+
+That `4` cleared **both** the 0.75 confidence floor and the 0.6 margin
+floor. On the one field with no arithmetic check behind it. Two minutes of
+work, and it turns "this could happen" into "this does happen", which is a
+completely different sentence to put in a commit message.
+
+**Calibrating the gate went wrong first, and a test caught it.** The first
+version measured *total ink* — separated 168 filled cells from 7 blank ones
+perfectly — and still let a drawn speck through, because total ink sums
+scattered noise. Counting the **largest connected component** instead fixes
+that and asks the same question `segment_cell` already asks of a mark cell.
+
+Two smaller things from the same pass, both found by my own tests rather
+than by reading:
+
+- `has_ink` returned a **numpy** bool, so `assert has_ink(x) is True`
+  failed. `np.bool_` works in an `if`, which is why it survived until an
+  identity check.
+- A test I wrote asserted a speck is not a digit. It failed, and the test
+  was wrong: every real blank cell in the set scores 0.0–0.00041, so a
+  13-pixel ink blob at full contrast simply does not occur on blank paper. I
+  had invented the case. The rewritten test documents the real boundary
+  instead — a cell with ink in it is not empty, and whether that ink is a
+  *digit* is the classifier's question.
+
+**And a harness that measured the wrong thing.** `cnn/accuracy.py` called
+`predict_digit` directly, so it did not run the new gate. An accuracy
+harness that evaluates a different code path than production is how a
+measurement stops meaning what its number says. It runs the gate now; the
+numbers are unchanged (91.8% / 55.2%), which is itself the evidence that the
+gate costs nothing on real data.
+
+### Pass 4: the cnn path (4 findings) — and one fix deliberately not made
+
+`decode_value` compared whether a decimal point *existed*, discarding its
+index. Fixing it exposed a wrong test: `has_decimal_at=0` for `4.5`, an
+input the real pipeline never produces. I verified against an actual
+`segment_cell` run before touching it — `[digit, decimal, digit]` yields
+index 1 — rather than trusting my reading. **When your change breaks a test,
+check the test against reality before you change either one.**
+
+The interesting decision was **N17, which I chose not to fix in the code**.
+Re-harvesting the same crop under a different label leaves both labels in
+the corpus. The obvious fix is to look for a conflicting key before writing.
+That requires widening `Store` beyond its single `put` method — and the
+narrowness is deliberate, because a store that can list and delete invites
+code that lists and deletes.
+
+So: I checked the real corpus first (229 crops, 229 distinct
+`(field, digest)`, **zero conflicts**), and put the detection in
+`fetch-crops.sh`, where crops are assembled for training — the moment it
+would actually matter, alongside the balance warnings already there.
+
+**Not every finding's fix belongs in the code that has the bug.** Sometimes
+it belongs where the consequence lands.
+
+### Pass 5: the "dormant" four — a priority inversion worth internalising
+
+Four findings only fire on `RECOGNIZER=remote` or `=both`. On severity they
+were the lowest-priority group in the register. They were the most urgent
+work on the list, and the reason is a dependency nobody had written down:
+
+**step 3r.6's outstanding comparison run *is* `RECOGNIZER=both`.**
+
+So all four activate the moment that run starts, and two of them damage it:
+
+- The Tesseract fallback discarded correctly-read digits (its acceptance
+  check tested membership in a map whose keys are all letters). Run the
+  comparison with that in place and the CNN is measured against an
+  **artificially depressed baseline** — and the result would have looked
+  entirely convincing.
+- `comparison_log/` wrote both recognizers' full student IDs, in scan order,
+  with timestamps. That run is meant to happen *during a real class*.
+
+The second is now logged as a *difference* rather than a value:
+
+```python
+if field == ID_FIELD:
+    entry["difference"] = _id_difference(cnn_value, remote_value)
+else:
+    entry["cnn"], entry["remote"] = cnn_value, remote_value
+```
+
+Positions and counts, never the digits. Serial and marks still log values —
+they identify nobody without the attendance sheet, and on that path they
+have already gone to Gemini. That is plan.md §12's line, applied.
+
+**Severity ranks how bad a finding is. It does not rank when to fix it.**
+What you are about to do next changes the order.
+
+---
+
+## Deploying it — and a document that could never have worked
+
+Redeploying with all of the above was mostly uneventful, which is the point
+of `deploy.sh` existing. Three things are worth keeping.
+
+### Proving the deploy actually shipped your code
+
+Every Docker layer reported `CACHED`, including `COPY app/` and `COPY cnn/`
+— after a session that changed most of `app/`. That looks exactly like the
+failure where the new code does not ship.
+
+It was fine: `preflight.sh` builds the same image from the same context
+minutes earlier, so the cache was populated with the current source. But
+"it's probably fine" is not verification, and the smoke test cannot help —
+**old code returns a valid scan too.**
+
+So verify with something only the new code does. The config validators are
+perfect for it, because their whole job is rejecting what the old code
+accepted:
+
+```
+totalMax mismatch  → 400  "totalMax (25.0) must equal the sum of question maxima (10.0)"
+out-of-order q     → 400  "questions must be numbered 1..2 in order, got [2, 1]"
+max: 1e9           → 400  "Input should be less than or equal to 100"
+```
+
+A 200 or a 500 on any of those means the old image is still serving. **Pick
+a behaviour that differs, not a behaviour that works.**
+
+### The permission that looked like a one-line change
+
+The crops-retention fix put an S3 lifecycle call in `deploy.sh`. It needs
+`s3:PutLifecycleConfiguration`, which the least-privilege deploy policy does
+not grant, so the reflex is to add it.
+
+That reflex is wrong here, and the reason is worth sitting with:
+**`PutLifecycleConfiguration` is a delayed delete.** Whoever holds it can
+schedule every harvested crop for expiry. `aws/README.md` states this user
+has no delete permissions beyond `DeleteObject` — adding the grant would
+have quietly made that false, on a key that exists to be used routinely.
+
+And the call did not need to be there at all. A lifecycle rule is *one-time
+bucket configuration*, not per-deploy state — the same kind of thing as
+`put-public-access-block`, which is why that one already sits inside
+`deploy.sh`'s create-only block. So the rule is set once by an admin, the
+policy grants only the **read**, and `preflight.sh` checks it:
+
+```
+Crops retention
+  ✓ crops expire after 365 days
+```
+
+That check is not decoration. `Setup.tsx` tells the instructor their
+students' crops are *"deleted automatically after a year"*. A manual step
+can be forgotten; forgetting this one means the app makes a promise the
+infrastructure does not keep — the same shape of defect step 11.5 already
+corrected once. **When you move something out of automation for a good
+reason, add the check that catches you forgetting it.**
+
+### Documentation that had never been executed
+
+Applying the policy change failed:
+
+```
+LimitExceeded: Maximum policy size of 2048 bytes exceeded
+```
+
+`aws/README.md` documented `aws iam put-user-policy`. An **inline** user
+policy caps at 2048 bytes; this policy is ~3.8 KB compact. **The documented
+setup could never have worked for a policy this size** — and the policy has
+only grown.
+
+Nothing was broken. The real account had been set up with a *managed*
+policy all along; the document and the account had simply never been
+reconciled. It surfaces only when someone follows the instructions, and that
+happens once, at the beginning, by the person who already knows what they
+meant.
+
+That is the whole lesson. Code you don't run is untested; **documentation
+you don't execute is untested in exactly the same way, and setup
+documentation is executed once, ever.** Corrected to
+`create-policy` + `attach-user-policy`, plus the three traps in updating one
+that the original had no reason to know about: a new version does nothing
+without `--set-as-default`, AWS allows only five versions, and IAM is
+eventually consistent — the permission check immediately after publishing
+still returned `AccessDenied`, and passed about ten seconds later.
+
+---
+
+## The first live session — what only real use could find
+
+Grading real scripts on the deployed URL produced four findings in one
+sitting, after two desk audits had read every file in the repo. None of them
+could have been found by reading.
+
+### The reported cause was not the cause
+
+> "Identification of numbers with preceding 0 like 02, 04 not working in
+> most cases."
+
+Entirely plausible: a `0` next to another digit, maybe merging in
+segmentation. The obvious response is to go tune segmentation, or lower the
+serial confidence floors.
+
+Measuring first says something different:
+
+```
+true=07   0(c=1.00,m=1.00)  7(c=0.78,m=0.67)  -> WHOLE FIELD BLANKED
+true=02   0(c=1.00,m=1.00)  2(c=1.00,m=1.00)  -> ok
+true=05   0(c=1.00,m=1.00)  5(c=1.00,m=1.00)  -> ok
+```
+
+**The leading zero is the most reliable glyph in the field** — 1.00
+confidence in six of seven cases. What fails is `decode_serial`'s rule that
+*any* uncertain glyph returns `None` for the whole field. In `07`, a
+perfectly-read zero was discarded because its partner scored 0.78.
+
+The instructor sees an empty box where a `0`-leading serial should be and
+concludes the zero failed. The report was an accurate description of the
+symptom and a wrong description of the cause — which is the normal case for
+a bug report, and the reason to reproduce before fixing.
+
+Note the contrast with the ID, which handles this correctly: `read_id`
+returns `12?4567` and you fix one character. The serial vanishes entirely.
+Same project, same model, two different answers to "what do we do with
+partial confidence" — and the field that degrades gracefully is much nicer
+to use.
+
+### The fix that felt obvious and was wrong
+
+If correct reads are being flagged away, lower the floors. Swept against the
+same data:
+
+| floors | reads | correct | **confidently wrong** | correct-but-flagged |
+|---|---|---|---|---|
+| 0.90 / 0.80 (current) | 11 | 11 | **0** | 3 |
+| 0.75 / 0.60 (the ID's) | 14 | 13 | **1** | 1 |
+
+Two extra reads, at the cost of the zero-confidently-wrong bar this field
+currently *meets*. A wrong serial silently mislabels a script's position and
+corrupts the identity cross-check; a blank one is flagged and retyped in two
+seconds.
+
+So the floors stay. I had written in `cnn/thresholds.py` that they were
+"the first numbers to revisit" — the measurement says that note is wrong,
+and it is recorded as needing correction. **A hypothesis written into a
+comment is still a hypothesis.**
+
+### The workaround that poisons the training data
+
+A student writes `7` where the maximum is 5. Verified end to end:
+
+- `decode_value` scores only *legal* values, so nothing matches and it
+  returns `None` — blank plus a flag. Correct.
+- Review refuses `7`: `isLegalValue(7, 5)` is false, Confirm is blocked.
+- Leave it blank and `harvest()` skips the crop entirely. Also correct.
+
+Now the third path. To get past the block, the instructor types a legal
+value — say `5`. The crop of a handwritten **7 is harvested labelled `5`**.
+`harvest()` labels with the confirmed value and cannot know the ink
+disagrees.
+
+Three individually correct behaviours composing into corpus poisoning. And
+it is **self-selecting for the worst cases**: it fires exactly where a
+student produced something unusual, which is what a fine-tuning run weights
+most heavily.
+
+The fix is not to allow `7` — an out-of-range mark is a grading error, and
+surfacing it is right. It is that `decode_value` already knows the
+difference between "blank cell" and "glyphs present, no legal value
+matches", and throws that distinction away by returning `None` for both.
+Keep it, and you can both tell the instructor what happened *and* refuse to
+harvest a crop whose ink corresponds to no legal label.
+
+### The failure you cannot debug
+
+`table_not_found` fired several times during live scanning. Detector tuning
+is step 1's job and needs real photos — and there are none, because the
+backend is stateless by design and the log deliberately records facts rather
+than content. A live failure leaves a log line and no image.
+
+This is a genuine tension rather than an oversight. `debug_uploads/` was
+deleted in step 11.0.1 precisely because retaining whole scripts is the
+thing this project will not do, and that decision stands. So the cheap
+honest answer is out-of-band: save the failing photos off the phone by hand
+and add them to `testset/`. Anything automated means storing whole scripts
+server-side and needs its own disclosure — **do not build it as a
+convenience.**
+
+### The pattern across all four
+
+Two desk audits read every file and found 45 things. One person grading real
+scripts for twenty minutes found four more, two of them High, and one of
+them (the harvest poisoning) a composition of three behaviours that are each
+individually correct — which is precisely the kind of defect reading cannot
+find, because no single file is wrong.
+
+Reading finds broken parts. Using finds broken systems.
