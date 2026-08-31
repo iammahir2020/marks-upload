@@ -115,13 +115,22 @@ def read_digit(crop: np.ndarray) -> tuple[str | None, float]:
 
     fallback_config = f"--oem {OEM} --psm {FALLBACK_PSM}"
     fallback_text, fallback_conf = _best_candidate(prepared, fallback_config)
-    if (
-        fallback_text
-        and len(fallback_text) == 1
-        and fallback_text in DIGIT_LOOKALIKES
-        and fallback_conf >= FALLBACK_CONFIDENCE_FLOOR
-    ):
-        return DIGIT_LOOKALIKES[fallback_text], fallback_conf
+    if fallback_text and len(fallback_text) == 1 and fallback_conf >= FALLBACK_CONFIDENCE_FLOOR:
+        # A DIGIT is accepted as itself (issues.md #3). This branch used to
+        # test `fallback_text in DIGIT_LOOKALIKES` only — and every key in
+        # that map is a LETTER — so a fallback pass that read the crop
+        # correctly, as the actual digit, at high confidence, failed the
+        # check and fell through to `return None`. The read was thrown away
+        # as `?` precisely when it was right.
+        #
+        # The bug came from building the fallback for one measured failure
+        # (a "0" read as "D", a "1" read as "l") and testing it only against
+        # that case. Same confidence floor applies either way, so this
+        # accepts nothing the look-alike branch would have rejected.
+        if fallback_text in WHITELIST:
+            return fallback_text, fallback_conf
+        if fallback_text in DIGIT_LOOKALIKES:
+            return DIGIT_LOOKALIKES[fallback_text], fallback_conf
 
     return None, max(best_conf, 0.0)
 

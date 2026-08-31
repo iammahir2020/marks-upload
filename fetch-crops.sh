@@ -90,6 +90,38 @@ if half or whole:
     print(f"\n  marks: {whole} whole, {half} half"
           + (f"  ! half marks are {whole / max(half, 1):.1f}x rarer" if half and whole / max(half, 1) >= 3 else ""))
 
+# issues.md N17. A crop's key is <source>/<field>/<tag>/<value>_<digest>.png
+# — the content hash is the SUFFIX, and the label is a path segment ahead of
+# it. So re-harvesting the same crop bytes under a different confirmed value
+# does not overwrite: it produces a second file, and the corpus ends up
+# holding one image with two contradictory labels.
+#
+# Not fixed at write time on purpose. The Store interface is deliberately
+# one method (`put`) with no listing or deleting — widening it to look for
+# a conflicting key would be a real design change — and the label has to
+# stay in the filename, which is what keeps the corpus self-labelling with
+# no annotation file to drift. Detected HERE instead, where crops are
+# assembled for training, which is the moment it would matter and the same
+# job the balance warnings above already do.
+conflicts = collections.defaultdict(set)
+for c in crops:
+    rel = c.relative_to(root).parts
+    if len(rel) < 4:
+        continue
+    value, _, digest = c.stem.rpartition("_")
+    if digest:
+        conflicts[(rel[1], digest)].add(value)
+contradictory = {k: v for k, v in conflicts.items() if len(v) > 1}
+if contradictory:
+    print(f"\n  ! {len(contradictory)} crop(s) appear under CONTRADICTORY labels.")
+    print("    The same image is in the training set twice, labelled differently —")
+    print("    it will teach the model both answers. Decide which is right and")
+    print("    delete the other before fine-tuning:")
+    for (field, digest), values in list(contradictory.items())[:10]:
+        print(f"      {field}/*/{digest[:12]}...  labelled {sorted(values)}")
+    if len(contradictory) > 10:
+        print(f"      ... and {len(contradictory) - 10} more")
+
 if by_tag.get("corrected", 0) == 0 and by_tag.get("confirmed", 0):
     print("\n  ! every crop is tagged 'confirmed' and none 'corrected'.")
     print("    Still valid labelled data, but NOT a list of the model's failures —")

@@ -155,3 +155,67 @@ describe('v1 -> v2 migration', () => {
     expect(await loadConfig()).toEqual(config);
   });
 });
+
+// --- issues.md #2: the leading-zero duplicate that was never surfaced ------
+
+describe('serial normalization (issues.md #2)', () => {
+  it('finds a record saved as "007" when looking up "7"', async () => {
+    // This is the whole bug, in one assertion. crossCheck normalizes both
+    // sides correctly, but it can only compare records this lookup already
+    // returned — and an exact-match index lookup for "7" returned nothing
+    // for a record stored as "007", so the duplicate saved silently.
+    await saveRecord(makeRecord({ id: 'a', serial: '007', studentId: '1912345' }));
+
+    const found = await findRecordsBySerial('7');
+    expect(found).toHaveLength(1);
+    expect(found[0].id).toBe('a');
+  });
+
+  it('normalizes on write so the index has one key per real serial', async () => {
+    await saveRecord(makeRecord({ id: 'a', serial: '007' }));
+    const [stored] = await getAllRecords();
+    expect(stored.serial).toBe('7');
+  });
+
+  it('matches across every spelling of the same serial', async () => {
+    await saveRecord(makeRecord({ id: 'a', serial: '2' }));
+    for (const spelling of ['2', '02', '002', ' 002 ']) {
+      expect(await findRecordsBySerial(spelling)).toHaveLength(1);
+    }
+  });
+
+  it('keeps an all-zero serial as "0" rather than losing it', async () => {
+    await saveRecord(makeRecord({ id: 'a', serial: '000' }));
+    expect(await findRecordsBySerial('0')).toHaveLength(1);
+  });
+
+  it('still permits duplicates in the index — the cross-check needs both', async () => {
+    // A unique index would throw on write and lose the two records the
+    // instructor needs to see side by side (CLAUDE.md).
+    await saveRecord(makeRecord({ id: 'a', serial: '07', studentId: '1912345' }));
+    await saveRecord(makeRecord({ id: 'b', serial: '7', studentId: '1999999' }));
+    expect(await findRecordsBySerial('007')).toHaveLength(2);
+  });
+
+  it('migrates serials already stored un-normalized by an older version', async () => {
+    // A v2 database written before this fix, opened by the current code.
+    globalThis.indexedDB = new IDBFactory();
+    const legacy = await openDB('marks', 2, {
+      upgrade(db) {
+        const records = db.createObjectStore('records', { keyPath: 'id' });
+        records.createIndex('by-serial', 'serial');
+        records.createIndex('by-studentId', 'studentId');
+        db.createObjectStore('config');
+        db.createObjectStore('meta');
+      },
+    });
+    await legacy.put('records', makeRecord({ id: 'old', serial: '007' }));
+    legacy.close();
+
+    // Opening at v3 runs the migration; the old record is now reachable by
+    // its normalized serial, which is what the cross-check will query with.
+    const found = await findRecordsBySerial('7');
+    expect(found).toHaveLength(1);
+    expect(found[0].id).toBe('old');
+  });
+});

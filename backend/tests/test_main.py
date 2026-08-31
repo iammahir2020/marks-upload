@@ -234,3 +234,50 @@ def test_rate_limited_with_nothing_recoverable_still_fails_honestly(force_remote
     assert body["status"] == "failed"
     assert body["failure_reason"] == "rate_limited"
     mock_fallback.assert_called_once()
+
+
+# --- issues.md #8: a bad config is a 400, not a 500 -----------------------
+
+
+@pytest.mark.parametrize(
+    "bad_config, expect",
+    [
+        ("not json at all", "config"),
+        ('{"quizName":"q","idDigits":7,"questions":[{"q":1,"max":1e9}],"totalMax":1000000000}', "config"),
+        ('{"quizName":"q","idDigits":7,"questions":[{"q":2,"max":5},{"q":1,"max":5}],"totalMax":10}', "order"),
+        ('{"quizName":"q","idDigits":7,"questions":[{"q":1,"max":5},{"q":2,"max":5}],"totalMax":25}', "totalmax"),
+        ('{"quizName":"q","idDigits":99999,"questions":[{"q":1,"max":5}],"totalMax":5}', "config"),
+    ],
+)
+def test_a_bad_config_is_rejected_as_a_client_error(tmp_path, bad_config, expect):
+    """A pydantic.ValidationError raised inside a route body has no default
+    handler, so every one of these used to surface as a bare 500 — including
+    the new N2/#10/#14 rules, whose whole point is telling a caller what is
+    wrong with their config."""
+    image_path = tmp_path / "image.jpg"
+    _make_noise(image_path)
+    with open(image_path, "rb") as fh:
+        response = client.post(
+            "/api/scan",
+            files={"image": ("scan.jpg", fh, "image/jpeg")},
+            data={"config": bad_config},
+        )
+    assert response.status_code == 400, response.text
+    assert expect in response.json()["detail"].lower()
+
+
+def test_a_good_config_is_still_accepted(tmp_path):
+    """The bounds and cross-field rules must not reject an ordinary quiz.
+    Detection fails on this noise image, which is fine — the point is that
+    it got past validation to reach detection at all."""
+    image_path = tmp_path / "image.jpg"
+    _make_noise(image_path)
+    with open(image_path, "rb") as fh:
+        response = client.post(
+            "/api/scan",
+            files={"image": ("scan.jpg", fh, "image/jpeg")},
+            data={"config": '{"quizName":"q","idDigits":7,'
+                            '"questions":[{"q":1,"max":5},{"q":2,"max":5}],"totalMax":10}'},
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "failed"

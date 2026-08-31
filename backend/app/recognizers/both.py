@@ -37,38 +37,70 @@ COMPARISON_LOG_DIR = Path(__file__).resolve().parent.parent.parent.parent / "com
 COMPARISON_LOG_FILE = COMPARISON_LOG_DIR / "comparisons.jsonl"
 
 
+# The one field whose VALUE is never written here. Serial and marks are a
+# different matter and are logged in full: they identify nobody without the
+# instructor's own attendance sheet, and on this path they have already been
+# sent to Gemini anyway (plan.md §12 draws exactly this line).
+ID_FIELD = "student_id"
+
+
+def _id_difference(cnn_value: str | None, remote_value: str | None) -> dict[str, Any]:
+    """Where two ID reads differ, never what either of them read.
+
+    A comparison run wants to know *that* the recognizers disagreed and
+    *where* — which position, how often, whether it clusters. None of that
+    needs the digits, and the digits are the whole student ID.
+    """
+    a, b = cnn_value or "", remote_value or ""
+    positions = [i for i in range(max(len(a), len(b))) if a[i:i + 1] != b[i:i + 1]]
+    return {
+        "differing_positions": positions,
+        "differing_count": len(positions),
+        "len_cnn": len(a),
+        "len_remote": len(b),
+    }
+
+
 def _log_disagreement(field: str, cnn_value: Any, remote_value: Any) -> None:
     """Appends one line — the backend is otherwise stateless, and this log
     is a deliberate, local-only exception for a comparison run (plan.md
     §16).
 
-    Two caveats, both recorded in issues.md N9 and neither fixed here:
+    **The student ID is recorded as a difference, not as a value**
+    (issues.md N9). This function used to write both recognizers' full IDs
+    verbatim, one line per scan, in scan order, with timestamps — which is
+    the exact thing `harvest.py` (shuffled writes, content-addressed keys),
+    `stores.py` (CONSTANT_MTIME) and `observability.py` (key denylist plus
+    4-digit redaction) all exist to prevent. It was gitignored and
+    local-only, but the comparison run this file exists for is meant to
+    happen *during a real class*, which is when it matters most.
 
-    1. **This writes recognised student IDs verbatim**, in scan order, with
-       timestamps — which is the thing `harvest.py` (shuffled writes,
-       content-addressed keys), `stores.py` (CONSTANT_MTIME) and
-       `observability.py` (key denylist + 4-digit redaction) all exist to
-       prevent. It is gitignored and only produced under RECOGNIZER=both,
-       but the comparison run this exists for is meant to happen during a
-       real class, which is when the file is most sensitive.
-    2. This path is repo-relative and would raise OSError on Lambda's
-       read-only filesystem. Not reachable today (the deploy sets
-       RECOGNIZER=cnn) but it is one env var away.
+    Never raises. The log is a research aid; it must not be able to fail a
+    scan, and `COMPARISON_LOG_DIR` is repo-relative, so on a read-only
+    filesystem (Lambda, one env var away) the write would otherwise take
+    the whole request down with it.
 
-    An earlier version of this docstring cited debug_uploads/ as the
-    precedent for "a deliberate exception to statelessness". That is a bad
-    precedent: debug_uploads/ was deleted in step 11.0.1 as a privacy
-    defect, not retired as a success.
+    An earlier version of this docstring cited debug_uploads/ as precedent
+    for "a deliberate exception to statelessness". That is a bad precedent:
+    debug_uploads/ was deleted in step 11.0.1 as a privacy defect, not
+    retired as a success.
     """
-    COMPARISON_LOG_DIR.mkdir(exist_ok=True)
-    entry = {
+    entry: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "field": field,
-        "cnn": cnn_value,
-        "remote": remote_value,
     }
-    with open(COMPARISON_LOG_FILE, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    if field == ID_FIELD:
+        entry["difference"] = _id_difference(cnn_value, remote_value)
+    else:
+        entry["cnn"] = cnn_value
+        entry["remote"] = remote_value
+
+    try:
+        COMPARISON_LOG_DIR.mkdir(exist_ok=True)
+        with open(COMPARISON_LOG_FILE, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
 
 
 class BothRecognizer:

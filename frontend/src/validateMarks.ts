@@ -23,6 +23,70 @@ export function isLegalValue(value: number, max: number): boolean {
   return Math.abs(doubled - Math.round(doubled)) < 1e-9;
 }
 
+// One parse rule for every editable mark-or-total field, shared by the two
+// screens that edit them (issues.md #4 / N6).
+//
+// Both screens previously validated the per-question inputs and left Total
+// unchecked, so `Number("abc")` -> NaN was written to a `confirmed: true`
+// record — IndexedDB uses structured clone, which preserves NaN faithfully,
+// so it really was stored and really did reach the export. Two components
+// applying "the same" rule by each writing it out is how they drifted apart
+// in the first place, hence one function rather than two copies.
+//
+// A blank field is valid and means "not filled in" — flag, never guess. It
+// is the caller's job to know that a blank Total simply fails the sum check
+// rather than blocking the save.
+export interface FieldParse {
+  value: number | null;
+  error: string | null;
+}
+
+export function parseMarkField(raw: string, max: number): FieldParse {
+  const trimmed = raw.trim();
+  if (trimmed === '') return { value: null, error: null };
+  const value = Number(trimmed);
+  // Number("") is 0 and Number(" ") is 0, which is why the blank check is
+  // first; Number("abc") is NaN and Number("1e999") is Infinity, which is
+  // why this tests isFinite rather than just !isNaN.
+  if (!Number.isFinite(value) || !isLegalValue(value, max)) {
+    return { value: null, error: `Must be a multiple of 0.5 between 0 and ${max}.` };
+  }
+  return { value, error: null };
+}
+
+// A student ID is either absent (valid but unverified — plan.md §10) or a
+// complete run of exactly `idDigits` digits. Anything else is a partial
+// read the instructor has not finished correcting.
+//
+// The case this exists for: both recognizers return "?" for a position they
+// could not read, by contract, so a flagged scan pre-fills the field with
+// something like "12?4567". Nothing stopped that being confirmed and
+// exported verbatim (issues.md N5).
+// A serial identifies a script's position in the pile. 1..9999 is far more
+// than any real class, and `results.ts` sorts by `Number(serial)`, so a
+// non-numeric one has no defined place in the exported table.
+//
+// The other half of issues.md N21: `marks.py`'s `validate_serial` applies
+// the identical rule to what a recognizer returns, and this applies it to
+// what the instructor types. Previously neither side checked, so a serial
+// was the one identity field nothing validated anywhere. Keep the two in
+// step — same length, same digits-only rule.
+export const MAX_SERIAL_DIGITS = 4;
+
+export function isValidSerial(serial: string | null): boolean {
+  if (serial === null) return false;
+  const trimmed = serial.trim();
+  return (
+    trimmed.length > 0 && trimmed.length <= MAX_SERIAL_DIGITS && /^[0-9]+$/.test(trimmed)
+  );
+}
+
+export function isCompleteId(studentId: string | null, idDigits: number): boolean {
+  if (studentId === null) return false;
+  const trimmed = studentId.trim();
+  return trimmed.length === idDigits && /^[0-9]+$/.test(trimmed);
+}
+
 export interface SumCheckResult {
   computedSum: number;
   matches: boolean;

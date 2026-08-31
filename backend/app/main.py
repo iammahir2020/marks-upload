@@ -17,6 +17,8 @@ from typing import Annotated
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 
 # Imported first, deliberately: config.py calls load_dotenv at import, and
@@ -160,6 +162,30 @@ def _log_scan(
     )
 
 
+def _parse(model, raw: str, field: str):
+    """Parse a JSON form field into a model, as a 400 rather than a 500.
+
+    `model_validate_json` raises `pydantic.ValidationError`, and FastAPI
+    installs default handlers only for `HTTPException`,
+    `RequestValidationError` and `WebSocketRequestValidationError` — a
+    ValidationError raised inside a route body is none of those, so it
+    surfaced as a bare 500 (issues.md #8). That mattered more once
+    QuizConfig gained real validation rules: every bound, the q-order check
+    and the totalMax check now reject through this path, and "the quiz
+    config is wrong" is a client error with a fixable cause, not a server
+    fault.
+
+    The message is included because it names the offending field, and the
+    only clients are the instructor's own browser and whoever is holding
+    the demo URL — there is nothing secret in "totalMax must equal the sum
+    of question maxima".
+    """
+    try:
+        return model.model_validate_json(raw)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid {field}: {e.errors()[0]['msg']}")
+
+
 def _reject_oversized(image_bytes: bytes) -> None:
     """The real cap. Content-Length can be absent or a lie; this sees what
     actually arrived. Raised as 413 so a client can tell "your photo is too
@@ -199,7 +225,7 @@ async def scan(
 ) -> ScanResult:
     # HTTP encodes a body as multipart or JSON, never both — QuizConfig
     # rides as a JSON string in a form field (stack-reference.md).
-    quiz = QuizConfig.model_validate_json(config)
+    quiz = _parse(QuizConfig, config, "config")
     image_bytes = await image.read()
     _reject_oversized(image_bytes)
 
@@ -221,9 +247,23 @@ async def scan(
         image_path.write_bytes(image_bytes)
         out_dir = tmp_path / "out"
 
+        # Every stage below is synchronous, CPU-bound and slow: OpenCV
+        # detection, the ONNX session, and on the remote path Tesseract and
+        # a network round trip. Run directly in this `async def` they would
+        # occupy the single event-loop thread for the whole scan, so a
+        # second request could not even begin parsing until the first
+        # finished (issues.md #7) — which silently defeated `scanQueue.ts`,
+        # built specifically so several captures can be in flight at once.
+        #
+        # run_in_threadpool hands each stage to the same worker pool
+        # FastAPI already uses for plain `def` routes. The route stays
+        # `async def` because `await image.read()` genuinely is async, and
+        # because the stages need to stay individually timed.
         question_count = len(quiz.questions)
         with obs.timed(ms, "detect"):
-            det = detect_any_orientation(image_path, question_count, quiz.idDigits, out_dir)
+            det = await run_in_threadpool(
+                detect_any_orientation, image_path, question_count, quiz.idDigits, out_dir
+            )
 
         # Never call Gemini after table_not_found or column_count_mismatch
         # (plan.md §9) — protects the quota and the ID's privacy property
@@ -236,11 +276,13 @@ async def scan(
         cells_dir = out_dir / "cells"
 
         with obs.timed(ms, "read_id"):
-            id_result = recognizer.read_id(cells_dir, quiz.idDigits)
+            id_result = await run_in_threadpool(recognizer.read_id, cells_dir, quiz.idDigits)
 
         question_maxes = [q.max for q in quiz.questions]
         with obs.timed(ms, "read_marks"):
-            marks_result = recognizer.read_marks(cells_dir, question_maxes)
+            marks_result = await run_in_threadpool(
+                recognizer.read_marks, cells_dir, question_maxes
+            )
 
         if marks_result.status != "ok":
             _log_scan("failed", marks_result.failure_reason, ms, started, quiz, image_bytes, [])
@@ -292,9 +334,9 @@ async def harvest_endpoint(
     if not config_module.HARVEST_ENABLED:
         return {"harvested": False}
 
-    quiz = QuizConfig.model_validate_json(config)
-    original_fields = HarvestFields.model_validate_json(original)
-    confirmed_fields = HarvestFields.model_validate_json(confirmed)
+    quiz = _parse(QuizConfig, config, "config")
+    original_fields = _parse(HarvestFields, original, "original")
+    confirmed_fields = _parse(HarvestFields, confirmed, "confirmed")
     image_bytes = await image.read()
     _reject_oversized(image_bytes)
 
@@ -305,31 +347,52 @@ async def harvest_endpoint(
         out_dir = tmp_path / "out"
 
         question_count = len(quiz.questions)
-        det = detect_any_orientation(image_path, question_count, quiz.idDigits, out_dir)
+        det = await run_in_threadpool(
+            detect_any_orientation, image_path, question_count, quiz.idDigits, out_dir
+        )
         if det["status"] != "ok":
+            obs.log_event("harvest", harvested=False, reason=det["failure_reason"])
             return {"harvested": False}
 
-        # Built fresh per request rather than once at import, so tests can
-        # point harvesting at a tmp_path (and a redeployed environment sees
-        # current config) without a module-level default bound at
-        # function-definition time.
-        store = stores.build_store()
+        # "Best-effort" now actually holds on THIS side of the wire too
+        # (issues.md N14). It only ever held on the client: `harvestScan`
+        # swallows every error, so an S3 permission problem, a missing
+        # HARVEST_BUCKET or a malformed crop raised out of here as a bare
+        # 500 that nothing anywhere reported. Collection would simply stop,
+        # silently, and the only evidence would be the *absence* of a log
+        # line — which is exactly the thing nobody notices.
+        #
+        # So: swallow, but say so. A failed harvest must never fail a scan
+        # (the instructor's record is already safe in IndexedDB by now),
+        # and it must never be invisible either.
+        try:
+            # Built fresh per request rather than once at import, so tests
+            # can point harvesting at a tmp_path (and a redeployed
+            # environment sees current config) without a module-level
+            # default bound at function-definition time.
+            store = stores.build_store()
 
-        harvest_module.harvest(
-            out_dir / "cells",
-            quiz.idDigits,
-            question_count,
-            original_fields.studentId,
-            confirmed_fields.studentId,
-            original_fields.serial,
-            confirmed_fields.serial,
-            original_fields.questions,
-            confirmed_fields.questions,
-            original_fields.total,
-            confirmed_fields.total,
-            store=store,
-            source=source,
-        )
+            await run_in_threadpool(
+                harvest_module.harvest,
+                out_dir / "cells",
+                quiz.idDigits,
+                question_count,
+                original_fields.studentId,
+                confirmed_fields.studentId,
+                original_fields.serial,
+                confirmed_fields.serial,
+                original_fields.questions,
+                confirmed_fields.questions,
+                original_fields.total,
+                confirmed_fields.total,
+                store,
+                source,
+            )
+        except Exception as e:  # noqa: BLE001 — see the comment above
+            # Type and message only: never the exception's own repr, which
+            # can carry a key path and therefore a confirmed value.
+            obs.log_event("harvest_failed", error_type=type(e).__name__, detail=str(e)[:200])
+            return {"harvested": False}
 
     obs.log_event("harvest", harvested=True, questions=question_count,
                   tagged=bool(source))

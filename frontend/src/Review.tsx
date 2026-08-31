@@ -16,7 +16,14 @@ import { useMemo, useState } from 'react';
 import { harvestScan, type HarvestFields, type ScanResult } from './api';
 import { findRecordsBySerial, findRecordsByStudentId, saveRecord } from './db';
 import type { QuizConfig, StudentRecord } from './types';
-import { crossCheck, isLegalValue, sumCheck, type CrossCheckResult } from './validateMarks';
+import {
+  crossCheck,
+  isCompleteId,
+  isValidSerial,
+  parseMarkField,
+  sumCheck,
+  type CrossCheckResult,
+} from './validateMarks';
 
 interface ReviewProps {
   result: ScanResult;
@@ -51,22 +58,28 @@ export default function Review({ result, config, imagePreviewUrl, onRetake, onSa
   const markErrors = useMemo(() => {
     const errs: Record<number, string> = {};
     for (const qc of config.questions) {
-      const raw = marks[qc.q];
-      if (raw === '') continue; // blank is allowed — flagged, never guessed
-      const value = Number(raw);
-      if (Number.isNaN(value) || !isLegalValue(value, qc.max)) {
-        errs[qc.q] = `Must be a multiple of 0.5 between 0 and ${qc.max}.`;
-      }
+      const { error } = parseMarkField(marks[qc.q] ?? '', qc.max);
+      if (error) errs[qc.q] = error;
     }
     return errs;
   }, [marks, config.questions]);
-  const hasMarkErrors = Object.keys(markErrors).length > 0;
+
+  // 7.4 applied to Total as well, which it never was (issues.md #4). Total
+  // is checked against totalMax rather than a question's own max, but by the
+  // same rule and the same helper as every other editable field — "abc" is
+  // rejected here instead of being stored as NaN on a confirmed record.
+  const totalError = useMemo(
+    () => parseMarkField(totalStr, config.totalMax).error,
+    [totalStr, config.totalMax],
+  );
+
+  const hasMarkErrors = Object.keys(markErrors).length > 0 || totalError !== null;
 
   const questionValues = config.questions.map((qc) => ({
     q: qc.q,
-    value: marks[qc.q] === '' ? null : Number(marks[qc.q]),
+    value: parseMarkField(marks[qc.q] ?? '', qc.max).value,
   }));
-  const total = totalStr === '' ? null : Number(totalStr);
+  const total = parseMarkField(totalStr, config.totalMax).value;
   const { computedSum, matches } = sumCheck(questionValues, total);
 
   async function commitSave(
@@ -125,6 +138,33 @@ export default function Review({ result, config, imagePreviewUrl, onRetake, onSa
       serial: serial.trim() || null,
     };
 
+    // An ID is allowed to be absent — that saves an unverified record, which
+    // plan.md §10 permits. What is NOT allowed is a PARTIAL one: both
+    // recognizers return "?" for a position they could not read, so a
+    // flagged scan pre-fills something like "12?4567", and nothing stopped
+    // that being confirmed and exported verbatim (issues.md N5). Blocking
+    // rather than silently blanking it, so the instructor either finishes
+    // the correction or clears the field deliberately.
+    if (candidate.studentId !== null && !isCompleteId(candidate.studentId, config.idDigits)) {
+      setSaveError(
+        `Student ID must be exactly ${config.idDigits} digits — replace anything unreadable, or clear the field to save without it.`,
+      );
+      return;
+    }
+
+    // Same rule for the serial (issues.md N21). It was the one identity
+    // field nothing validated on either side of the wire: `results.ts`
+    // sorts by `Number(serial)`, so a non-numeric one has no defined place
+    // in the exported table, and it also becomes a path segment in
+    // /api/harvest's storage key. `marks.py`'s validate_serial enforces the
+    // identical rule on what a recognizer returns.
+    if (candidate.serial !== null && !isValidSerial(candidate.serial)) {
+      setSaveError(
+        'Serial must be a number (up to 4 digits) — or clear the field to save without it.',
+      );
+      return;
+    }
+
     // Lookup on save via the by-serial/by-studentId indexes (plan.md §10),
     // not a walk over every record in the session.
     const [bySerial, byId] = await Promise.all([
@@ -146,6 +186,24 @@ export default function Review({ result, config, imagePreviewUrl, onRetake, onSa
     }
 
     await commitSave(candidate);
+  }
+
+  // Editing either identity field invalidates a pending conflict, so it is
+  // dropped and Confirm re-enabled (issues.md #5).
+  //
+  // The bug this closes: the conflict panel captured the matched record at
+  // the moment Confirm was pressed, and Confirm was disabled while it was
+  // showing — so an instructor who spotted that the serial had been misread
+  // and corrected it had no way to re-run the check. "Overwrite earlier
+  // record" then wrote the corrected values on top of a record that the
+  // corrected values no longer conflict with: someone else's.
+  //
+  // Only the identity fields clear it. A marks edit cannot change which
+  // record matched, and commitSave already reads the current marks.
+  function editIdentity(setter: (v: string) => void, value: string) {
+    setter(value);
+    setPendingConflict(null);
+    setSaveError(null);
   }
 
   const failed = result.status === 'failed';
@@ -175,7 +233,7 @@ export default function Review({ result, config, imagePreviewUrl, onRetake, onSa
           <input
             className={`input ${lowConfidence.has('student_id') ? 'input-flagged' : ''}`}
             value={studentId}
-            onChange={(e) => setStudentId(e.target.value)}
+            onChange={(e) => editIdentity(setStudentId, e.target.value)}
             inputMode="numeric"
           />
         </label>
@@ -184,7 +242,7 @@ export default function Review({ result, config, imagePreviewUrl, onRetake, onSa
           <input
             className={`input ${lowConfidence.has('serial') ? 'input-flagged' : ''}`}
             value={serial}
-            onChange={(e) => setSerial(e.target.value)}
+            onChange={(e) => editIdentity(setSerial, e.target.value)}
             inputMode="numeric"
           />
         </label>
@@ -227,14 +285,21 @@ export default function Review({ result, config, imagePreviewUrl, onRetake, onSa
               </div>
             ))}
             <div className="field" style={{ width: '4.5rem' }}>
-              <span className="field-hint">Total</span>
+              <span className="field-hint">
+                Total <span className="muted">/{config.totalMax}</span>
+              </span>
               <input
-                className={`input ${lowConfidence.has('total') ? 'input-flagged' : ''}`}
+                className={`input ${totalError ? 'input-error' : lowConfidence.has('total') ? 'input-flagged' : ''}`}
                 value={totalStr}
                 onChange={(e) => setTotalStr(e.target.value)}
                 style={{ height: 40, padding: '6px 8px', textAlign: 'center' }}
                 inputMode="decimal"
               />
+              {totalError && (
+                <span role="alert" className="error-text">
+                  {totalError}
+                </span>
+              )}
             </div>
           </div>
 

@@ -41,6 +41,70 @@ function apiBase(): string {
   return `${window.location.protocol}//${window.location.hostname}:${DEFAULT_API_PORT}`;
 }
 
+// A scan that never comes back must still end, or it wedges the whole
+// session (issues.md N3). `fetch` has no timeout of its own: a dropped wifi
+// association mid-upload leaves the promise pending indefinitely, the queue
+// entry stays 'pending' forever, and since the capture button is disabled
+// while anything is in flight, that disables it for the rest of the session
+// with no recovery but a page reload.
+//
+// 60 s is deliberately generous — well past a slow scan over a slow LAN,
+// and past the ~9 s cold start of the hosted backend — because the job here
+// is to bound the pathological case, not to give up on a slow one.
+//
+// AbortController rather than AbortSignal.timeout(): the latter is not
+// available in every browser this might meet, nor in the jsdom test
+// environment, and a polyfill check is more code than the controller.
+const REQUEST_TIMEOUT_MS = 60_000;
+
+async function postWithTimeout(url: string, body: FormData): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { method: 'POST', body, signal: controller.signal });
+  } catch (err) {
+    // Reported as a plain message because it lands in the queue entry's own
+    // "Failed: ..." row, which the instructor reads mid-class.
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(`Timed out after ${REQUEST_TIMEOUT_MS / 1000}s — check the connection, then retake.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The backend answers with a useful body and, for 429, a useful header:
+//
+//   400  {"detail": "Invalid config: ..."}     — which rule the config broke
+//   413  {"detail": "Image too large."}
+//   429  {"detail": "Too many requests..."}  + Retry-After: <seconds>
+//
+// All of it used to be collapsed into `HTTP <status>` (issues.md N29), so
+// the instructor's queue row said "Failed: Scan request failed: HTTP 413"
+// and gave them no way to tell "photo too big" from "unreadable", or to
+// learn that waiting nine seconds would fix a 429. Nothing was broken —
+// each side did exactly what it was built to do — which is why it never
+// surfaced as a bug and had to be found by reading both ends of the
+// contract together.
+async function describeFailure(response: Response): Promise<string> {
+  let detail = '';
+  try {
+    const body = await response.json();
+    if (body && typeof body.detail === 'string') detail = body.detail;
+  } catch {
+    // Not JSON, or an empty body — fall through to the status-only message.
+  }
+
+  if (response.status === 429) {
+    const retryAfter = Number(response.headers.get('Retry-After'));
+    const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? ` Try again in ${retryAfter}s.` : '';
+    return `${detail || 'Too many requests.'}${wait}`;
+  }
+  if (detail) return detail;
+  return `Scan request failed: HTTP ${response.status}`;
+}
+
 export async function scanImage(blob: Blob, config: QuizConfig): Promise<ScanResult> {
   const formData = new FormData();
   formData.append('image', blob, 'capture.jpg');
@@ -48,13 +112,10 @@ export async function scanImage(blob: Blob, config: QuizConfig): Promise<ScanRes
   // as a JSON string in a form field (backend/app/main.py, stack-reference.md).
   formData.append('config', JSON.stringify(config));
 
-  const response = await fetch(`${apiBase()}/api/scan`, {
-    method: 'POST',
-    body: formData,
-  });
+  const response = await postWithTimeout(`${apiBase()}/api/scan`, formData);
 
   if (!response.ok) {
-    throw new Error(`Scan request failed: HTTP ${response.status}`);
+    throw new Error(await describeFailure(response));
   }
 
   return response.json() as Promise<ScanResult>;
@@ -95,7 +156,10 @@ export async function harvestScan(
     // best-effort: an untagged harvest is far better than a lost one.
     formData.append('source', await getSourceId());
 
-    await fetch(`${apiBase()}/api/harvest`, { method: 'POST', body: formData });
+    // Same timeout as the scan. This one is fire-and-forget so a hang here
+    // cannot block the UI, but an unbounded pending request still holds the
+    // image blob and a connection for as long as the tab lives.
+    await postWithTimeout(`${apiBase()}/api/harvest`, formData);
   } catch {
     // Best-effort only — see the docstring above.
   }

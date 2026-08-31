@@ -59,6 +59,15 @@ class LocalStore:
         import os
 
         dest = self.root / key
+        # The containment invariant, asserted rather than assumed
+        # (issues.md N1). harvest.py sanitizes every path segment before
+        # building a key, and that is the real fix — but "no crop is ever
+        # written outside the root" is the property that actually matters,
+        # and it should not depend on every present and future caller
+        # getting its own escaping right. One resolve() and one comparison.
+        root = self.root.resolve()
+        if not dest.resolve().is_relative_to(root):
+            raise ValueError(f"harvest key escapes the store root: {key!r}")
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dest)
         # Stamped here rather than at each call site, so no field added

@@ -32,6 +32,90 @@ TARGET_INK_SIZE = 20  # MNIST's own convention: longest side of the ink
                         # on each side of the 28x28 canvas before centering.
 
 
+# --- Is there anything in this cell at all? (issues.md N4) ----------------
+#
+# `segment_cell` guards blank cells for serial and marks, citing plan.md
+# §16: "A classifier always outputs something; feed it a blank cell and it
+# returns a confident wrong digit." The ID path had no equivalent, and the
+# ID is the field with NO arithmetic check behind it — no sum, no second
+# opinion — so a fabricated digit there has nothing downstream to catch it.
+#
+# What makes a blank cell dangerous rather than merely empty is Otsu:
+# `_to_canvas` thresholds with THRESH_OTSU, which always splits the
+# histogram, including a unimodal one. Blank paper therefore produces
+# "ink" — noise — which gets bounding-boxed, scaled to 20px and classified
+# like a real glyph. The only thing behind it was
+# CONFIDENCE_FLOOR/MARGIN_FLOOR, calibrated in cnn/accuracy.py against real
+# handwritten digits and never against input containing no digit at all.
+#
+# Ink is measured the way detection.py measures it — pixels at least
+# CONTRAST_FLOOR (30/255) darker than the cell's own paper — rather than by
+# a global threshold, because paper brightness varies per photo and per
+# cell.
+INK_CONTRAST_FLOOR = 30
+
+# The test is the LARGEST CONNECTED COMPONENT, not total ink. Total ink was
+# the first attempt and it separated the real data perfectly, but a lone
+# speck of a few pixels also cleared it — a test caught that, not
+# inspection. Asking "is there a blob big enough to be a stroke" is both
+# stricter and the same question `segment_cell` already asks of a mark cell.
+#
+# Calibrated 2026-08-31 over every ID cell in testset/labels.json that
+# detection reads successfully:
+#
+#     FILLED  n=168   min 0.00163   p5 0.02234   median 0.05360
+#     BLANK   n=7     max 0.00041   (6 of 7 are exactly 0.0)
+#
+# 0.0015 separates them with nothing misclassified either way.
+#
+# It is deliberately its OWN constant despite currently equalling
+# cnn/segment.py's NOISE_AREA_FRAC — the same reasoning detection.py already
+# records for LABEL_COLUMN_NOISE_AREA_FRAC. The two answer a similar
+# question ("stroke or noise?") on different inputs, and tuning segmentation
+# for a decimal point should not silently move the ID's blank gate.
+#
+# Two honest caveats. The blank sample is n=7 from ONE photo
+# (empty_file.jpeg, the only blank grid in the test set), so the 3.7x margin
+# above blank rests on thin evidence. And the margin below the faintest real
+# digit is only 1.09x — that digit, and the next three faintest, are all
+# "1"s, which is structural: a single thin stroke is the least ink any digit
+# can have. A "1" is what sets this constraint and is where to look first if
+# it needs revisiting. The failure it would cause is the cheap one — "?"
+# plus a flag, which the instructor fixes — not a fabricated digit.
+MIN_GLYPH_AREA_FRAC = 0.0015
+
+
+def has_ink(crop: np.ndarray) -> bool:
+    """True if this cell holds a blob big enough to be a written digit.
+
+    Callers treat False exactly as they treat a missing crop: "?" plus a
+    flag, never a guess (plan.md §10).
+    """
+    if crop is None or crop.size == 0:
+        return False
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    h, w = gray.shape[:2]
+    dy, dx = int(h * INSET_FRAC), int(w * INSET_FRAC)
+    inset = gray[dy:h - dy, dx:w - dx] if h > 2 * dy and w > 2 * dx else gray
+    if inset.size == 0:
+        return False
+
+    # The cell's own paper, not a global constant: p90 rather than max, so a
+    # single specular highlight cannot raise the bar for the whole cell.
+    paper = float(np.percentile(inset, 90))
+    mask = (((paper - inset.astype(int)) >= INK_CONTRAST_FLOOR) * 255).astype(np.uint8)
+
+    count, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if count <= 1:  # label 0 is the background
+        return False
+    largest = max(stats[i, cv2.CC_STAT_AREA] for i in range(1, count))
+    # bool(), not the numpy bool the comparison produces: this is annotated
+    # `-> bool` and callers write `if not has_ink(crop)`. A np.bool_ works
+    # there but fails an `is True` identity check, which is how the tests
+    # caught it.
+    return bool(largest / inset.size >= MIN_GLYPH_AREA_FRAC)
+
+
 def preprocess_for_cnn(crop: np.ndarray) -> np.ndarray:
     """One real ID-digit crop (BGR or grayscale), straight off the
     template's own boxed cell -> a 28x28 uint8 grayscale image, white ink

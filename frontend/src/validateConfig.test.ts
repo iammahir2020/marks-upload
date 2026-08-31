@@ -69,3 +69,44 @@ describe('validateConfig', () => {
     expect(validateConfig({ ...base, idDigits: 0 }).valid).toBe(false);
   });
 });
+
+// --- Regression tests for the 2026-08-31 audit fixes (issues.md #1 / N19) --
+
+describe('validateConfig — upper bounds', () => {
+  const base = { quizName: 'Q', idDigits: 7, questionCount: 2, questionMaxes: [5, 5] };
+
+  it('rejects a question count beyond what a printed grid can hold', () => {
+    const result = validateConfig({
+      ...base,
+      questionCount: 99999999999,
+      questionMaxes: [5, 5],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.join(' ')).toMatch(/30 or fewer/);
+  });
+
+  it('rejects a non-integer question count with a message, not a crash', () => {
+    // Setup.tsx used to feed this straight into `array.length = 5.5`, which
+    // throws RangeError and took down the first screen of the app.
+    const result = validateConfig({ ...base, questionCount: 5.5 });
+    expect(result.valid).toBe(false);
+    expect(result.errors.join(' ')).toMatch(/whole number/);
+  });
+
+  it('rejects an absurd idDigits', () => {
+    expect(validateConfig({ ...base, idDigits: 100000 }).valid).toBe(false);
+  });
+
+  it('rejects a per-question max large enough to be an attack rather than a quiz', () => {
+    // The client half of issues.md N2: legal_values() on the backend
+    // materialises 2*max+1 entries. Bounding it here does not fix the
+    // backend, which still needs its own bound.
+    const result = validateConfig({ ...base, questionMaxes: [1e9, 5] });
+    expect(result.valid).toBe(false);
+    expect(result.errors.join(' ')).toMatch(/100 or less/);
+  });
+
+  it('still accepts an ordinary quiz', () => {
+    expect(validateConfig(base).valid).toBe(true);
+  });
+});

@@ -7,6 +7,7 @@
 // sit side by side for the instructor to compare.
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import type { QuizConfig, StudentRecord } from './types';
+import { normalizeSerial } from './validateMarks';
 
 interface ScanDB extends DBSchema {
   records: {
@@ -31,7 +32,7 @@ interface ScanDB extends DBSchema {
 }
 
 const DB_NAME = 'marks';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const CONFIG_KEY = 'current';
 const SOURCE_ID_KEY = 'sourceId';
 
@@ -45,7 +46,7 @@ function getDB(): Promise<IDBPDatabase<ScanDB>> {
     // Guarded by oldVersion so an existing v1 database (the instructor's
     // own browser, mid-pilot, with real records in it) migrates instead
     // of throwing on a store that already exists.
-    upgrade(db, oldVersion) {
+    upgrade(db, oldVersion, _newVersion, transaction) {
       if (oldVersion < 1) {
         const records = db.createObjectStore('records', { keyPath: 'id' });
         records.createIndex('by-serial', 'serial');
@@ -54,6 +55,29 @@ function getDB(): Promise<IDBPDatabase<ScanDB>> {
       }
       if (oldVersion < 2) {
         db.createObjectStore('meta');
+      }
+      if (oldVersion < 3) {
+        // v3 (issues.md #2). Serials used to be stored exactly as typed, so
+        // "007" and "7" sat under two different keys of the by-serial index
+        // and the duplicate cross-check never got the chance to compare
+        // them — `findRecordsBySerial("7")` simply returned nothing and the
+        // duplicate saved silently.
+        //
+        // saveRecord now normalizes on write. Records saved BEFORE that has
+        // to be rewritten here, or the index stays half-normalized and the
+        // lookup keeps missing exactly the older records a returning
+        // instructor most needs matched. This also finally makes types.ts's
+        // "normalized: leading zeros stripped" comment true, which described
+        // the intended behaviour rather than the actual one.
+        const store = transaction.objectStore('records');
+        store.openCursor().then(function migrate(cursor): Promise<void> | void {
+          if (!cursor) return;
+          const normalized = normalizeSerial(cursor.value.serial);
+          if (normalized !== cursor.value.serial) {
+            cursor.update({ ...cursor.value, serial: normalized });
+          }
+          return cursor.continue().then(migrate);
+        });
       }
     },
   });
@@ -69,9 +93,13 @@ export async function loadConfig(): Promise<QuizConfig | undefined> {
   return db.get('config', CONFIG_KEY);
 }
 
+// The serial is normalized on the way in, so the by-serial index has one
+// key per real serial rather than one per spelling of it (issues.md #2).
+// Doing it here rather than at each call site means no future writer can
+// reintroduce the split — Review.tsx and Results.tsx both save through this.
 export async function saveRecord(record: StudentRecord): Promise<void> {
   const db = await getDB();
-  await db.put('records', record);
+  await db.put('records', { ...record, serial: normalizeSerial(record.serial) });
 }
 
 export async function getAllRecords(): Promise<StudentRecord[]> {
@@ -79,9 +107,16 @@ export async function getAllRecords(): Promise<StudentRecord[]> {
   return db.getAll('records');
 }
 
+// Queried with the NORMALIZED serial, matching how records are now stored.
+// Passing the raw typed value here was the actual defect in issues.md #2:
+// crossCheck normalizes both sides correctly, but it can only compare the
+// records this lookup already returned, and an exact-match index lookup for
+// "7" never returned the record saved as "007".
 export async function findRecordsBySerial(serial: string): Promise<StudentRecord[]> {
   const db = await getDB();
-  return db.getAllFromIndex('records', 'by-serial', serial);
+  const normalized = normalizeSerial(serial);
+  if (normalized === null) return [];
+  return db.getAllFromIndex('records', 'by-serial', normalized);
 }
 
 export async function findRecordsByStudentId(studentId: string): Promise<StudentRecord[]> {

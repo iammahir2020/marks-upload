@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 from pathlib import Path
 
 from .marks import _fmt
@@ -58,6 +59,43 @@ def _sanitize_source(source: str | None) -> str:
         return UNKNOWN_SOURCE
     cleaned = "".join(c for c in source if c.isalnum() or c in "-_")
     return cleaned or UNKNOWN_SOURCE
+
+
+# The label a crop is filed under, as a SHAPE rather than an alphabet.
+#
+# An alphabet was the first attempt (`^[0-9.?]{1,8}$`) and it was too loose:
+# ".." matches it, because "." has to be legal for a half mark. That one is
+# inert — `_key` renders it as the filename `.._<digest>.png`, never a bare
+# path segment — but it is still a nonsense label sitting in the training
+# corpus, and "inert today" is a bad thing to rely on when the value is
+# attacker-supplied. Caught by a parametrised test, not by inspection.
+#
+# So: exactly one of the three things a label can actually be.
+#   "?"        one deliberately-unreadable position
+#   "07"       a serial, as written, leading zero preserved
+#   "4" "2.5"  a mark, `_fmt`-formatted (at most one decimal place)
+_SAFE_VALUE = re.compile(r"^(\?|[0-9]{1,4}(\.[0-9]{1,2})?)$")
+
+
+def _sanitize_value(value: str) -> str | None:
+    """Returns the value if it is safe to put in a path, else None.
+
+    **This is the fix for issues.md N1, and the reasoning above
+    `_sanitize_source` is exactly why it has to exist.** That docstring
+    correctly identified `/api/harvest` as a public endpoint whose form
+    fields reach a filesystem path — and then guarded one field. `value`,
+    interpolated by `_key` one line along, was not guarded, so a
+    `confirmed.serial` of `"../../../../escaped/PWNED"` wrote a PNG outside
+    the harvest root. Verified by running it, not by reading it.
+
+    An allow-list rather than a denylist, and a rejection rather than a
+    scrub: a value that is not a legal label is not a label at all, so
+    filing it under some cleaned-up approximation would put a wrong label
+    on a real crop — which is worse for the training corpus than dropping
+    it. Dropping is also what the rest of this module already does with a
+    field it cannot use.
+    """
+    return value if _SAFE_VALUE.match(value) else None
 
 
 def _key(field: str, tag: str, value: str, source: str, crop_path: Path) -> str:
@@ -147,8 +185,16 @@ def harvest(
     pending: list[tuple[str, Path]] = []
 
     def add(field: str, tag: str, value: str, crop_path: Path) -> None:
+        # Sanitized HERE, in the one place every field funnels through, so
+        # no field added later can forget it (issues.md N1). The previous
+        # arrangement guarded `source` at the top of this function and left
+        # `value` unguarded, which is precisely the failure a per-call-site
+        # convention produces.
+        safe = _sanitize_value(value)
+        if safe is None:
+            return
         if crop_path.exists():
-            pending.append((_key(field, tag, value, src, crop_path), crop_path))
+            pending.append((_key(field, tag, safe, src, crop_path), crop_path))
 
     if confirmed_student_id:
         for i in range(1, id_digits + 1):

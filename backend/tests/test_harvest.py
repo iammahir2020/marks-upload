@@ -9,6 +9,8 @@ and no AWS."""
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.harvest import harvest  # noqa: E402
 from app.stores import CONSTANT_MTIME, LocalStore  # noqa: E402
@@ -310,3 +312,76 @@ def test_two_different_crops_with_the_same_label_both_survive(tmp_path):
             store=LocalStore(harvest_dir), source="fac-abc",
         )
     assert len(_files_under(harvest_dir)) == 2
+
+
+# --- issues.md N1: the value is a path segment too ------------------------
+
+
+def test_a_hostile_confirmed_value_cannot_escape_the_harvest_root(tmp_path):
+    """The sibling of test_a_hostile_source_cannot_escape_the_harvest_root.
+
+    That test existed, passed, and read like coverage of path traversal in
+    this module — while `value`, interpolated by `_key` one line along and
+    arriving on the same public request, was unguarded. A confirmed serial
+    of "../../../../escaped/PWNED" wrote a PNG outside the root.
+    """
+    cells = _make_cells(tmp_path, ["serial.png"])
+    root = tmp_path / "harvested"
+    root.mkdir()
+
+    harvest(
+        cells, 7, 0,
+        None, None,
+        None, "../../../../escaped/PWNED",
+        [], [], None, None,
+        store=LocalStore(root), source="src1",
+    )
+
+    escaped = [p for p in tmp_path.rglob("*.png") if "escaped" in str(p)]
+    assert escaped == [], f"crop escaped the harvest root: {escaped}"
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    ["../x", "a/b", "..", ".", "x\x00y", "'; rm -rf /", "\\..\\x", "abc", "1e9", "-1", "5" * 9],
+)
+def test_values_that_are_not_labels_are_dropped_rather_than_scrubbed(tmp_path, hostile):
+    # Dropped, not cleaned up into something path-safe: a value that is not
+    # a legal label is not a label, and filing a real crop under an
+    # approximation of one would poison the corpus with a wrong label.
+    cells = _make_cells(tmp_path, ["serial.png"])
+    root = tmp_path / "harvested"
+    root.mkdir()
+
+    harvest(cells, 7, 0, None, None, None, hostile, [], [], None, None,
+            store=LocalStore(root), source="src1")
+
+    assert list(root.rglob("*.png")) == []
+
+
+def test_a_legitimate_value_still_harvests(tmp_path):
+    # The guard must not be so tight it drops real labels — "07" keeps its
+    # leading zero (it is what is written on the paper) and "?" is what a
+    # recognizer legitimately returns for a position it could not read.
+    cells = _make_cells(tmp_path, ["serial.png", "id_d1.png"])
+    root = tmp_path / "harvested"
+    root.mkdir()
+
+    harvest(cells, 1, 0, "?", "4", None, "07", [], [], None, None,
+            store=LocalStore(root), source="src1")
+
+    names = sorted(p.name.split("_")[0] for p in root.rglob("*.png"))
+    assert names == ["07", "4"]
+
+
+def test_the_store_refuses_a_key_that_would_escape_even_if_one_got_through(tmp_path):
+    # Defence at the point of use: harvest.py sanitizes, but "no crop is
+    # written outside the root" should not depend on every caller — present
+    # or future — getting its own escaping right.
+    root = tmp_path / "harvested"
+    root.mkdir()
+    src = tmp_path / "crop.png"
+    src.write_bytes(b"fake png bytes")
+
+    with pytest.raises(ValueError, match="escapes the store root"):
+        LocalStore(root).put("../../escaped/x.png", src)

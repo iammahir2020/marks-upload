@@ -64,12 +64,46 @@ export default function Scan({ config, onShowResults }: ScanProps) {
     if (next != null) setReviewingId(next);
   }, [entries, reviewingId, savedIds, dismissedIds]);
 
+  // The unmount cleanup below reads previews through a ref, not through the
+  // closure (issues.md #11). With an empty dependency array the effect
+  // captured `previews` as it was at MOUNT — `{}` — so it revoked nothing,
+  // ever, and no other revokeObjectURL existed in the file: every captured
+  // full-resolution JPEG was retained for the life of the session,
+  // discarded retakes included. A ref updated on every render is the fix
+  // that keeps the cleanup running exactly once while still seeing the
+  // current map.
+  const previewsRef = useRef<Record<string, Preview>>({});
+  useEffect(() => {
+    previewsRef.current = previews;
+  }, [previews]);
+
   useEffect(() => {
     return () => {
-      Object.values(previews).forEach((p) => URL.revokeObjectURL(p.url));
+      Object.values(previewsRef.current).forEach((p) => URL.revokeObjectURL(p.url));
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Releases one preview immediately, for a capture that is definitively
+  // finished with. Deliberately NOT called on save: Review fires its harvest
+  // request by re-fetching this same blob URL *after* onSaved returns, so
+  // revoking here would silently break training-data collection. Retakes and
+  // dismissed failures have no such consumer.
+  function releasePreview(id: string) {
+    setPreviews((p) => {
+      const preview = p[id];
+      if (!preview) return p;
+      URL.revokeObjectURL(preview.url);
+      const { [id]: _dropped, ...rest } = p;
+      return rest;
+    });
+  }
+
+  // One place to retire a capture from the queue, so the two callers that
+  // need it (Retake, and dismissing a failed upload) cannot drift apart.
+  function dismissEntry(id: string) {
+    setDismissedIds((s) => new Set(s).add(id));
+    releasePreview(id);
+  }
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -185,7 +219,7 @@ export default function Scan({ config, onShowResults }: ScanProps) {
               config={config}
               imagePreviewUrl={previews[reviewingEntry.id]?.url}
               onRetake={() => {
-                setDismissedIds((s) => new Set(s).add(reviewingEntry.id));
+                dismissEntry(reviewingEntry.id);
                 setReviewingId(null);
               }}
               onSaved={() => {
@@ -267,6 +301,22 @@ export default function Scan({ config, onShowResults }: ScanProps) {
                       </div>
                     )}
                   </div>
+                  {/* A capture that failed at the transport layer — dead
+                      backend, dropped wifi, or the 60s timeout in api.ts —
+                      used to render as static red text with no action of
+                      any kind (issues.md #6). Only backend-reported
+                      `status: "failed"` results reached Review's
+                      Retake/enter-manually path; a client-side failure just
+                      sat there. Dismiss clears the row and releases its
+                      blob, so the instructor can simply shoot it again. */}
+                  {entry.status === 'error' && (
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => dismissEntry(entry.id)}
+                    >
+                      Dismiss
+                    </button>
+                  )}
                   {entry.status === 'done' &&
                     entry.result &&
                     (savedIds.has(entry.id) ? (

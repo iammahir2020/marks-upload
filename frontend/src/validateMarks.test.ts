@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { crossCheck, isLegalValue, normalizeSerial, sumCheck } from './validateMarks';
+import {
+  crossCheck,
+  isCompleteId,
+  isValidSerial,
+  isLegalValue,
+  normalizeSerial,
+  parseMarkField,
+  sumCheck,
+} from './validateMarks';
 import type { StudentRecord } from './types';
 
 function record(overrides: Partial<StudentRecord>): StudentRecord {
@@ -143,5 +151,89 @@ describe('crossCheck — plan.md §10 table', () => {
     const result = crossCheck({ serial: '12', studentId: '1900001' }, []);
     expect(result.action).toBe('allow');
     expect(result.unverified).toBe(false);
+  });
+});
+
+// --- Regression tests for the 2026-08-31 audit fixes -----------------------
+
+describe('parseMarkField — issues.md #4 / N6', () => {
+  it('rejects text that Number() turns into NaN', () => {
+    // The actual failure: the Total input has no `type`, so "abc" is
+    // typeable; Number("abc") is NaN; and IndexedDB's structured clone
+    // preserves NaN faithfully, so it really was written to a
+    // confirmed:true record and really did reach the Excel export.
+    expect(parseMarkField('abc', 5)).toEqual({
+      value: null,
+      error: 'Must be a multiple of 0.5 between 0 and 5.',
+    });
+  });
+
+  it('rejects a value that overflows to Infinity rather than storing it', () => {
+    expect(parseMarkField('1e999', 5).value).toBeNull();
+    expect(parseMarkField('1e999', 5).error).not.toBeNull();
+  });
+
+  it('treats blank as "not filled in", never as zero', () => {
+    // Exporting a blank as 0 is named in step.md step 9 as the worst
+    // possible failure — it reads as a real mark of zero.
+    expect(parseMarkField('', 5)).toEqual({ value: null, error: null });
+    expect(parseMarkField('   ', 5)).toEqual({ value: null, error: null });
+  });
+
+  it('accepts legal half marks and rejects illegal ones', () => {
+    expect(parseMarkField('4.5', 5).value).toBe(4.5);
+    expect(parseMarkField('4.25', 5).value).toBeNull();
+    expect(parseMarkField('7', 5).value).toBeNull();
+    expect(parseMarkField('-1', 5).value).toBeNull();
+  });
+});
+
+describe('isCompleteId — issues.md N5', () => {
+  it('rejects an ID still carrying an unread position', () => {
+    // Both recognizers return "?" for a position they could not read, by
+    // contract. Nothing stopped "12?4567" being confirmed and exported.
+    expect(isCompleteId('12?4567', 7)).toBe(false);
+  });
+
+  it('rejects a partially retyped ID of the wrong length', () => {
+    expect(isCompleteId('19123', 7)).toBe(false);
+    expect(isCompleteId('191234567', 7)).toBe(false);
+  });
+
+  it('accepts a complete numeric ID, trimmed', () => {
+    expect(isCompleteId('1912345', 7)).toBe(true);
+    expect(isCompleteId('  1912345  ', 7)).toBe(true);
+  });
+
+  it('treats an absent ID as incomplete, not as valid', () => {
+    // The caller decides what to do about it: an absent ID is a legitimate
+    // unverified save (plan.md §10), a partial one is not.
+    expect(isCompleteId(null, 7)).toBe(false);
+  });
+});
+
+describe('isValidSerial — issues.md N21', () => {
+  it('rejects anything that is not a number', () => {
+    // The one identity field nothing validated on EITHER side of the wire.
+    // results.ts sorts by Number(serial), so a non-numeric serial has no
+    // defined place in the exported table.
+    for (const bad of ['abc', '7a', '1.5', '-1', '', '   ', '../x']) {
+      expect(isValidSerial(bad)).toBe(false);
+    }
+  });
+
+  it('rejects a serial longer than any real class', () => {
+    expect(isValidSerial('9999')).toBe(true);
+    expect(isValidSerial('10000')).toBe(false);
+  });
+
+  it('keeps leading zeros — "07" is what is on the paper', () => {
+    expect(isValidSerial('07')).toBe(true);
+  });
+
+  it('treats an absent serial as invalid, leaving the caller to decide', () => {
+    // An absent serial is a legitimate unverified save; a malformed one is
+    // not. Same shape as isCompleteId.
+    expect(isValidSerial(null)).toBe(false);
   });
 });

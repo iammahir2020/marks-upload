@@ -160,15 +160,13 @@ In broad strokes, as of 2026-08-30:
   participation and can't be simulated. That comparison run matters more
   now that the CNN is the default, not less: it is the only thing that
   would validate the choice on marks and serial rather than on the ID.
-- **Known issues are tracked**, not silently carried, and there are more of
-  them than the passing test suites suggest. [issues.md](issues.md) is the
-  open-defect register: 15 findings from a 2026-08-27 audit — **none fixed,
-  all still reproducing** — plus 28 more from a full re-read on 2026-08-31.
-  Two are verified by execution and matter most now the endpoint is public:
-  a path traversal in `/api/harvest` and an unbounded `QuizConfig.max` that
-  can exhaust memory. **148 backend and 79 frontend tests pass**, so all of
-  it sits outside their coverage. Four of the invariants listed below are
-  currently violated in code; the register says which.
+- **Known issues are tracked**, not silently carried:
+  [issues.md](issues.md) is the open-defect register. 44 findings across two
+  audits; **37 fixed** on 2026-08-31, including both HIGH ones and every
+  finding that touches the default `cnn` path. **4 remain open — all Low,
+  all deploy/infra.** Backend and frontend suites went 148/79 →
+  **246/119**, and both passed before the audits too, which is why a full
+  read-through found 44 things they did not.
 - **No whole script is stored anywhere.** A scan is processed in a
   per-request temp directory and discarded. The one exception used to be
   `backend/debug_uploads/`, a temporary step-6 phone-debugging capture that
@@ -622,14 +620,12 @@ These come from the specs and are load-bearing. Breaking one is a defect,
 not a style difference — [CLAUDE.md](CLAUDE.md) has the full list with
 reasoning.
 
-> **Four of them are broken in code right now** (audit, 2026-08-31). They
-> are still the rules — the code is wrong, not the rule — but do not read
-> this list as a description of how the app behaves today. Marked ⚠️ below,
-> with the finding number in [issues.md](issues.md):
-> leading-zero serial comparison (#2), never-store-a-wrong-number (#4, N6),
-> flag-never-guess for an ID that still contains `?` (N5), and
-> a-failed-scan-is-never-a-dead-end (#6, N3). The privacy invariants were
-> re-checked in the same audit and **do** hold.
+> The 2026-08-31 audit found four of these broken in code. **All four were
+> fixed the same day**, each with a regression test. Two of them are now
+> enforced across the language boundary as well: `QuizConfig`'s bounds live
+> in both `app/models.py` and `validateConfig.ts`, with a backend test that
+> reads the TypeScript and fails if they drift apart; and a serial is
+> validated by the same rule on both sides.
 
 - **Detection is proportional, never fixed-coordinate.** Kernel lengths
   are a fraction of image dimensions; cell boundaries come from detected
@@ -645,16 +641,16 @@ reasoning.
   stale behind an edit.
 - **IndexedDB indexes on serial and studentId must permit duplicates** — a
   repeated serial is exactly what the cross-check exists to surface.
-- ⚠️ **Serial comparison strips leading zeros.** `2`, `02`, `002` are one
-  serial. *(Broken: the by-serial lookup uses the raw typed value — #2.)*
+- **Serial comparison strips leading zeros.** `2`, `02`, `002` are one
+  serial. Normalized on write, with a DB v3 migration for records saved before that (#2).
 - **At least one of `studentId` / `serial` must be non-null** to save.
-- ⚠️ **Flag, never guess.** Low-confidence reads become blank plus a flag,
-  never a filled-in best guess. *(Broken: the Total field has no
-  legal-value check on either edit screen, so `NaN` can be stored — #4,
-  N6; and an ID still containing `?` saves as confirmed — N5.)*
-- ⚠️ **A failed scan is never a dead end.** *(Broken: a transport-level
-  failure has no Retake or dismiss, and one hung upload disables the
-  capture button for the rest of the session — #6, N3.)*
+- **Flag, never guess.** Low-confidence reads become blank plus a flag,
+  never a filled-in best guess. One shared `parseMarkField`
+  rule covers Total on both edit screens, and a partial ID (one still
+  carrying a `?`) is blocked at Confirm (#4, N6, N5).
+- **A failed scan is never a dead end.** A 60 s request timeout turns a
+  hung upload into a recoverable error, and failed queue entries have a
+  Dismiss action (#6, N3).
 - **Never export a blank as `0`.** It reads as a mark of zero and nothing
   downstream catches it.
 - **Harvested crops are written in a random order, and carry a constant

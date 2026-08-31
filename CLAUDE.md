@@ -25,7 +25,7 @@ source of truth.
 | [step.md](step.md) | Execution plan — steps 0–11, each with a *Before you start*, substeps, a test, and a *Done when* bar. Steps 0–10 match plan §14; step 11 (hosted demo) is a later, deliberate extension and runs in three independently-shippable phases. Ends with the Progress table. |
 | [stack-reference.md](stack-reference.md) | Library-level notes from Context7: exact calls, starting parameter values, known traps |
 | [learn.md](learn.md) | Plain-language walkthrough of what each finished step's code actually does, for learning alongside the build. Updated after each step — see "How to work here." |
-| [issues.md](issues.md) | **The open-defect register — read it before trusting any screen or endpoint.** Two audits: 2026-08-27 (15 findings) and a full re-read on 2026-08-31 (28 more, N1–N28). **None of the original 15 have been fixed; all still reproduce, and three are now worse.** Two new ones are verified by execution and matter most because the endpoint is public: a path traversal in `/api/harvest` (N1) and an unbounded `QuizConfig.max` that can exhaust memory (N2). Both test suites pass, so everything in that file is outside their coverage. It also carries an explicit "what this audit did NOT cover" section naming the files never opened. |
+| [issues.md](issues.md) | **The open-defect register — read it before trusting any screen or endpoint.** Two audits: 2026-08-27 (15 findings) and a full re-read on 2026-08-31 (28 more, N1–N28). **37 of 44 are now fixed** on 2026-08-31 — frontend (12), pair (11, closing both HIGH findings: N1 path traversal, N2 unbounded config), hot-path (**N4**, where a blank ID cell was producing a confident fabricated digit — demonstrated, not inferred, plus N18), cnn-path (N16, N17, N24, 15), and dormant (4, cleared *ahead of* step 3r.6's comparison run, because that run is `RECOGNIZER=both` and #3 would have handicapped the baseline it measures). **4 remain open, all Low and all deploy/infra — nothing on the `cnn` path, nothing in the frontend.** Suites went 148/79 → **246/119**; they passed before the audits too, which is the point worth internalising. It also carries an explicit "what this audit did NOT cover" section naming the files never opened. |
 | `marks-grid-template.docx` | The grid the instructor pastes into the question paper |
 
 Commands below are the ones the specs call for. Once a step has actually
@@ -274,7 +274,12 @@ marks-upload/
 │   │   ├── observability.py    # structured JSON logs for CloudWatch; scrubs IDs by design
 │   │   ├── ratelimit.py        # step 11.4 — per-IP sliding window + client-IP extraction
 │   │   ├── stores.py           # step 11.2 — LocalStore / S3Store behind one put(key, src)
-│   │   ├── models.py           # step 4 — ScanResult, QuestionMark, QuizConfig; HarvestFields (3r.6c)
+│   │   ├── cells.py            # issues.md N18 — read_cell(): the ONE guarded reader for
+│   │   │                       # detection's crop files. cv2.imread returns None rather
+│   │   │                       # than raising, and five call sites did .shape on it
+│   │   ├── models.py           # step 4 — ScanResult, QuestionMark, QuizConfig; HarvestFields (3r.6c).
+│   │   │                       # Bounds + q-order + totalMax rules (N2/#10/#14); the bounds
+│   │   │                       # are pinned against validateConfig.ts by tests/test_models.py
 │   │   ├── detection.py        # step 1 — the make-or-break component
 │   │   ├── id_ocr.py           # step 2 — local, never leaves the laptop
 │   │   ├── marks.py            # step 3 — the Gemini call
@@ -524,21 +529,25 @@ pure functions; camera/PWA/export by hand on the real phone.
 These come from the specs and are load-bearing. Breaking one is a defect, not
 a style difference.
 
-> **Four of them are currently broken in code (audit, 2026-08-31).** They
-> are still the rules — the code is wrong, not the rule — but do not read
-> this section as a description of how the app behaves today:
+> **Every invariant the 2026-08-31 audit found broken is now fixed**, each
+> with a regression test written as the failure rather than the
+> implementation. Worth keeping the reason they broke: the privacy
+> invariants held throughout because they are enforced by `assert`
+> statements and tests written as attacks, while the four that broke were
+> enforced by prose.
 >
-> | Invariant | Broken by | issues.md |
-> |---|---|---|
-> | Serial comparison strips leading zeros | `Review.tsx` queries the by-serial index with the raw typed serial, so `"007"` and `"7"` never meet | #2 |
-> | Never store a wrong number / flag, never guess | the Total field has no legal-value check on **either** the Review or the Results screen — `Number("abc")` is stored as `NaN` on a `confirmed: true` record | #4, N6 |
-> | Flag, never guess | an ID still containing `?` saves as confirmed and exports to Excel with no flag | N5 |
-> | A failed scan is never a dead end | a transport-level failure has no Retake/dismiss anywhere, and a request that never settles now disables the capture button for the rest of the session | #6, N3 |
+> Two enforcement seams added in the pair pass, both load-bearing:
 >
-> The privacy invariants below (ID never reaches Gemini, backend is
-> stateless, harvest write-order and mtime) were re-checked in that audit
-> and **do** hold — with one exception noted at `RECOGNIZER=both`, which
-> writes student IDs verbatim to `comparison_log/` (N9).
+> - **`QuizConfig`'s bounds exist twice**, in `app/models.py` and
+>   `frontend/src/validateConfig.ts`. `tests/test_models.py` **reads the
+>   TypeScript file** and fails if either side moves alone. Change one,
+>   change the other.
+> - **A serial is validated on both sides** — `marks.validate_serial` and
+>   `validateMarks.isValidSerial`, same rule. It was the one identity field
+>   nothing checked anywhere.
+>
+> Still open and backend-side, all Low except one Medium: see issues.md's
+> "At a glance". Nothing High remains on the default path.
 
 **Detection is proportional, never fixed-coordinate.** Morphological kernel
 lengths are a fraction of image width/height (`cols // 30` as the starting

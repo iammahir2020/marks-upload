@@ -8,7 +8,21 @@ import ExcelJS from 'exceljs';
 import { getAllRecords, resetAll, saveRecord } from './db';
 import { sortRecords, unverifiedReason } from './results';
 import type { QuestionValue, QuizConfig, StudentRecord } from './types';
-import { isLegalValue, sumCheck } from './validateMarks';
+import { parseMarkField, sumCheck } from './validateMarks';
+
+// A quiz name is user text and becomes a filename. Stripping the characters
+// that are illegal or path-bearing on the platforms this lands on, so a quiz
+// called "CSE211L/Q1" downloads as a file rather than failing or being
+// interpreted as a path (issues.md N7).
+function exportFilename(quizName: string): string {
+  const base = quizName
+    .trim()
+    .replace(/[/\\?%*:|"<>]/g, '-')
+    .replace(/\s+/g, ' ')
+    .slice(0, 80)
+    .trim();
+  return `${base || 'quiz'}.xlsx`;
+}
 
 interface ResultsProps {
   config: QuizConfig;
@@ -35,8 +49,8 @@ export default function Results({ config, onBack, onReset }: ResultsProps) {
 
   const sorted = useMemo(() => sortRecords(records), [records]);
   const unverifiedCount = useMemo(
-    () => records.filter((r) => unverifiedReason(r) !== null).length,
-    [records],
+    () => records.filter((r) => unverifiedReason(r, config.idDigits) !== null).length,
+    [records, config.idDigits],
   );
 
   async function updateRecord(updated: StudentRecord) {
@@ -81,9 +95,22 @@ export default function Results({ config, onBack, onReset }: ResultsProps) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${config.quizName || 'quiz'}.xlsx`;
+    a.download = exportFilename(config.quizName);
+    // Attached to the document before clicking, and revoked on a LATER tick
+    // rather than the same one (issues.md N7). Both matter on the device
+    // this is actually used on: `click()` on a detached anchor is a no-op in
+    // some browsers, and revoking a blob URL synchronously after click()
+    // can abort the download before the browser has read from it — iOS
+    // Safari being the documented case, and this app's whole purpose is a
+    // phone. This is the one operation the entire session exists to
+    // perform, so it gets the belt-and-braces version.
+    a.style.display = 'none';
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => {
+      a.remove();
+      URL.revokeObjectURL(url);
+    }, 30_000);
   }
 
   if (!loaded) return null;
@@ -180,6 +207,19 @@ interface ResultsRowProps {
   onUpdate: (record: StudentRecord) => void;
 }
 
+// Field-by-field rather than JSON.stringify: `questions` is rebuilt as a
+// fresh array on every render, so reference equality is always false and a
+// serialisation comparison would depend on key order staying stable.
+function isUnchanged(a: StudentRecord, b: StudentRecord): boolean {
+  return (
+    a.studentId === b.studentId &&
+    a.serial === b.serial &&
+    a.total === b.total &&
+    a.questions.length === b.questions.length &&
+    a.questions.every((q, i) => q.q === b.questions[i].q && q.value === b.questions[i].value)
+  );
+}
+
 function ResultsRow({ record, config, onUpdate }: ResultsRowProps) {
   const [studentId, setStudentId] = useState(record.studentId ?? '');
   const [serial, setSerial] = useState(record.serial ?? '');
@@ -196,20 +236,22 @@ function ResultsRow({ record, config, onUpdate }: ResultsRowProps) {
 
   const questionValues: QuestionValue[] = config.questions.map((qc) => ({
     q: qc.q,
-    value: marks[qc.q] === '' ? null : Number(marks[qc.q]),
+    value: parseMarkField(marks[qc.q] ?? '', qc.max).value,
   }));
-  const total = totalStr === '' ? null : Number(totalStr);
+  // Total goes through the same parse as every other field now (issues.md
+  // N6) — this screen had the identical unchecked-Total bug as Review, and
+  // it is the LAST screen before export, so a NaN reaching here had nothing
+  // after it to catch it.
+  const totalParse = parseMarkField(totalStr, config.totalMax);
+  const total = totalParse.value;
   // 9.1's sum check, derived on every render — never stored, same
   // principle as the Review screen (CLAUDE.md "Derive, don't store").
   const { computedSum, matches } = sumCheck(questionValues, total);
-  const reason = unverifiedReason(record);
+  const reason = unverifiedReason(record, config.idDigits);
 
   const markErrors: Record<number, string> = {};
   for (const qc of config.questions) {
-    const raw = marks[qc.q];
-    if (raw === '') continue; // blank is allowed — flagged, never guessed
-    const value = Number(raw);
-    if (Number.isNaN(value) || !isLegalValue(value, qc.max)) {
+    if (parseMarkField(marks[qc.q] ?? '', qc.max).error) {
       markErrors[qc.q] = `0–${qc.max}, steps of 0.5`;
     }
   }
@@ -229,8 +271,25 @@ function ResultsRow({ record, config, onUpdate }: ResultsRowProps) {
       setError('Fix the highlighted mark — edit not saved.');
       return;
     }
+    if (totalParse.error) {
+      setError(`Total must be 0–${config.totalMax}, steps of 0.5 — edit not saved.`);
+      return;
+    }
     setError(null);
-    onUpdate({ ...record, studentId: trimmedId, serial: trimmedSerial, questions: questionValues, total });
+
+    const updated: StudentRecord = {
+      ...record,
+      studentId: trimmedId,
+      serial: trimmedSerial,
+      questions: questionValues,
+      total,
+    };
+    // onBlur fires on every field the instructor tabs through, including
+    // ones they only read. Without this, walking across a row rewrote the
+    // record once per column and re-rendered the whole table each time
+    // (issues.md N25).
+    if (isUnchanged(record, updated)) return;
+    onUpdate(updated);
   }
 
   return (

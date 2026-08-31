@@ -158,3 +158,75 @@ describe('Results — reset everything', () => {
     expect(await loadConfig()).toBeUndefined();
   });
 });
+
+// --- Regression tests for the 2026-08-31 audit fixes -----------------------
+
+// Serial 9 throughout, so the only input showing "7" is Total: the record's
+// serial "07" now normalizes to "7" on save (issues.md #2), which would
+// otherwise make findByDisplayValue('7') ambiguous.
+const distinct = { serial: '9', questions: [{ q: 1, value: 4 }, { q: 2, value: 3 }], total: 7 };
+
+describe('Results — Total field validation (issues.md N6)', () => {
+  it('refuses an unparseable Total instead of persisting NaN', async () => {
+    await saveRecord(makeRecord({ id: 'r1', ...distinct }));
+    await saveConfig(config);
+    render(<Results config={config} onBack={vi.fn()} onReset={vi.fn()} />);
+    await screen.findByDisplayValue('1912345');
+
+    const totalCell = screen.getByDisplayValue('7') as HTMLInputElement;
+    fireEvent.change(totalCell, { target: { value: 'abc' } });
+    fireEvent.blur(totalCell);
+
+    await screen.findByText(/Total must be 0/);
+
+    // This is the last screen before export, so a NaN reaching the record
+    // here would have had nothing after it to catch it.
+    const [stored] = await getAllRecords();
+    expect(stored.total).toBe(7);
+  });
+});
+
+describe('Results — redundant writes (issues.md N25)', () => {
+  it('does not rewrite the record when a field is only read', async () => {
+    await saveRecord(makeRecord({ id: 'r1', ...distinct, capturedAt: '2026-01-01T00:00:00.000Z' }));
+    await saveConfig(config);
+    render(<Results config={config} onBack={vi.fn()} onReset={vi.fn()} />);
+
+    const idCell = (await screen.findByDisplayValue('1912345')) as HTMLInputElement;
+    // Tabbing across a row fires onBlur per column; nothing changed.
+    fireEvent.blur(idCell);
+    fireEvent.blur(screen.getByDisplayValue('7'));
+
+    const [stored] = await getAllRecords();
+    expect(stored.capturedAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(stored.total).toBe(7);
+  });
+
+  it('still writes when something actually changed', async () => {
+    await saveRecord(makeRecord({ id: 'r1', ...distinct }));
+    await saveConfig(config);
+    render(<Results config={config} onBack={vi.fn()} onReset={vi.fn()} />);
+
+    const totalCell = (await screen.findByDisplayValue('7')) as HTMLInputElement;
+    fireEvent.change(totalCell, { target: { value: '8' } });
+    fireEvent.blur(totalCell);
+
+    await vi.waitFor(async () => {
+      const [stored] = await getAllRecords();
+      expect(stored.total).toBe(8);
+    });
+  });
+});
+
+describe('Results — incomplete ID is surfaced (issues.md N5)', () => {
+  it('counts a record whose ID still contains "?" as unverified', async () => {
+    await saveRecord(makeRecord({ id: 'r1', ...distinct, studentId: '12?4567' }));
+    await saveConfig(config);
+    render(<Results config={config} onBack={vi.fn()} onReset={vi.fn()} />);
+
+    // Both identity fields are present, so the old rule reported this as
+    // fully verified and it would have exported as a literal "12?4567".
+    await screen.findByText('1 unverified');
+    expect(screen.getByText('ID incomplete')).toBeInTheDocument();
+  });
+});

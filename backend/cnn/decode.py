@@ -45,24 +45,32 @@ def decide_digit(
     return int(order[0]), confidence, margin
 
 
-def _digits_of(value: float) -> tuple[list[int], bool]:
-    """value -> (digit list, has a decimal point) using marks.py's own
-    `_fmt` — e.g. 4.0 -> ([4], False), 4.5 -> ([4, 5], True). Deliberately
-    not plan.md §16's own illustrative `f"{value}".replace(".", "")`:
+def _digits_of(value: float) -> tuple[list[int], int | None]:
+    """value -> (digit list, where a decimal point sits among the glyphs).
+
+    e.g. 4.0 -> ([4], None), 4.5 -> ([4, 5], 1), 12.5 -> ([1, 2, 5], 2).
+
+    The index is the position the point occupies in the LEFT-TO-RIGHT glyph
+    sequence, which is also the count of digits before it — the same thing
+    `segment_cell` reports as `is_decimal`'s index. Returning the position
+    rather than a bare "has a decimal" flag is issues.md N24: the old
+    version returned a bool, so the decoder could only check that a decimal
+    existed, never that it was in the right place.
+
+    Deliberately not plan.md §16's illustrative `f"{value}".replace(".", "")`:
     Python's default float formatting always renders a whole number as
-    "4.0", not "4" — copied literally, that would require a *two*-glyph
+    "4.0", not "4", so copied literally that would require a *two*-glyph
     reading with no decimal point to ever match a whole mark, when a real
-    handwritten "4" is one glyph. `_fmt` already exists in marks.py
-    specifically to produce the same minimal, no-trailing-".0" form the
-    instructor actually writes (used there to build the Gemini prompt's
-    own legal-value list) — reusing it here keeps both recognizers' idea
-    of "how a legal value is written" identical, rather than diverging by
-    accident.
+    handwritten "4" is one glyph. `_fmt` already exists in marks.py to
+    produce the same minimal form the instructor actually writes (it builds
+    the Gemini prompt's legal-value list), so reusing it keeps both
+    recognizers' idea of "how a legal value is written" identical rather
+    than diverging by accident.
     """
     s = _fmt(value)
-    has_decimal = "." in s
+    decimal_at = s.index(".") if "." in s else None
     digits = [int(c) for c in s if c != "."]
-    return digits, has_decimal
+    return digits, decimal_at
 
 
 def decode_value(
@@ -83,10 +91,17 @@ def decode_value(
     best_score = 0.0
 
     for value in legal_values:
-        digits, expects_decimal = _digits_of(value)
+        digits, expects_decimal_at = _digits_of(value)
         if len(digits) != len(glyph_probs):
             continue
-        if expects_decimal != (has_decimal_at is not None):
+        # WHERE the point is, not merely whether there is one (issues.md
+        # N24). The old check compared presence only and discarded the
+        # index, which is harmless against today's legal sets — every
+        # x and x.5 of the same digit count puts the point in the same
+        # place — and silently wrong the moment two legal values share
+        # their digits and differ only in point position. A quarter-mark
+        # or two-decimal scheme does exactly that.
+        if expects_decimal_at != has_decimal_at:
             continue
 
         score = 1.0

@@ -16,32 +16,24 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import cv2
 import onnxruntime
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from cnn.accuracy import CONFIDENCE_FLOOR as ID_CONFIDENCE_FLOOR  # noqa: E402
-from cnn.accuracy import MARGIN_FLOOR as ID_MARGIN_FLOOR  # noqa: E402
 from cnn.decode import DECODE_FLOOR, decode_serial, decode_value  # noqa: E402
 from cnn.id_infer import glyph_probs, predict_digit  # noqa: E402
-from cnn.preprocess import glyph_to_canvas, preprocess_for_cnn  # noqa: E402
+from cnn.preprocess import glyph_to_canvas, has_ink, preprocess_for_cnn  # noqa: E402
 from cnn.segment import Glyph, segment_cell  # noqa: E402
+from cnn.thresholds import CONFIDENCE_FLOOR as ID_CONFIDENCE_FLOOR  # noqa: E402
+from cnn.thresholds import MARGIN_FLOOR as ID_MARGIN_FLOOR  # noqa: E402
+from cnn.thresholds import SERIAL_CONFIDENCE_FLOOR, SERIAL_MARGIN_FLOOR  # noqa: E402
 
+from ..cells import read_cell
 from ..marks import MarksResult, legal_values
 from .base import IdResult
 
 DEFAULT_MODEL_PATH = Path(__file__).resolve().parent.parent.parent / "cnn" / "checkpoints" / "digit_cnn.onnx"
 
-# Serial's per-glyph decode (cnn/decode.py's decode_serial) uses the same
-# confidence/margin mechanism as the ID, but is a different field written
-# under different conditions — kept separate rather than reusing the ID's
-# calibrated values outright. Genuinely provisional: unlike the ID
-# (n=8 real photos, step 2r.4), only one labelled real photo currently has
-# ground-truth serial/marks values at all (testset/labels.json's own
-# documented caveat — see step.md step 3r.5), so there isn't yet a real
-# gap in real data to calibrate against the way the ID's floors were.
-SERIAL_CONFIDENCE_FLOOR = 0.9
-SERIAL_MARGIN_FLOOR = 0.8
+# Floors: cnn/thresholds.py (issues.md N16).
 
 
 def _digit_glyphs_and_decimal_index(glyphs: list[Glyph]) -> tuple[list[Glyph], int | None]:
@@ -70,13 +62,17 @@ class CNNRecognizer:
         digits = []
         uncertain = False
         for i in range(1, id_digits + 1):
-            crop_path = cells_dir / f"id_d{i}.png"
-            if not crop_path.exists():
+            # Three ways this position yields "?" rather than a digit, and
+            # they are deliberately handled identically — flag, never guess:
+            #   - the crop is missing
+            #   - the crop is present but undecodable (issues.md N18)
+            #   - the cell is blank (issues.md N4)
+            crop = read_cell(cells_dir / f"id_d{i}.png")
+            if crop is None or not has_ink(crop):
                 digits.append("?")
                 uncertain = True
                 continue
 
-            crop = cv2.imread(str(crop_path))
             canvas = preprocess_for_cnn(crop)
             digit, _confidence, _margin = predict_digit(
                 self._session, canvas, ID_CONFIDENCE_FLOOR, ID_MARGIN_FLOOR
@@ -134,9 +130,10 @@ class CNNRecognizer:
         )
 
     def _decode_serial_cell(self, path: Path) -> str | None:
-        if not path.exists():
+        crop = read_cell(path)
+        if crop is None:
             return None
-        glyphs = segment_cell(cv2.imread(str(path)))
+        glyphs = segment_cell(crop)
         if not glyphs:
             return None  # blank cell — flag, never guess (plan.md §16)
         digit_glyphs, _decimal_index = _digit_glyphs_and_decimal_index(glyphs)
@@ -145,9 +142,10 @@ class CNNRecognizer:
         return serial
 
     def _decode_value_cell(self, path: Path, legal_vals: set[float]) -> float | None:
-        if not path.exists():
+        crop = read_cell(path)
+        if crop is None:
             return None
-        glyphs = segment_cell(cv2.imread(str(path)))
+        glyphs = segment_cell(crop)
         if not glyphs:
             return None
         digit_glyphs, decimal_index = _digit_glyphs_and_decimal_index(glyphs)

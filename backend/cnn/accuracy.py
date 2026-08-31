@@ -30,39 +30,16 @@ import onnxruntime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.detection import detect  # noqa: E402
 from cnn.id_infer import predict_digit as _predict_digit  # noqa: E402
-from cnn.preprocess import preprocess_for_cnn  # noqa: E402
+from cnn.preprocess import has_ink, preprocess_for_cnn  # noqa: E402
+from cnn.thresholds import CONFIDENCE_FLOOR, MARGIN_FLOOR  # noqa: E402
 
 TESTSET = Path(__file__).parent.parent.parent / "testset"
 QUESTIONS = 5
 ID_DIGITS = 7
 
-# Two signals, per plan.md §16 "Confidence, and when to flag": the top
-# class's own probability, and its margin over the runner-up — a near-tie
-# is worse than a confident-but-imperfect top score, even at the same max
-# probability. Originally calibrated on n=56 real digit reads (one writer,
-# 8 photos), where correct and wrong reads fell into two clusters with an
-# enormous gap between them (0.586 -> 0.990) — 0.9/0.8 sat safely inside
-# that gap. **Recalibrated 2026-08-30 against n=182 real digit reads
-# across ~20 different writers** (the real_class_* batch, step.md step 0)
-# — with real handwriting diversity, that clean gap doesn't exist anymore:
-# correct reads span confidence all the way down to 0.40, and only one
-# read in the whole set is both wrong and above 0.75 (a single genuinely
-# ambiguous cursive "9", at 0.924/0.887 — no floor below that catches it
-# without also flagging a large block of correct reads well above it).
-# Measured directly by sweeping candidate floors against raw, pre-floor
-# argmax correctness: 0.9/0.8 let through 1 wrong digit but flagged 20
-# digits that were actually correct (86.3% pass rate); 0.75/0.6 lets
-# through the same single unavoidable wrong digit while recovering 11 of
-# those 20 false flags (92.3% pass rate) — same safety, real accuracy
-# gain. Going lower than 0.75 confidence starts trading safety for
-# recall (3+ wrong digits let through at 0.70). Still provisional in the
-# same sense as before — n=182/~20 writers is much better than n=56/1
-# writer but still not the full class. ID-specific: serial/mark decoding
-# (step 3r) calibrates its own floors separately, since they're a
-# different field written under different conditions and haven't been
-# recalibrated against this batch.
-CONFIDENCE_FLOOR = 0.75
-MARGIN_FLOOR = 0.6
+# Calibrated floors live in cnn/thresholds.py so the app can read them
+# without importing this harness (issues.md N16). The calibration record
+# and the --calibrate sweep that produced them are both there.
 
 
 def predict_digit(session: onnxruntime.InferenceSession, canvas: np.ndarray) -> tuple[str | None, float, float]:
@@ -124,12 +101,18 @@ def main() -> int:
                 crop_path = cells_dir / f"id_d{i}.png"
                 true_digit = true_id[i - 1] if i - 1 < len(true_id) else None
 
-                if not crop_path.exists():
+                # Mirrors CNNRecognizer.read_id exactly, including the
+                # blank-cell gate added for issues.md N4. This harness
+                # measures the app's ID accuracy, so it has to run the app's
+                # own acceptance logic — a harness that quietly evaluates a
+                # different code path than production is how a measurement
+                # stops meaning what its number says.
+                crop = cv2.imread(str(crop_path)) if crop_path.exists() else None
+                if crop is None or not has_ink(crop):
                     read_digits.append("?")
                     any_uncertain = True
                     continue
 
-                crop = cv2.imread(str(crop_path))
                 canvas = preprocess_for_cnn(crop)
                 digit, confidence, margin = predict_digit(session, canvas)
 

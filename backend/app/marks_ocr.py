@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import cv2
 import pytesseract
 
+from .cells import read_cell
 from .id_ocr import OEM, _prepare
 from .marks import MarksResult, legal_values
 
@@ -32,9 +32,9 @@ MARK_WHITELIST = "0123456789."
 
 
 def _read_field(crop_path: Path, whitelist: str) -> str | None:
-    if not crop_path.exists():
+    crop = read_cell(crop_path)
+    if crop is None:
         return None
-    crop = cv2.imread(str(crop_path))
     prepared = _prepare(crop)
     config = f"--oem {OEM} --psm {FALLBACK_PSM} -c tessedit_char_whitelist={whitelist}"
     data = pytesseract.image_to_data(prepared, config=config, output_type=pytesseract.Output.DICT)

@@ -15,6 +15,8 @@ import numpy as np
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
+from .cells import read_cell
+
 # backend/.env, not the repo root — the key is backend-only (plan.md §9).
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
@@ -53,6 +55,29 @@ def _fmt(v: float) -> str:
     return str(int(v)) if v == int(v) else str(v)
 
 
+# A serial identifies a script's position in the pile: 1..9999 is far more
+# than any real class, and `results.ts` sorts by `Number(serial)`, so a
+# non-numeric one has no defined place in the exported table either.
+MAX_SERIAL_DIGITS = 4
+
+
+def validate_serial(serial: str | None) -> str | None:
+    """A serial as read, or None if it isn't one (issues.md N21).
+
+    Kept in step with `validateMarks.ts`'s `isValidSerial`, which enforces
+    the same rule on the instructor's own typing — the two halves of the
+    same gap. Leading zeros are preserved here on purpose: `"07"` is what
+    is written on the paper, and stripping them is the frontend's job at
+    comparison time (`normalizeSerial`), not this function's.
+    """
+    if serial is None:
+        return None
+    trimmed = serial.strip()
+    if not trimmed or len(trimmed) > MAX_SERIAL_DIGITS or not trimmed.isdigit():
+        return None
+    return trimmed
+
+
 def build_composite(cells_dir: Path, questions: int) -> tuple[np.ndarray | None, list[str]]:
     """Tile the serial crop and every marks answer-row crop into one
     labelled composite, left to right. Returns (composite, labels); labels
@@ -83,8 +108,31 @@ def build_composite(cells_dir: Path, questions: int) -> tuple[np.ndarray | None,
     if not sources:
         return None, []
 
+    # The composite and the prompt must describe the same tiles (issues.md
+    # #9). Tiles are appended only when the crop file exists, while
+    # build_prompt unconditionally describes all N questions plus the
+    # total — so one missing crop shifted every later tile's meaning, and
+    # Gemini could return a confident, legal-looking value for a tile it
+    # was never shown. validate_payload cannot catch that: it range-checks
+    # a value, it cannot know the picture didn't contain the question.
+    #
+    # Returning None rather than asserting, deliberately. The ID-exclusion
+    # assert above guards an invariant that must never be false; a missing
+    # crop is a data condition that legitimately can occur, and this
+    # project's answer to that is a failed scan the instructor can retake,
+    # not a 500 (plan.md §10, "a failed scan is never a dead end").
+    expected_tiles = questions + 2  # serial + one per question + total
+    if len(sources) != expected_tiles:
+        return None, []
+
     labels = [label for label, _ in sources]
-    images = [cv2.imread(str(path)) for _, path in sources]
+    images = [read_cell(path) for _, path in sources]
+    # A crop that exists but will not decode is the same failure as a
+    # missing one (issues.md N18) — `cv2.imread` returns None rather than
+    # raising, and `None.shape` two lines below was an uncaught
+    # AttributeError escaping the route as a 500.
+    if any(image is None for image in images):
+        return None, []
 
     target_h = 120
     caption_h = 30
@@ -150,12 +198,23 @@ def validate_payload(payload: ScanPayload, question_maxes: list[float]) -> Marks
         total = None
         low_confidence_fields.append("total")
 
-    if payload.serial is None or not payload.serial.strip():
+    # The serial gets the same treatment every mark already got (issues.md
+    # N21): checked against what a serial can actually be, and blanked plus
+    # flagged when it isn't — never stored as read.
+    #
+    # It had no check at all, so "abc", "1.5" or a 2 KB string came straight
+    # back from Gemini into ScanResult, pre-filled the review screen, and
+    # (if confirmed unchanged) reached IndexedDB, the Excel export and
+    # /api/harvest's key path. The CNN path cannot produce a non-digit
+    # serial by construction; Gemini can, which is exactly why the check
+    # belongs on this side of the seam rather than in the recognizer.
+    serial = validate_serial(payload.serial)
+    if serial is None:
         low_confidence_fields.append("serial")
 
     return MarksResult(
         status="ok",
-        serial=payload.serial,
+        serial=serial,
         questions=questions,
         total=total,
         low_confidence_fields=low_confidence_fields,
@@ -189,12 +248,29 @@ def check_blocked(response) -> str | None:
     return None
 
 
+# One client for the process, built on first use (issues.md #13).
+#
+# `genai.Client()` was constructed per request — wasted setup on the
+# slowest stage of the pipeline, across dozens of scans in a class. Lazy
+# rather than at import because this module is imported on the CNN path
+# too, where there is no API key at all and constructing one would fail.
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        from google import genai
+
+        _client = genai.Client()
+    return _client
+
+
 def recognize(cells_dir: Path, question_maxes: list[float]) -> MarksResult:
     """The actual API call (step 3.2-3.5). Requires GEMINI_API_KEY in the
     environment — everything above this function is a pure function,
     testable without network or a key (step.md's Test section deliberately
     separates the two)."""
-    from google import genai
     from google.genai import types
 
     composite, labels = build_composite(cells_dir, len(question_maxes))
@@ -205,11 +281,13 @@ def recognize(cells_dir: Path, question_maxes: list[float]) -> MarksResult:
     if not ok:
         return MarksResult(status="failed", failure_reason="model_error")
 
-    client = genai.Client()
     prompt = build_prompt(question_maxes)
 
     try:
-        response = client.models.generate_content(
+        # Client construction moved inside the try alongside the call it
+        # belongs to: a missing or rejected GEMINI_API_KEY raises here, and
+        # that is a model_error the instructor can act on, not a 500.
+        response = _get_client().models.generate_content(
             model=MODEL,
             contents=[
                 prompt,

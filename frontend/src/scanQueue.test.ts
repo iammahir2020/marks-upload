@@ -106,3 +106,26 @@ describe('nextToReview', () => {
     expect(nextToReview(state, new Set())).toBe('c');
   });
 });
+
+// --- issues.md N3: a hung request must not wedge the session --------------
+
+describe('inFlightCount and the capture button', () => {
+  it('stops counting an entry once it fails, so capture re-enables', () => {
+    // The capture button is disabled while inFlightCount > 0. Before
+    // api.ts gained a timeout, a request that never settled left its entry
+    // 'pending' forever — which disabled capture for the rest of the
+    // session, recoverable only by reloading the page. The timeout turns
+    // that into a 'reject', and this is the property that then matters.
+    let state = queueReducer([], { type: 'enqueue', id: 'a' });
+    expect(inFlightCount(state)).toBe(1);
+
+    state = queueReducer(state, {
+      type: 'reject',
+      id: 'a',
+      error: 'Timed out after 60s — check the connection, then retake.',
+    });
+
+    expect(inFlightCount(state)).toBe(0);
+    expect(state[0].status).toBe('error');
+  });
+});

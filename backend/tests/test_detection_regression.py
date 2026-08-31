@@ -11,10 +11,12 @@ import json
 import sys
 from pathlib import Path
 
+import cv2
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from app.detection import detect  # noqa: E402
+from app.detection import detect, detect_any_orientation  # noqa: E402
 
 TESTSET = Path(__file__).parent.parent.parent / "testset"
 ID_DIGITS = 7  # fixed app-wide config so far — every real photo used the same value
@@ -65,3 +67,50 @@ def test_testset_not_empty_reminder():
             "testset/images/ has no labelled photographs yet — step 0 (step.md) "
             "comes before step 1's Done-when bar can be met. See CLAUDE.md."
         )
+
+
+# --- issues.md #15: artifacts must describe the answer that was returned --
+
+
+def test_a_total_failure_leaves_the_zero_degree_artifacts(tmp_path):
+    """All four rotations used to share one out_dir, so after a run where
+    every orientation failed, overlay.jpg and result.json described the
+    270-degree attempt while the RETURNED failure_reason was the 0-degree
+    one. The artifact and the answer disagreed, silently, in exactly the
+    situation you open the artifact to understand."""
+    noise = tmp_path / "noise.jpg"
+    rng = np.random.default_rng(0)
+    cv2.imwrite(str(noise), rng.integers(0, 255, (600, 800, 3), dtype=np.uint8))
+
+    out = tmp_path / "out"
+    result = detect_any_orientation(noise, 5, 7, out)
+
+    assert result["status"] == "failed"
+    on_disk = json.loads((out / "result.json").read_text())
+    assert on_disk["failure_reason"] == result["failure_reason"]
+    assert on_disk["image"] == result["image"]
+    # and no scratch directory survives
+    assert not (out / "_attempt").exists()
+    assert not (out / "_rotation_attempt.jpg").exists()
+
+
+def test_a_winning_rotation_puts_its_cells_where_callers_look(tmp_path):
+    """main.py reads out_dir/"cells" and cannot tell which orientation won,
+    so a promoted attempt has to land exactly where a first-try success
+    would have."""
+    upright = TESTSET / "images" / "filled_file.jpeg"
+    if not upright.exists():
+        pytest.skip("testset image not present")
+    rotated = tmp_path / "sideways.jpg"
+    cv2.imwrite(str(rotated), cv2.rotate(cv2.imread(str(upright)), cv2.ROTATE_90_CLOCKWISE))
+
+    out = tmp_path / "out"
+    result = detect_any_orientation(rotated, 5, 7, out)
+
+    assert result["status"] == "ok"
+    assert (out / "cells" / "id_d1.png").exists()
+    assert (out / "overlay.jpg").exists()
+    # The winning attempt read a temp file that is deleted afterwards; the
+    # result must name a path that still exists.
+    assert Path(result["image"]).exists()
+    assert not (out / "_attempt").exists()

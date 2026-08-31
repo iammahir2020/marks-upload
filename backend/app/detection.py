@@ -7,6 +7,7 @@ until it has been run against testset/images/ per step.md step 1.
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -565,13 +566,50 @@ def detect_any_orientation(image_path: Path, questions: int, id_digits: int, out
     if img is None:
         return result
 
-    for rotate_code in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE):
-        rotated = cv2.rotate(img, rotate_code)
-        rotated_path = out_dir / "_rotation_attempt.jpg"
-        cv2.imwrite(str(rotated_path), rotated)
-        rotated_result = detect(rotated_path, questions, id_digits, out_dir)
-        rotated_path.unlink(missing_ok=True)
-        if rotated_result["status"] == "ok":
-            return rotated_result
+    # Each retry writes into its own directory rather than over out_dir
+    # (issues.md #15). All four attempts used to share one, so a run where
+    # every rotation failed left out_dir holding the 270-degree attempt's
+    # overlay and result.json while this function returned the 0-degree
+    # failure — the artifact and the answer describing different things.
+    # Harmless inside main.py, whose TemporaryDirectory is deleted
+    # immediately, and a genuine trap for batch_detect.py and any manual
+    # `python detect.py` run, which exist precisely to be looked at.
+    #
+    # Now out_dir keeps the 0-degree result unless a rotation actually
+    # wins, in which case that attempt's output is promoted into it.
+    attempt_dir = out_dir / "_attempt"
+    try:
+        for rotate_code in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE):
+            rotated = cv2.rotate(img, rotate_code)
+            rotated_path = out_dir / "_rotation_attempt.jpg"
+            cv2.imwrite(str(rotated_path), rotated)
+            rotated_result = detect(rotated_path, questions, id_digits, attempt_dir)
+            rotated_path.unlink(missing_ok=True)
+            if rotated_result["status"] == "ok":
+                _promote(attempt_dir, out_dir)
+                # The winning attempt read a temp file that is now gone;
+                # name the real source instead of a path nothing can open.
+                rotated_result["image"] = str(image_path)
+                return rotated_result
+    finally:
+        shutil.rmtree(attempt_dir, ignore_errors=True)
 
-    return result  # nothing worked — return the original (0-degree) failure
+    return result  # nothing worked — out_dir still holds the 0-degree failure
+
+
+def _promote(attempt_dir: Path, out_dir: Path) -> None:
+    """Move a winning rotation attempt's artifacts up into out_dir.
+
+    Callers read `out_dir/"cells"` (main.py does, twice), so the winner's
+    crops have to end up exactly where a first-attempt success would have
+    put them — the whole point is that the caller cannot tell which
+    orientation won.
+    """
+    cells = out_dir / "cells"
+    if cells.exists():
+        shutil.rmtree(cells)
+    shutil.move(str(attempt_dir / "cells"), str(cells))
+    for name in ("overlay.jpg", "result.json", "mask_horizontal.jpg", "mask_vertical.jpg"):
+        source = attempt_dir / name
+        if source.exists():
+            shutil.move(str(source), str(out_dir / name))

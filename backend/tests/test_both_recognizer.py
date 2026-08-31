@@ -58,7 +58,14 @@ def test_agreeing_ids_log_nothing(monkeypatch, tmp_path):
     assert _read_log(log_file) == []
 
 
-def test_disagreeing_id_logs_both_values(monkeypatch, tmp_path):
+def test_a_disagreeing_id_logs_where_not_what(monkeypatch, tmp_path):
+    """Written as the attack, not the implementation (issues.md N9).
+
+    This test was `test_disagreeing_id_logs_both_values` and asserted the
+    two full IDs appeared in the log — it pinned the defect. The comparison
+    run is meant to happen during a real class, so a file of student IDs in
+    scan order is the wrong artifact to produce, however local it is.
+    """
     log_file = _redirect_log(monkeypatch, tmp_path)
     cnn = FakeRecognizer(IdResult(student_id="1234567"), MarksResult(status="ok"))
     remote = FakeRecognizer(IdResult(student_id="1234561"), MarksResult(status="ok"))
@@ -67,8 +74,49 @@ def test_disagreeing_id_logs_both_values(monkeypatch, tmp_path):
     entries = _read_log(log_file)
     assert len(entries) == 1
     assert entries[0]["field"] == "student_id"
-    assert entries[0]["cnn"] == "1234567"
-    assert entries[0]["remote"] == "1234561"
+
+    # The useful signal survives: which position disagreed, and how many.
+    assert entries[0]["difference"]["differing_positions"] == [6]
+    assert entries[0]["difference"]["differing_count"] == 1
+
+    # Neither ID appears anywhere in the raw line, whole or in part.
+    raw = log_file.read_text()
+    assert "1234567" not in raw
+    assert "1234561" not in raw
+
+
+def test_marks_and_serial_disagreements_still_log_their_values(monkeypatch, tmp_path):
+    """The ID is the exception, not the rule. Serial and marks identify
+    nobody without the instructor's attendance sheet, and on this path they
+    have already gone to Gemini — plan.md §12 draws that line, and the
+    comparison is worthless without the actual values."""
+    log_file = _redirect_log(monkeypatch, tmp_path)
+    cnn = FakeRecognizer(
+        IdResult(student_id="1234567"),
+        MarksResult(status="ok", serial="7", questions=[4.0], total=4.0),
+    )
+    remote = FakeRecognizer(
+        IdResult(student_id="1234567"),
+        MarksResult(status="ok", serial="1", questions=[5.0], total=4.0),
+    )
+    BothRecognizer(cnn=cnn, remote=remote).read_marks(Path("."), [5.0])
+
+    entries = {e["field"]: e for e in _read_log(log_file)}
+    assert entries["serial"]["cnn"] == "7" and entries["serial"]["remote"] == "1"
+    assert entries["q1"]["cnn"] == 4.0 and entries["q1"]["remote"] == 5.0
+
+
+def test_logging_never_fails_a_scan(monkeypatch, tmp_path):
+    """COMPARISON_LOG_DIR is repo-relative, so on a read-only filesystem
+    the write would take the whole request down. RECOGNIZER=both is not
+    deployed today, but it is one env var away from being."""
+    monkeypatch.setattr(both_module, "COMPARISON_LOG_DIR", Path("/proc/nonexistent/nope"))
+    monkeypatch.setattr(both_module, "COMPARISON_LOG_FILE", Path("/proc/nonexistent/nope/x.jsonl"))
+    cnn = FakeRecognizer(IdResult(student_id="1234567"), MarksResult(status="ok"))
+    remote = FakeRecognizer(IdResult(student_id="9999999"), MarksResult(status="ok"))
+
+    result = BothRecognizer(cnn=cnn, remote=remote).read_id(Path("."), 7)
+    assert result.student_id == "1234567"
 
 
 def test_read_marks_returns_the_cnn_result(monkeypatch, tmp_path):

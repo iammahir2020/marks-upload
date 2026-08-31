@@ -33,11 +33,20 @@ handwriting, made-up values. That finding was wrong and has been removed;
 pilot's outputs (an exported `.xlsx` above all) have nothing ignoring them
 yet.
 
-**Headline from audit 2: none of audit 1's 15 findings have been fixed.**
-All 15 still reproduce against current code; three of them are now *worse*
-than when first written (1, 4, 6), and one has partially shifted shape (5).
-Both test suites pass — 148 backend, 79 frontend — so every finding here is
-in territory the suites do not cover.
+**Headline from audit 2, as written: none of audit 1's 15 findings had been
+fixed.** All 15 reproduced against the code as it stood, three were *worse*
+than when first written (1, 4, 6), and one had shifted shape (5). Both test
+suites passed — 148 backend, 79 frontend — so every finding was in territory
+the suites did not cover.
+
+**Update 2026-08-31, frontend pass: 12 findings are now FIXED** — the ones
+addressable by frontend changes alone (1, 2, 4, 5, 6, 11, N3, N5, N6, N7,
+N19, N25). That clears 5 of the 7 audit-1 High items and all four broken
+invariants. The frontend suite went 79 → 109 tests, each new case written as
+the failure rather than the implementation; one existing assertion in
+`Review.test.tsx` had to change, because it was pinning bug #2. Nothing in
+the backend has been touched, so **N1 and N2 — the two verified,
+publicly-reachable ones — are still open.**
 
 The audit-1 "Security review — clean" verdict is **superseded**: N1 is a
 HIGH, verified, arbitrary-file-write on a now-publicly-deployed endpoint.
@@ -47,11 +56,181 @@ Where a finding was proven by execution it says so.
 
 ---
 
+## At a glance
+
+44 findings: 43 from the two audits, plus N29 found while mapping backend
+findings to their frontend counterparts. **37 fixed, 2 partly fixed, 1
+accepted, 4 open.** Grouped by state rather than by number, so the
+actionable set is the first thing on the page. Search the `#` to jump to a
+finding's full entry in Part A or Part B below.
+
+Three rounds of fixes on 2026-08-31:
+
+1. **Frontend pass** — the 12 addressable without touching the backend,
+   plus 4 doc/drift items. Cleared all four broken invariants.
+2. **Pair pass** — the 11 whose fix spans both sides, done as pairs rather
+   than one half at a time. Closed both HIGH findings, **N1** (path
+   traversal) and **N2** (unbounded config).
+3. **Hot-path / cnn-path passes** — **N4** and **N18** first (the two
+   correctness risks live on the default path), then N16, N17, N24 and 15,
+   which closes the `cnn` path entirely. N4 is the one worth reading: a blank ID cell was
+   producing a *confident fabricated digit*, demonstrated rather than
+   inferred.
+4. **Dormant pass** — the 4 that only fire on `remote`/`both`, cleared
+   *ahead of* step 3r.6's comparison run rather than after it. They looked
+   lowest-priority and were not: that run **is** `RECOGNIZER=both`, so all
+   four activate the moment it starts, and two of them damage it — **#3**
+   by handicapping the very baseline it measures, **N9** by writing student
+   IDs to disk during a real class.
+
+What is left — **every open finding is now Low**:
+
+- **4 are deploy/infra**, recognizer-independent — N11, N15, N22, N23.
+- **0 touch the `cnn` path.** Every finding on the path the app actually
+  runs is closed.
+- **0 are frontend, 0 are dormant, and nothing High or Med-on-a-hot-path
+  remains open anywhere.**
+
+Suites: **246 backend, 119 frontend** — from 148/79 before the audits. They
+passed then too, which is the point worth internalising rather than a
+footnote.
+
+### Open — deploy and infra (recognizer-independent)
+
+| # | Finding | What's wrong | Sev |
+|---|---|---|---|
+| N11 | `preflight.sh` gaps | Does not probe `apigatewayv2`, so a correctly-scoped deploy user passes then fails mid-deploy; its read-only check runs `HARVEST_ENABLED=false`, which is not the deployed config. | Low |
+| N15 | Test deps in the production image | `pytest` and `httpx` ship in the container, which excludes `tests/`. | Low |
+| N22 | Deploy smoke test skips silently | Guarded by `if [ -f ]`, so a deploy whose only end-to-end check never ran looks identical to one that passed. | Low |
+| N23 | Predictable `/tmp` path in `deploy.sh` | Distribution config written to and read from a fixed, guessable filename. | Low |
+
+### Backend findings with a frontend counterpart
+
+Several open backend findings are one half of a pair. Worth knowing before
+picking any of them up, because the fix is either already half-done, or
+lands somewhere other than where the symptom appears.
+
+| Backend / infra | Frontend side | Relationship |
+|---|---|---|
+| **N2** unbounded `QuizConfig.max` | **N19** ✅ fixed — `MAX_ID_DIGITS` / `MAX_QUESTIONS` / `MAX_MARK_PER_QUESTION` | Two halves of one bound. The form can no longer *produce* a bad config; the endpoint still *accepts* one from any caller. Doing only the frontend half is what makes N2 feel fixed when it is not. |
+| **#10** no `q`-order check | `validateConfig.ts` always builds `{q: i+1, max}` in order | The frontend **is** the only enforcement today. The finding's own words: "an unenforced convention, not a backend guarantee." |
+| **#14** `totalMax` accepted, never read | `validateConfig` computes and sends it; Review and Results now validate Total against `config.totalMax` | The frontend depends on `totalMax` being meaningful, the backend ignores it — and the #4/N6 fix **deepened** that dependence. Fixing #14 means deciding which side owns the number. |
+| **#7** blocked event loop | `scanQueue.ts` is built for parallel in-flight requests, but `Scan.tsx`'s capture spinner (2026-08-30) now serialises captures anyway | A frontend change masked the symptom. Fixing #7 buys little until captures can overlap again, so the two want doing together or not at all. |
+| **N14** `/api/harvest` 500s on an S3 error | `harvestScan` swallows every error by design | The frontend's swallow is *why* backend silence matters: a misconfigured bucket stops collection with no signal anywhere. N14's fix is a log line, not an error the client should see. |
+| **N8** crops bucket has no retention | `Setup.tsx`'s disclosure says cells are kept, but not for how long | Adding a retention period is only half the work; the always-visible disclosure line should then state the duration, or it becomes true-but-incomplete in the same way 11.5 already corrected once. |
+| **N13** `ALLOWED_ORIGINS` never set | `VITE_API_BASE=""` (same origin, CloudFront routes `/api/*`) | N13 is harmless **only** because the frontend is same-origin, so CORS never runs. Split the origins later and it becomes live immediately. |
+| **N21** serial never validated server-side | Nothing validates serial shape client-side either | Not a pair — a shared gap. `isCompleteId` was added for the student ID (N5); the serial got no equivalent on either side. |
+
+**One deliberate asymmetry, so nobody "fixes" it:** the serial sent to
+`/api/harvest` is the **raw** typed value (`"07"`), while the record saved to
+IndexedDB is **normalized** (`"7"`, per #2). That is correct and load-bearing
+in both directions — the harvested crop image shows two glyphs, so `"07"` is
+the only label that matches the picture, while the index needs one key per
+real serial. Normalizing the harvest label to match the record would
+silently mislabel training data.
+
+### Partly fixed
+
+| # | Finding | Done / still open |
+|---|---|---|
+| N12 | Deploy policy carries dead grants | **Documented** in `aws/README.md` (Function URL + CloudFront Function statements are unused; `apigateway:*` on `/apis/*` is account-wide). **Not removed** — that edits a live IAM policy. |
+| N26 | Real session output could be committed | **`.gitignore` done** (`*.xlsx`, `collection_sheet*.docx`, with the template negated). **Open:** the convention for whether a genuinely-real photo batch may ever live in the repo. |
+
+### Accepted — no fix intended
+
+| # | Finding | Why |
+|---|---|---|
+| 12 | Portrait rotation hardcoded | Re-checked: a wrong-direction rotation yields `table_not_found`, which is the one reason that triggers the 4-way retry, and `_label_column_is_backwards` catches the 180° case. Cost is wasted detection passes, not a wrong read. |
+
+### Fixed 2026-08-31 — cnn-path pass
+
+The last four on the default path. None was High; three were latent
+properties rather than live faults, and the fourth (15) only bites the
+debugging harnesses.
+
+| # | Finding | Fix |
+|---|---|---|
+| N16 | Prod imported a dev harness for two floats | New `cnn/thresholds.py`, importing nothing. Pinned by a test that blocks `cnn.accuracy` and asserts `local.py` still imports. |
+| N24 | Decimal presence checked, not position | `_digits_of` returns the glyph index. Exposed a wrong existing test that passed an index the real pipeline never produces. |
+| 15 | Rotation artifacts contradicted the answer | Retries write to `out_dir/_attempt`, promoted only on a win; a winning result now names the real source rather than a deleted temp file. |
+| N17 | Contradictory harvest labels | Reported by `fetch-crops.sh` at assembly time. Not fixed at write time on purpose — `Store` is one method by design and the filename is the label. Real corpus checked: 0 conflicts. |
+
+### Fixed 2026-08-31 — hot-path pass
+
+The two correctness risks that were live on the default `cnn` path.
+
+| # | Finding | Fix |
+|---|---|---|
+| **N4** | ID cells classified even when blank | `has_ink()` gate before classification, calibrated on 168 filled / 7 blank real cells. Verified: the real blank grid returned a fabricated `4` without it, `???????` with it. Largest-component rather than total ink, after a test showed total ink let a speck past. |
+| N18 | Undecodable crops crashed as a 500 | One `app/cells.py::read_cell()` at all five sites. `exists()` was never the check — these files are written by the same request. |
+
+### Fixed 2026-08-31 — dormant pass
+
+The four that only fire on `remote`/`both`, cleared **ahead of step 3r.6's
+comparison run** rather than after it. They looked lowest-priority and were
+not: the comparison run *is* `RECOGNIZER=both`, so all four activate the
+moment it starts, and two of them damage it — #3 by handicapping the
+baseline it measures, N9 by writing student IDs to disk during a real class.
+
+| # | Finding | Fix |
+|---|---|---|
+| **3** | Fallback discarded correct digit reads | Accept `fallback_text` when it is already a digit, same confidence floor. New `test_id_ocr.py` stubs Tesseract so the acceptance logic is testable at all. |
+| 9 | Composite/prompt desync | Tile-count check → `model_error`, not an assert: a missing crop is a data condition, not a broken invariant. |
+| N9 | Student IDs written to disk | Logged as a difference (positions + counts), never the digits. Serial and marks still log values — plan.md §12's line. Write wrapped so it cannot fail a scan. |
+| 13 | Client rebuilt per request | Lazy module-level singleton; construction moved inside the `try` so a bad key is a `model_error`. |
+
+### Fixed 2026-08-31 — pair pass
+
+The eleven whose fix spans both sides of the wire, done as pairs rather than
+one half at a time. Backend suite 163 → 196.
+
+| # | Finding | Fix, both halves |
+|---|---|---|
+| **N1** | Path traversal via `serial` | `_sanitize_value` inside `add()` (the one funnel every field passes through), **plus** a containment assert in `LocalStore.put` so the invariant does not depend on callers. Original exploit re-run and blocked. |
+| **N2** | Unbounded `QuizConfig.max` | Pydantic bounds mirroring `validateConfig.ts`, **pinned by a test that parses the TypeScript** and fails if either side moves alone. |
+| 7 | Blocked event loop | `run_in_threadpool` around detection and both recognizer calls, on both endpoints. |
+| 8 | Malformed config → 500 | `_parse()` → `HTTPException(400)` naming the field; **N29** makes the message visible to the instructor. |
+| 10 | No `q`-order check | `model_validator` requiring `[1..n]`, failing loudly rather than sorting into place. |
+| 14 | `totalMax` never checked | `model_validator` requiring `totalMax == sum(q.max)` — the number the review screen already validates against. |
+| N8 | No crop retention | S3 lifecycle at `CROPS_RETENTION_DAYS` (365), **and** `Setup.tsx` now states the period, tied together by comment. |
+| N13 | `ALLOWED_ORIGINS` never set | `apply_allowed_origins` after cdn, **plus** `lambda_env()` so the env list exists once — `update-function-configuration` replaces rather than merges. |
+| N14 | Harvest failures invisible | try/except + a `harvest_failed` log carrying exception type and truncated message only, never its repr. |
+| N21 | Serial never validated | `marks.validate_serial` **and** `validateMarks.isValidSerial`, same rule, both sides. |
+| N29 | 413/429 detail discarded | `describeFailure` reads `detail` and appends `Retry-After` seconds. |
+
+### Fixed 2026-08-31 — frontend pass
+
+Twelve addressable without touching the backend, plus four doc/drift items.
+Each has a regression test written as the failure rather than the
+implementation; the frontend suite went 79 → 119 across both passes.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | `Setup.tsx` crashed on non-integer input | Array resize guarded behind an integer + bounds check; kills both the `RangeError` and the ~10¹¹-push hang. |
+| 2 | Leading-zero serial duplicates never surfaced | Normalized on write, queried normalized, **DB v3 migration** for records saved earlier. |
+| 4 | Review's Total had no legal-value check | Shared `parseMarkField` — one rule, both edit screens. |
+| 5 | Conflict panel could overwrite a stale record | Editing an identity field clears the pending conflict and re-enables Confirm. |
+| 6 | Transport failures were a dead end | **Dismiss** action on `'error'` queue entries. |
+| 11 | Preview blob URLs leaked all session | Ref-based unmount cleanup; per-entry release on retake/dismiss (*not* on save — Review re-fetches that URL to harvest). |
+| N3 | One hung upload wedged the session | 60 s `AbortController` timeout on both endpoints, so a hang becomes a recoverable error. |
+| N5 | `?`-bearing ID saved as confirmed | `isCompleteId` blocks Confirm on a partial ID; a *cleared* ID is still allowed. `unverifiedReason` reports `ID incomplete`. |
+| N6 | Results' Total had no check either | Same `parseMarkField` helper. |
+| N7 | Excel download could abort on iOS | Anchor attached before `click()`, revoked on a timer, filename sanitized. **Still needs a real-device check.** |
+| N19 | `validateConfig` had no upper bounds | `MAX_ID_DIGITS`/`MAX_QUESTIONS`/`MAX_MARK_PER_QUESTION`. Client half of N2 only. |
+| N25 | Redundant IndexedDB writes on blur | `isUnchanged()` early return. |
+| N10 | `deploy.sh` comment contradicted the deploy | Rewritten for API Gateway; states plainly that the backend is not private. |
+| N20 | Stale comments | `.gitignore`, `requirements.txt`, `both.py` — each says what it used to claim and why that was wrong. |
+| N27 | Ignore-file gaps | Editor/OS patterns, `*.xlsx`, `collection_sheet*.docx`. Verified nothing previously tracked became newly ignored. |
+| N28 | `.env.example` drift | 4 MB not 5; `VITE_API_BASE=""` not a Function URL. |
+
+
 # Part A — audit 1's findings, revalidated 2026-08-31
 
 ## High priority — real bugs
 
 ### 1. `Setup.tsx` crashes on non-integer input
+
+**Status: FIXED 2026-08-31.** `handleQuestionCountChange` keeps the typed value (so the field stays editable and `validateConfig` can report a real error) but guards the array resize behind `Number.isInteger(next) && next >= 1 && next <= MAX_QUESTIONS`. Both the `RangeError` and the ~10^11-push hang are gone; bounds added to `validateConfig` in the same pass (N19).
 
 **Status: STILL VALID, and worse than originally described.**
 **File:** [Setup.tsx:81-89](frontend/src/Setup.tsx#L81-L89) (`handleQuestionCountChange`)
@@ -81,6 +260,8 @@ or reject and leave the previous count in place.
 
 ### 2. Duplicate cross-check misses leading-zero duplicates
 
+**Status: FIXED 2026-08-31.** `saveRecord` normalizes the serial on write, `findRecordsBySerial` queries with the normalized value, and a **DB v3 migration** rewrites records saved before this so the index is not left half-normalized. `types.ts`'s "normalized: leading zeros stripped" comment is now true. Six tests in `db.test.ts`, including the v2→v3 migration; `Review.test.tsx`'s save assertion changed from `'07'` to `'7'` — it had been pinning the bug.
+
 **Status: STILL VALID, unchanged.**
 **Files:** [Review.tsx:130-133](frontend/src/Review.tsx#L130-L133) (`handleConfirm`), [db.ts:82-85](frontend/src/db.ts#L82-L85) (`findRecordsBySerial`)
 
@@ -106,6 +287,8 @@ comment true), or query with the normalized value.
 
 ### 3. ID-OCR fallback never accepts a digit read correctly by the fallback pass
 
+**Status: FIXED 2026-08-31 (dormant pass).** The fallback branch now accepts `fallback_text` when it is already a digit (`in WHITELIST`) as well as when it maps through `DIGIT_LOOKALIKES`, under the same `FALLBACK_CONFIDENCE_FLOOR` — so it widens what is *accepted*, never how confident it must be. New `tests/test_id_ocr.py` stubs `_best_candidate` so the acceptance logic is testable without a Tesseract binary, and covers both the digit case and the original measured look-alike cases (`D`→0, `l`→1). **Fixed before the comparison run, deliberately**: left in place it would have depressed Tesseract's measured baseline in the very measurement meant to validate the CNN default.
+
 **Status: STILL VALID. Impact reduced — `remote` path only.**
 **File:** [id_ocr.py:116-126](backend/app/id_ocr.py#L116-L126) (`read_digit`)
 
@@ -125,6 +308,8 @@ in the very comparison the CNN default is meant to be validated against.
 
 ### 4. Review screen's Total field has no legal-value check
 
+**Status: FIXED 2026-08-31.** A shared `parseMarkField(raw, max)` in `validateMarks.ts` is now the single parse rule for every editable mark-or-total field, used by Review and Results alike. Total is checked against `config.totalMax`, shows an inline error, and blocks Confirm.
+
 **Status: STILL VALID, and now present in a second location.**
 **File:** [Review.tsx:51-69](frontend/src/Review.tsx#L51-L69) (`markErrors`, `total`)
 
@@ -142,6 +327,8 @@ see **N6**.
 each question already gets, in both components.
 
 ### 5. Conflict Overwrite/Save-anyway can target a stale record
+
+**Status: FIXED 2026-08-31.** Editing either identity field clears `pendingConflict` (and the save error) via a small `editIdentity` helper, which re-enables Confirm so the check re-runs against the corrected values. Marks edits deliberately do not clear it — they cannot change which record matched. Regression test saves an earlier record, provokes the warn, corrects the serial, and asserts the earlier record is untouched.
 
 **Status: PARTLY VALID — the shape has shifted, the bug remains.**
 **File:** [Review.tsx:250-287](frontend/src/Review.tsx#L250-L287)
@@ -164,6 +351,8 @@ Confirm must be pressed again for a fresh check.
 
 ### 6. Network-level scan failures are a dead end
 
+**Status: FIXED 2026-08-31.** `'error'` entries now render a **Dismiss** button, which retires the entry and releases its preview blob through the same `dismissEntry` helper Retake uses. Paired with N3's timeout, since a dismiss is useless while the request is still notionally pending.
+
 **Status: STILL VALID, and now session-blocking.**
 **File:** [Scan.tsx:252-278](frontend/src/Scan.tsx#L252-L278)
 
@@ -179,6 +368,8 @@ that never settles at all now disables the capture button permanently.
 one that removes the entry so the instructor can capture again.
 
 ### 7. `POST /api/scan` blocks the event loop
+
+**Status: FIXED 2026-08-31 (pair pass).** Detection, `read_id` and `read_marks` all go through `starlette.concurrency.run_in_threadpool`, as does the harvest endpoint's detection and harvesting. The route stays `async def` because `await image.read()` genuinely is async and the stages need to stay individually timed. Note the frontend counterpart: `Scan.tsx`'s capture spinner now serialises captures anyway, so the immediate win is that harvest and scan no longer block each other, and that a second client is not stuck behind the first.
 
 **Status: STILL VALID, unchanged, and now matters more.**
 **File:** [main.py:195-270](backend/app/main.py#L195-L270) (`async def scan`)
@@ -203,6 +394,8 @@ automatically.
 
 ### 8. Malformed config JSON causes an unhandled 500
 
+**Status: FIXED 2026-08-31 (pair pass).** All four `model_validate_json` calls go through `_parse()`, which raises `HTTPException(400)` naming the offending field. This mattered more once QuizConfig gained real rules — every new bound and both cross-field checks reject through this path, and "your quiz config is wrong" is a client error with a fixable cause. Paired with **N29**, so the message actually reaches the instructor instead of becoming `HTTP 400`.
+
 **Status: STILL VALID, and the surface has grown.**
 **File:** [main.py:202](backend/app/main.py#L202)
 
@@ -217,6 +410,8 @@ There is no test covering a malformed config on either endpoint.
 **Fix direction:** parse inside try/except and raise `HTTPException(400)`.
 
 ### 9. A missing mark crop can desync the composite from the prompt
+
+**Status: FIXED 2026-08-31 (dormant pass).** `build_composite` checks `len(sources) == questions + 2` (serial + one per question + total) and returns `(None, [])` on a mismatch, which `recognize` already maps to `model_error`. Returning rather than asserting is deliberate: the ID-exclusion `assert` above it guards an invariant that must never be false, while a missing crop is a data condition that legitimately can occur, and this project's answer to that is a retakeable failed scan, not a 500.
 
 **Status: STILL VALID, unchanged.**
 **File:** [marks.py:56-109](backend/app/marks.py#L56-L109) (`build_composite`)
@@ -233,6 +428,8 @@ mismatched composite/prompt pair.
 
 ### 10. No backend check that questions are in `q`-order
 
+**Status: FIXED 2026-08-31 (pair pass).** A `model_validator` requires `[q.q ...] == [1..n]`. Fails loudly rather than sorting into place: a caller who sent them out of order has a different idea of the mapping than we do, and quietly picking ours is how Q4's mark lands in the Q3 column.
+
 **Status: STILL VALID, unchanged.**
 **File:** [main.py:241](backend/app/main.py#L241), [main.py:251-254](backend/app/main.py#L251-L254)
 
@@ -247,6 +444,8 @@ public endpoint.
 in the `QuizConfig` model, and fail loudly if not.
 
 ### 11. Preview blob URLs leak for the whole session
+
+**Status: FIXED 2026-08-31.** The unmount cleanup reads `previews` through a ref rather than a mount-time closure, so it actually revokes; `releasePreview(id)` additionally frees a single entry the moment it is retaken or dismissed. Deliberately **not** called on save: `Review.commitSave` re-fetches that same blob URL to harvest *after* `onSaved` returns, so revoking there would silently break training-data collection.
 
 **Status: STILL VALID, unchanged.**
 **File:** [Scan.tsx:67-72](frontend/src/Scan.tsx#L67-L72)
@@ -282,11 +481,15 @@ So the cost is four wasted detection passes per capture, not a wrong read.
 
 ### 13. `genai.Client()` re-created every request
 
+**Status: FIXED 2026-08-31 (dormant pass).** A lazily-built module-level singleton (`_get_client`). Lazy rather than at import because `marks.py` is imported on the CNN path too, where there is no API key and constructing one would fail. Construction also moved inside the `try`, so a missing or rejected key is now a `model_error` the instructor can act on rather than a 500.
+
 **Status: STILL VALID, unchanged.** [marks.py:208](backend/app/marks.py#L208)
 
 `remote` path only, so no longer on the default hot path.
 
 ### 14. `QuizConfig.totalMax` accepted but never checked
+
+**Status: FIXED 2026-08-31 (pair pass).** A `model_validator` requires `totalMax == sum(q.max)`. This was the sharper half of a pair: the **review screen validates its Total field against `config.totalMax`** while the backend recomputes `sum(question_maxes)` — two numbers that must agree, with nothing checking they did, and the #4/N6 fix having just deepened the client's reliance on the first. If a "best 4 of 5" scheme ever arrives, this validator is the assumption to revisit deliberately.
 
 **Status: STILL VALID, unchanged.** [models.py:35](backend/app/models.py#L35)
 
@@ -295,6 +498,8 @@ So the cost is four wasted detection passes per capture, not a wrong read.
 A `totalMax` disagreeing with the real sum goes unnoticed.
 
 ### 15. Failed-rotation debug artifacts reflect the wrong orientation
+
+**Status: FIXED 2026-08-31 (cnn-path pass).** Each retry now writes into `out_dir/_attempt`, promoted into `out_dir` only when it wins, so a total failure leaves the 0° artifacts that match the returned reason. The second-order bug went with it: a winning attempt's `result["image"]` pointed at a temp file that had already been unlinked, and now names the real source. Two regression tests — one asserting the on-disk `result.json` agrees with the returned dict after a total failure, one asserting a promoted attempt puts its cells exactly where `main.py` looks.
 
 **Status: STILL VALID, unchanged.** [detection.py:568-577](backend/app/detection.py#L568-L577)
 
@@ -334,6 +539,8 @@ passes clean. See CLAUDE.md's "Frontend design system".
 ## HIGH
 
 ### N1. Path traversal in `/api/harvest`: a crafted `serial` writes files outside the harvest root
+
+**Status: FIXED 2026-08-31 (pair pass).** Two layers. `harvest.py` gained `_sanitize_value`, applied inside `add()` — the one place every field funnels through, so no field added later can forget it, which is exactly how `value` was missed when `source` was guarded. And `LocalStore.put` now asserts `dest.resolve()` is under the root, because *no crop is written outside the root* is the property that matters and it should not depend on every caller escaping correctly. The original exploit was re-run and no longer escapes. The value rule is a **shape**, not an alphabet: a first attempt at `^[0-9.?]{1,8}$` let `".."` through (`.` has to be legal for a half mark) — inert, since `_key` renders it as a filename, but a nonsense label in the corpus. Caught by a parametrised test, not by inspection.
 
 **Files:** [harvest.py:63-86](backend/app/harvest.py#L63-L86) (`_key`), [harvest.py:166-168](backend/app/harvest.py#L166-L168), [stores.py:58-66](backend/app/stores.py#L58-L66) (`LocalStore.put`)
 
@@ -383,6 +590,8 @@ that is the invariant that actually matters and it should not depend on
 every caller getting its own escaping right.
 
 ### N2. Unbounded `max` in `QuizConfig` → memory exhaustion on the public endpoint
+
+**Status: FIXED 2026-08-31 (pair pass).** `QuestionConfig.max` is `Field(gt=0, le=100)`, `idDigits` `ge=1, le=15`, `questions` `min_length=1, max_length=30`, `quizName` `max_length=200`. **The numbers are pinned across languages**: `tests/test_models.py` reads `frontend/src/validateConfig.ts`, parses its `export const` values and asserts they equal the Python ones — verified to fail when only one side is changed. That is the actual fix for the drift risk N19 created by adding a second copy.
 
 **Files:** [models.py:26-36](backend/app/models.py#L26-L36), [marks.py:46-49](backend/app/marks.py#L46-L49) (`legal_values`)
 
@@ -481,6 +690,8 @@ exists rather than after.
 
 ### N3. A single hung upload disables the capture button for the rest of the session
 
+**Status: FIXED 2026-08-31.** Both `/api/scan` and `/api/harvest` go through `postWithTimeout`, a 60 s `AbortController` (not `AbortSignal.timeout`, which jsdom and older browsers lack). A hung request now becomes an `'error'` entry with a readable message, which drops `inFlightCount` to 0 and re-enables capture. Pinned by a `scanQueue.test.ts` case.
+
 **Files:** [Scan.tsx:170](frontend/src/Scan.tsx#L170), [Scan.tsx:229-234](frontend/src/Scan.tsx#L229-L234), [scanQueue.ts:33-35](frontend/src/scanQueue.ts#L33-L35), [api.ts:51-54](frontend/src/api.ts#L51-L54)
 
 The 2026-08-30 capture-button change made `disabled={!!cameraError || capturing}`
@@ -507,6 +718,14 @@ has no dismiss action).
 `'error'` entries a dismiss action (finding 6) so the queue can drain.
 
 ### N4. The ID path has no blank-cell guard; the marks path does
+
+**Status: FIXED 2026-08-31 (hot-path pass).** `cnn/preprocess.py` gained `has_ink()`, called by `CNNRecognizer.read_id` before any classification; a blank cell now yields `?` plus a flag, exactly like a missing crop.
+
+**The bug was demonstrated, not just reasoned about.** Running the real blank grid (`empty_file.jpeg`) through `read_id` with the gate bypassed returns `??????4` — a fabricated `4` from pure paper noise, clearing *both* the 0.75 confidence floor and the 0.6 margin floor. With the gate: `???????`.
+
+Calibrated over every ID cell in `testset/labels.json` that detection reads — FILLED n=168 (min 0.00163), BLANK n=7 (max 0.00041) — and the floor put at 0.0015, misclassifying nothing either way. Two design points worth keeping: it measures the **largest connected component**, not total ink, because a total-ink measure separated the real data perfectly and *still* let a speck through (a test caught that, not inspection); and `MIN_GLYPH_AREA_FRAC` is deliberately its own constant despite equalling `segment.py`'s `NOISE_AREA_FRAC`, so tuning segmentation cannot silently move the ID's blank gate — the same reasoning `detection.py` already records for `LABEL_COLUMN_NOISE_AREA_FRAC`.
+
+**`cnn/accuracy.py` was updated to run the same gate**, since a harness that evaluates a different code path than production is how a measurement stops meaning what its number says. All numbers unchanged: 91.8% per-digit, 55.2% whole-ID, 1 confidently wrong.
 
 **Files:** [local.py:65-91](backend/app/recognizers/local.py#L65-L91) (`read_id`), [preprocess.py](backend/cnn/preprocess.py) (`_to_canvas`), versus [segment.py:151-152](backend/cnn/segment.py#L151-L152)
 
@@ -538,6 +757,8 @@ classify emptiness.
 
 ### N5. A student ID containing `?` saves as a confirmed record and exports to Excel
 
+**Status: FIXED 2026-08-31.** `isCompleteId(studentId, idDigits)` in `validateMarks.ts`; Review blocks Confirm on a partial ID with a message naming the required length, while still allowing a **cleared** ID (an absent ID is a legitimate unverified save — plan.md §10 — a partial one is not). `unverifiedReason` takes an optional `idDigits` and reports `'ID incomplete'`, so older records already carrying a `?` are surfaced in the Results count rather than passing as verified.
+
 **Files:** [Review.tsx:39](frontend/src/Review.tsx#L39), [Review.tsx:119-149](frontend/src/Review.tsx#L119-L149), [Results.tsx:63-75](frontend/src/Results.tsx#L63-L75)
 
 Both recognizers return `?` for an unreadable ID position, by design and by
@@ -561,6 +782,8 @@ in `unverifiedReason` if it does get saved.
 
 ### N6. The Results screen's inline Total edit has no legal-value check
 
+**Status: FIXED 2026-08-31.** Same `parseMarkField` helper as #4 — one rule, two screens, which is what stopped them drifting apart again. `commit()` refuses and explains rather than persisting `NaN`.
+
 **File:** [Results.tsx:201](frontend/src/Results.tsx#L201), [Results.tsx:218-234](frontend/src/Results.tsx#L218-L234) (`commit`)
 
 Same class as finding 4, second location. `commit()` checks `hasMarkErrors`
@@ -574,6 +797,8 @@ after it to catch it.
 cells, sharing one helper with `Review.tsx`.
 
 ### N7. The Excel download can be aborted on the target device
+
+**Status: FIXED 2026-08-31.** The anchor is appended to the document before `click()` and removed with the object URL revoked on a 30 s timer instead of synchronously. Filename is sanitized through `exportFilename()`, so a quiz named `CSE211L/Q1` no longer produces a path-bearing download name. **Still needs verification on a real iOS device** — jsdom cannot test this, which is exactly why it was missed.
 
 **File:** [Results.tsx:77-87](frontend/src/Results.tsx#L77-L87) (`handleExport`)
 
@@ -611,6 +836,8 @@ is not testable in jsdom.
 
 ### N8. Harvested crops have no retention policy, while the logs do
 
+**Status: FIXED 2026-08-31 (pair pass).** `deploy.sh` applies an S3 lifecycle rule expiring the crops bucket at `CROPS_RETENTION_DAYS` (default 365), re-applied every run rather than only at creation. **And the frontend half**, which is what makes it honest: `Setup.tsx`'s disclosure now states the period in both the collapsible section and the always-visible line, with a comment tying it to `CROPS_RETENTION_DAYS` so the two move together — the same failure mode 11.5 already caught once.
+
 **File:** [deploy.sh:66-74](deploy.sh#L66-L74), [deploy.sh:141-150](deploy.sh#L141-L150)
 
 `deploy.sh` sets a 30-day retention on the CloudWatch log group with an
@@ -632,6 +859,8 @@ how long the crops are actually useful for fine-tuning, and state that
 duration in `Setup.tsx`'s disclosure so the claim there stays complete.
 
 ### N9. `RECOGNIZER=both` writes full student IDs to disk, in scan order
+
+**Status: FIXED 2026-08-31 (dormant pass).** The ID is logged as a **difference, not a value**: `differing_positions`, `differing_count` and the two lengths. That keeps everything a comparison run actually needs — whether they disagreed, where, how often, whether it clusters — without the digits. Serial and marks still log their values in full, deliberately: they identify nobody without the instructor's attendance sheet and have already gone to Gemini on this path, which is the line plan.md §12 draws. The write is also wrapped in `try/except OSError`, since `COMPARISON_LOG_DIR` is repo-relative and would otherwise fail every scan on a read-only filesystem. The old test was named `test_disagreeing_id_logs_both_values` — it pinned the defect — and is replaced by one asserting neither ID appears anywhere in the raw log line.
 
 **File:** [both.py:40-52](backend/app/recognizers/both.py#L40-L52) (`_log_disagreement`), [both.py:70-75](backend/app/recognizers/both.py#L70-L75)
 
@@ -766,6 +995,8 @@ Gateway scope to the README's wide-grants section with the reason.
 
 ### N13. `./deploy.sh all` can never set `ALLOWED_ORIGINS`
 
+**Status: FIXED 2026-08-31 (pair pass).** `all` now runs backend → cdn → **`apply_allowed_origins`** → frontend, setting the var once the CloudFront domain exists. The env list itself moved into a single `lambda_env()` function, because `update-function-configuration` **replaces** the environment rather than merging — two hand-kept copies of that list would have meant the second call silently dropping whatever the first knew about. That is a drift this fix would otherwise have introduced.
+
 **File:** [deploy.sh:96-99](deploy.sh#L96-L99), [deploy.sh:410-415](deploy.sh#L410-L415)
 
 `ALLOWED_ORIGINS` is appended to the Lambda's environment only
@@ -785,6 +1016,8 @@ splits the origins.
 `update-function-configuration`, or reorder `all` to cdn → backend → frontend.
 
 ### N14. `/api/harvest` is only best-effort on the client side
+
+**Status: FIXED 2026-08-31 (pair pass).** The harvest body is wrapped in try/except returning `{"harvested": False}` and logging a `harvest_failed` event with the exception **type and truncated message only** — never its repr, which can carry a key path and therefore a confirmed value. A detection failure now logs its reason too. "Best-effort" holds on both sides of the wire; a misconfigured bucket is visible in CloudWatch instead of invisible everywhere.
 
 **File:** [main.py:273-336](backend/app/main.py#L273-L336)
 
@@ -820,6 +1053,8 @@ existing convention.
 
 ### N16. The production recognizer imports a dev accuracy harness for two constants
 
+**Status: FIXED 2026-08-31 (cnn-path pass).** New `cnn/thresholds.py` holds the calibrated floors and imports nothing; `accuracy.py` and `local.py` both read from it. The serial floors moved out of `local.py` at the same time, so every calibrated decode floor now lives in one place with its own calibration record. Pinned by a test that blocks `cnn.accuracy` from the import path and asserts `local.py` still imports — verified it also no longer drags in `app.detection`.
+
 **File:** [local.py:23-24](backend/app/recognizers/local.py#L23-L24)
 
 ```python
@@ -843,6 +1078,8 @@ calibration comment, which is the valuable part) into a small
 `cnn/thresholds.py` that both `accuracy.py` and `local.py` import.
 
 ### N17. Re-harvesting a crop under a different label leaves both labels in the corpus
+
+**Status: FIXED 2026-08-31 (cnn-path pass).** Detected by `fetch-crops.sh`, which now reports any `(field, digest)` carrying more than one label and names them. **Deliberately not fixed at write time**: `Store` is one method by design (no listing or deleting — widening it would be a real design change for a latent issue), and the label has to stay in the filename, which is what keeps the corpus self-labelling with no annotation file to drift. Detection belongs where crops are assembled for training, alongside the balance warnings already there. Checked against the real corpus first — 229 crops, 229 distinct `(field, digest)`, **zero conflicts today** — so this is a guard before fine-tuning, not a cleanup.
 
 **File:** [harvest.py:63-86](backend/app/harvest.py#L63-L86) (`_key`)
 
@@ -870,6 +1107,8 @@ digests appearing under more than one label.
 
 ### N18. `build_composite` crashes on an unreadable crop file
 
+**Status: FIXED 2026-08-31 (hot-path pass).** New `app/cells.py` with one `read_cell()`, used at all five sites across `local.py` (×3), `marks_ocr.py` and `marks.py`. `path.exists()` was never the right check — these files are written moments earlier by the same request, so "missing" was already handled and "present but truncated, empty, or not a PNG" was not. `build_composite` now returns `(None, [])` on an undecodable crop, which `recognize` already maps to `model_error`.
+
 **File:** [marks.py:87-95](backend/app/marks.py#L87-L95)
 
 ```python
@@ -881,12 +1120,28 @@ h, w = img.shape[:2]
 `cv2.imread` returns `None` for a file that exists but is truncated or
 unreadable — which is possible here, since these are files another part of
 the pipeline just wrote. `None.shape` is an `AttributeError`, uncaught, so
-it becomes a 500 rather than a clean `model_error`. Remote path only. Same
-pattern, unchecked, in [marks_ocr.py:37-38](backend/app/marks_ocr.py#L37-L38)
-and [local.py:139](backend/app/recognizers/local.py#L139) — the CNN path
-does check `path.exists()` first but not the read result.
+it becomes a 500 rather than a clean `model_error`.
+
+**Correction (2026-08-31): this is not remote-path-only, as first recorded.**
+Re-checked while sorting the open findings by recognizer path, the same
+unchecked pattern appears **three times on the default `cnn` path**:
+
+- [local.py:79](backend/app/recognizers/local.py#L79) — `read_id`'s per-digit crop
+- [local.py:139](backend/app/recognizers/local.py#L139) — `_decode_serial_cell`
+- [local.py:150](backend/app/recognizers/local.py#L150) — `_decode_value_cell`
+
+All three check `path.exists()` first and none checks the read result, so a
+truncated crop reaches `preprocess_for_cnn`/`segment_cell` as `None` and
+raises on `.shape`. Also unchecked in
+[marks_ocr.py:37-38](backend/app/marks_ocr.py#L37-L38) (`remote`).
+
+**Fix direction:** one guarded helper — read, return `None` on a failed
+read, and let each caller treat that the same way it already treats a
+missing file (`?` plus a flag, never a guess).
 
 ### N19. `validateConfig` has no upper bounds
+
+**Status: FIXED 2026-08-31.** `MAX_ID_DIGITS = 15`, `MAX_QUESTIONS = 30`, `MAX_MARK_PER_QUESTION = 100`, each with its own message, plus `Number.isFinite` on the maxes. **This does not fix N2** — it is the client half only, and the Pydantic model still accepts anything from a request that never came from this form.
 
 **File:** [validateConfig.ts:25-41](frontend/src/validateConfig.ts#L25-L41)
 
@@ -917,6 +1172,8 @@ used to say and why that was wrong rather than being silently overwritten.
   was" — `debug_uploads/` was removed as a defect, not retired as a success.
 
 ### N21. `validate_payload` never validates the serial it accepts
+
+**Status: FIXED 2026-08-31 (pair pass).** Both halves, deliberately together. `marks.validate_serial` blanks-and-flags anything that is not 1–4 digits (leading zeros preserved — `"07"` is what is on the paper), and `validateMarks.isValidSerial` applies the identical rule to the instructor's typing, blocking Confirm. This was the one identity field nothing checked on either side.
 
 **File:** [marks.py:153-161](backend/app/marks.py#L153-L161)
 
@@ -977,6 +1234,8 @@ is a one-line fix and the script otherwise handles its inputs carefully.
 
 ### N24. `decode_value` checks that a decimal point exists, not where it is
 
+**Status: FIXED 2026-08-31 (cnn-path pass).** `_digits_of` returns the decimal's glyph index instead of a bool, and `decode_value` compares it to `has_decimal_at`. Verified against a real `segment_cell` run that `[digit, decimal, digit]` yields index 1 and `_digits_of(4.5)` expects 1 — they agree. **This exposed a wrong existing test**: `test_decoder_returns_the_legal_value_its_glyphs_encode` passed `has_decimal_at=0` for `4.5`, an input the real pipeline never produces, which only passed because the index was discarded. Corrected to 1 with the reasoning recorded. Marks accuracy unchanged at 98.1%.
+
 **File:** [decode.py:68-101](backend/cnn/decode.py#L68-L101)
 
 ```python
@@ -997,6 +1256,8 @@ position, so the check means what its variable name says.
 
 ### N25. `ResultsRow` writes to IndexedDB on every blur, changed or not
 
+**Status: FIXED 2026-08-31.** `commit()` compares field by field via `isUnchanged()` and returns early. Field-by-field rather than `JSON.stringify`, since `questions` is rebuilt fresh each render and key order is not guaranteed.
+
 **File:** [Results.tsx:218-234](frontend/src/Results.tsx#L218-L234), [Results.tsx:239-261](frontend/src/Results.tsx#L239-L261)
 
 `onBlur={commit}` is on all six-plus inputs per row, and `commit()`
@@ -1010,6 +1271,50 @@ Harmless at 30 records. Worth noting only because it also means a record's
 
 **Fix direction:** compare against the current record and return early if
 nothing changed.
+
+### N29. The backend's 413 and 429 responses never reach the instructor
+
+**Status: FIXED 2026-08-31 (pair pass).** `api.ts`'s `describeFailure` reads `detail` from the body and, for 429, appends the `Retry-After` seconds — so the queue row says "Too many requests. Please slow down. Try again in 9s." instead of "HTTP 429". Falls back to the status when the body is not JSON.
+
+**Files:** [api.ts:86-88](frontend/src/api.ts#L86-L88), [main.py:108-126](backend/app/main.py#L108-L126), [main.py:163-168](backend/app/main.py#L163-L168)
+
+Step 11.4 built a careful error contract on the backend. Both endpoints can
+answer:
+
+- **413** `{"detail": "Image too large."}` — from the Content-Length guard
+  and again from the post-read check
+- **429** `{"detail": "Too many requests. Please slow down."}` **plus a
+  `Retry-After` header**, computed to the second by the sliding-window
+  limiter
+
+The frontend collapses all of it:
+
+```ts
+if (!response.ok) {
+  throw new Error(`Scan request failed: HTTP ${response.status}`);
+}
+```
+
+Nothing in `frontend/src/` reads `detail` or `Retry-After` — verified by
+grep. So the instructor's queue row says **"Failed: Scan request failed:
+HTTP 413"**, and they have no way to know the photo was too big rather than
+unreadable, or that waiting nine seconds would fix it.
+
+This is the backend half of a user-facing behaviour shipped without its
+frontend half. It is worth calling out separately from the audit's other
+findings because nothing is *broken* — every component does what it was
+built to do — and that is exactly why it would never surface as a bug
+report. It only shows up when someone asks what the other side of the
+contract does with these responses.
+
+Sharper once hosted: the rate limit exists precisely because the URL is
+public, so 429 is the response most likely to be seen by someone who is not
+the author, and it is the one whose remedy (wait, then retry) is most
+actionable if only it were stated.
+
+**Fix direction:** parse `detail` out of the JSON body when present and use
+it as the error message; special-case 429 to include the `Retry-After`
+seconds. Frontend-only — the backend contract is already right.
 
 ### N27. Ignore-file hygiene: small gaps (the rest is clean)
 

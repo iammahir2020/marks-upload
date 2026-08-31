@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react';
 import { getAllRecords, loadConfig, resetAll, saveConfig } from './db';
 import type { QuizConfig } from './types';
-import { validateConfig } from './validateConfig';
+import { MAX_QUESTIONS, validateConfig } from './validateConfig';
 
 interface SetupProps {
   onStart: (config: QuizConfig) => void;
@@ -79,11 +79,26 @@ export default function Setup({ onStart, onViewResults }: SetupProps) {
   }
 
   function handleQuestionCountChange(next: number) {
+    // The typed value is always kept, so the field stays editable and
+    // validateConfig gets to report a real error on submit. What is guarded
+    // is the ARRAY resize below, which is the part that could not survive a
+    // bad number (issues.md #1):
+    //
+    //   - `copy.length = 5.5` throws RangeError: Invalid array length, per
+    //     spec. So does NaN. That crashed the whole Setup screen — the first
+    //     screen of the app — before validateConfig ever ran.
+    //   - `while (copy.length < next) copy.push(5)` with next = 99999999999,
+    //     which <input type="number"> accepts happily, pushes ~10^11 entries
+    //     and hangs the tab before the length assignment is even reached.
+    //
+    // Anything outside the bounds leaves questionMaxes exactly as it was;
+    // submitting then fails validation with a message instead of a crash.
     setQuestionCount(next);
+    if (!Number.isInteger(next) || next < 1 || next > MAX_QUESTIONS) return;
     setQuestionMaxes((prev) => {
       const copy = [...prev];
       while (copy.length < next) copy.push(5);
-      copy.length = Math.max(next, 0);
+      copy.length = next;
       return copy;
     });
   }
@@ -317,6 +332,7 @@ export default function Setup({ onStart, onViewResults }: SetupProps) {
             value you confirmed. These are used to train and tune the handwriting
             recognition so it reads better over time. They carry no name, nothing that links
             them back to a student, and no way to reassemble a whole student ID from them.
+            They’re deleted automatically after a year.
           </p>
         </div>
       </details>
@@ -328,9 +344,19 @@ export default function Setup({ onStart, onViewResults }: SetupProps) {
         person whose students' handwriting is actually being collected.
         One line, always visible, plain wording.
       */}
+      {/*
+        The retention period is stated here as well as in the disclosure
+        above, and it is not decoration: deploy.sh sets a matching S3
+        lifecycle rule (issues.md N8), and the two are one fact written
+        twice. Change CROPS_RETENTION_DAYS and this line changes with it, or
+        the app is telling the instructor something that is no longer true —
+        the same way "everything stays on this device" was true-sounding and
+        wrong from step 5 until 11.5 caught it.
+      */}
       <p className="text-sm muted data-note">
         Scripts are never stored. Individual cells — one digit or mark each — are kept with
-        the values you confirm, and used to train and tune handwriting recognition.
+        the values you confirm for up to a year, and used to train and tune handwriting
+        recognition.
       </p>
     </div>
   );

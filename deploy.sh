@@ -42,6 +42,20 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 have() { "$@" >/dev/null 2>&1; }
 
+# The function's environment, in ONE place. Built by a function rather than
+# written out at each call site because it is set twice — once when the
+# function is created or updated, and again by apply_allowed_origins() once
+# the CloudFront domain exists — and `update-function-configuration`
+# REPLACES the whole environment rather than merging into it. Two hand-kept
+# copies of this list would mean the second call silently dropping whatever
+# the first one had that it didn't know about.
+#   $1 — the site origin, or empty to leave ALLOWED_ORIGINS unset
+lambda_env() {
+  local vars="RECOGNIZER=cnn,HARVEST_BACKEND=s3,HARVEST_BUCKET=$CROPS_BUCKET,HARVEST_PREFIX=harvested"
+  [ -n "${1:-}" ] && vars="$vars,ALLOWED_ORIGINS=$1"
+  echo "$vars"
+}
+
 # --- Backend ---------------------------------------------------------------
 
 deploy_backend() {
@@ -73,6 +87,25 @@ deploy_backend() {
       "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
   }
 
+  # Retention, applied every run rather than only at creation (issues.md N8).
+  # The log group already got 30 days with an explicit "a log that never
+  # expires is a slow privacy leak" rationale — and the bucket holding the
+  # actual student handwriting had none at all, which is the wrong way round.
+  #
+  # A year is long enough to fine-tune across more than one semester's
+  # collection and short enough that the corpus does not accumulate
+  # indefinitely. If this changes, Setup.tsx's disclosure states the same
+  # period to the instructor and must change with it.
+  aws s3api put-bucket-lifecycle-configuration --bucket "$CROPS_BUCKET" \
+    --lifecycle-configuration "{
+      \"Rules\": [{
+        \"ID\": \"expire-harvested-crops\",
+        \"Status\": \"Enabled\",
+        \"Filter\": {\"Prefix\": \"\"},
+        \"Expiration\": {\"Days\": ${CROPS_RETENTION_DAYS:-365}}
+      }]}" >/dev/null 2>&1 \
+    || echo "    could not set crops retention (needs s3:PutLifecycleConfiguration)"
+
   say "Execution role"
   if ! have aws iam get-role --role-name "$ROLE_NAME"; then
     aws iam create-role --role-name "$ROLE_NAME" --assume-role-policy-document '{
@@ -95,8 +128,9 @@ deploy_backend() {
 
   # ALLOWED_ORIGINS is set only once the site URL is known, so a first
   # backend-only deploy leaves it unset and the app keeps its LAN regex.
-  local env_vars="RECOGNIZER=cnn,HARVEST_BACKEND=s3,HARVEST_BUCKET=$CROPS_BUCKET,HARVEST_PREFIX=harvested"
-  if [ -n "${SITE_URL:-}" ]; then env_vars="$env_vars,ALLOWED_ORIGINS=$SITE_URL"; fi
+  # apply_allowed_origins() fills it in after the distribution exists.
+  local env_vars
+  env_vars="$(lambda_env "${SITE_URL:-}")"
 
   say "Lambda function"
   if have aws lambda get-function --function-name "$FUNCTION" --region "$REGION"; then
@@ -423,10 +457,37 @@ JSON
   echo "DISTRIBUTION_ID=$DISTRIBUTION_ID"
 }
 
+# Applies ALLOWED_ORIGINS once the CloudFront domain is known (issues.md
+# N13). deploy_backend has to run first — the distribution needs an origin
+# to point at — so on a first `all` run the function is created before its
+# own public URL exists, and the env var it was given is therefore the
+# unset default. Nothing ever went back to fix that, so the deployed
+# function kept the localhost/LAN regex step 11.1.1 built ALLOWED_ORIGINS
+# specifically to replace.
+#
+# Harmless today only because the frontend is same-origin behind CloudFront,
+# so no CORS check ever runs — which means the seam was untested in
+# production and would have surprised whoever first split the origins.
+apply_allowed_origins() {
+  local domain
+  domain="$(aws cloudfront get-distribution --id "${DISTRIBUTION_ID:-}" \
+    --query 'Distribution.DomainName' --output text 2>/dev/null || true)"
+  if [ -z "$domain" ] || [ "$domain" = "None" ]; then
+    echo "    no distribution domain yet — ALLOWED_ORIGINS left unset"
+    return 0
+  fi
+
+  say "ALLOWED_ORIGINS=https://$domain"
+  aws lambda wait function-updated-v2 --function-name "$FUNCTION" --region "$REGION"
+  aws lambda update-function-configuration --function-name "$FUNCTION" --region "$REGION" \
+    --environment "Variables={$(lambda_env "https://$domain")}" >/dev/null
+  aws lambda wait function-updated-v2 --function-name "$FUNCTION" --region "$REGION"
+}
+
 case "${1:-all}" in
   backend)  deploy_backend ;;
   cdn)      deploy_cdn ;;
   frontend) deploy_frontend ;;
-  all)      deploy_backend; deploy_cdn; deploy_frontend ;;
+  all)      deploy_backend; deploy_cdn; apply_allowed_origins; deploy_frontend ;;
   *) echo "usage: $0 [backend|cdn|frontend|all]" >&2; exit 2 ;;
 esac

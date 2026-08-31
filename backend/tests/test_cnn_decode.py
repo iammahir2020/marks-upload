@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.marks import legal_values  # noqa: E402
-from cnn.decode import decide_digit, decode_serial, decode_value  # noqa: E402
+from cnn.decode import _digits_of, decide_digit, decode_serial, decode_value  # noqa: E402
 
 
 def one_hot(digit: int, confidence: float = 0.98) -> np.ndarray:
@@ -19,9 +19,16 @@ def one_hot(digit: int, confidence: float = 0.98) -> np.ndarray:
 
 def test_decoder_returns_the_legal_value_its_glyphs_encode():
     """A clean '4' then '5' with a decimal point present must decode to
-    the legal value 4.5, not the illegal 45."""
+    the legal value 4.5, not the illegal 45.
+
+    `has_decimal_at=1`, not 0: the index is the point's position in the
+    left-to-right GLYPH sequence, so for [4][.][5] it is 1. This argument
+    said 0 until 2026-08-31 — an input the real pipeline never produces,
+    which passed only because the decoder compared decimal *presence* and
+    threw the index away (issues.md N24). Verified against a real
+    segment_cell run: [digit, decimal, digit] -> decimal_index 1."""
     glyph_probs = [one_hot(4), one_hot(5)]
-    value, score = decode_value(glyph_probs, has_decimal_at=0, legal_values=legal_values(5.0))
+    value, score = decode_value(glyph_probs, has_decimal_at=1, legal_values=legal_values(5.0))
     assert value == 4.5
     assert score > 0.9
 
@@ -89,3 +96,43 @@ def test_decode_serial_flags_the_whole_field_if_any_glyph_is_uncertain():
 def test_decode_serial_of_no_glyphs_is_none_not_empty_string():
     serial, confidence = decode_serial([], confidence_floor=0.5, margin_floor=0.3)
     assert serial is None
+
+
+# --- issues.md N24: the decimal's POSITION, not just its presence ---------
+
+
+def test_digits_of_reports_where_the_point_sits():
+    assert _digits_of(4.0) == ([4], None)
+    assert _digits_of(4.5) == ([4, 5], 1)
+    assert _digits_of(12.5) == ([1, 2, 5], 2)
+    assert _digits_of(0.5) == ([0, 5], 1)
+
+
+def test_a_misplaced_decimal_no_longer_matches():
+    """The failure the old presence-only check could not see.
+
+    Three glyphs reading 1,2,5 with the point after the FIRST digit is
+    "1.25" — not a legal mark. "12.5" is, and its point sits after the
+    second. Presence-only accepted either, because both "have a decimal".
+    """
+    probs = [one_hot(1), one_hot(2), one_hot(5)]
+    legal = {12.5}
+
+    assert decode_value(probs, 2, legal, floor=0.1)[0] == 12.5   # 12.5 — correct
+    assert decode_value(probs, 1, legal, floor=0.1)[0] is None   # 1.25 — refused
+
+
+def test_two_legal_values_differing_only_in_point_position_are_told_apart():
+    # The case that makes this more than tidiness: same digits, same
+    # length, same "has a decimal" — only the position separates them.
+    probs = [one_hot(1), one_hot(2), one_hot(5)]
+    legal = {1.25, 12.5}
+
+    assert decode_value(probs, 1, legal, floor=0.1)[0] == 1.25
+    assert decode_value(probs, 2, legal, floor=0.1)[0] == 12.5
+
+
+def test_whole_numbers_still_require_no_point_at_all():
+    probs = [one_hot(4)]
+    assert decode_value(probs, None, {4.0, 4.5}, floor=0.1)[0] == 4.0
+    assert decode_value(probs, 0, {4.0}, floor=0.1)[0] is None
