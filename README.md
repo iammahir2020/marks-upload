@@ -64,7 +64,10 @@ grid on each script. Each photo is posted to the backend, which:
    review screen, which is then saved to IndexedDB.
 
 At the end of the session the Results screen exports every saved record
-as a single Excel file.
+as a single Excel file — or, optionally (step 12), writes them as a new
+sheet into the instructor's own class-list workbook instead, matched
+against by student ID. See "Deliberately not built" below for what that
+adds and what's still ahead of it.
 
 Two behaviours run through the whole pipeline:
 
@@ -131,11 +134,11 @@ assuming any component is finished: this project holds a strict
 up and passing tests are still honestly marked *in progress* because
 their real-world verification bar hasn't been cleared.
 
-In broad strokes, as of 2026-08-30:
+In broad strokes, as of 2026-09-07:
 
 - **Working end to end.** Setup → camera capture → upload queue → review
   → save → results → Excel export all run, against both recognizer paths.
-  Backend: **148 pytest tests passing**. Frontend: **79 vitest tests
+  Backend: **246 pytest tests passing**. Frontend: **238 vitest tests
   passing**. Passing suites are not the same as a defect-free app — see
   the known-issues bullet below.
 - **Verified against real photos.** 30 test images including an 18-photo
@@ -153,6 +156,24 @@ In broad strokes, as of 2026-08-30:
   it uncovered are fixed, and the whole thing is still verifiable offline
   through `./local-stack.sh`. What remains is 11.7: using it as a user, on
   a phone, on mobile data.
+- **An optional class-list workbook round trip (step 12) is DONE, all four
+  phases** — the instructor's own semester marksheet, uploaded once,
+  matched against by student ID, written back into as a new sheet per
+  quiz, with the class list and every prior sheet left untouched. Reverses
+  a decision this project made deliberately for the pilot ("no file
+  uploads"), on the grounds that the roster already exists as a file the
+  instructor keeps all semester. Reading the roster in, writing the sheet
+  back out, roster-aware scanning ("Scanned 7 of 16," a matched name or a
+  tap-to-accept single-candidate suggestion next to a misread ID, never
+  applied automatically), and reconciliation (a pre-export coverage
+  summary, an outright block on two scripts matching one student, an
+  opt-in totals column, and a roster that survives a mid-session refresh)
+  are all built and verified against a real 16-student marksheet — one
+  real bug (a totals column that would have silently landed next to the
+  wrong name the moment a roster had a gap) was caught and fixed before
+  shipping, not left latent. See [plan.md §17](plan.md) and step.md's step
+  12. What's left is real-phone verification of the file picker and
+  download, which needs the user's own participation.
 - **Not finished.** Step 10 (full rehearsal) hasn't started. The test set
   is still short of its own target for awkward conditions. The CNN track's
   remaining work — fine-tuning on harvested handwriting, and a real
@@ -166,8 +187,9 @@ In broad strokes, as of 2026-08-30:
   finding that touches the default `cnn` path. **8 remain open** — four Low deploy/infra items, plus four
   from the first live grading session (two High), which are the ones to
   work on next. Backend and frontend suites went 148/79 →
-  **246/119**, and both passed before the audits too, which is why a full
-  read-through found 44 things they did not.
+  **246/119** across the audits, and both passed before the audits too,
+  which is why a full read-through found 44 things they did not. Frontend
+  has since grown to **238** with step 12's roster round trip (all four phases, plus five fixes from live phone testing).
 - **No whole script is stored anywhere.** A scan is processed in a
   per-request temp directory and discarded. The one exception used to be
   `backend/debug_uploads/`, a temporary step-6 phone-debugging capture that
@@ -219,7 +241,7 @@ marks-upload/
 │   │   ├── accuracy.py · marks_accuracy.py          # accuracy harnesses against testset/
 │   │   ├── inspect_preprocess.py                    # visual check of preprocessing output
 │   │   └── checkpoints/digit_cnn.onnx               # the trained model actually used at runtime
-│   ├── tests/               # 148 pytest tests; Gemini always mocked from fixtures/, never live
+│   ├── tests/               # 246 pytest tests; Gemini always mocked from fixtures/, never live
 │   ├── detect.py            # CLI harness: run detection on one image, write debug overlays
 │   ├── batch_detect.py      # Same, across the whole testset in one run
 │   ├── id_ocr_accuracy.py   # Tesseract ID-accuracy harness
@@ -242,8 +264,16 @@ marks-upload/
 │       ├── db.ts            # IndexedDB session store (idb) + resetAll()
 │       ├── scanQueue.ts     # Upload-queue reducer + nextToReview()
 │       ├── validateConfig.ts · validateMarks.ts · results.ts   # Pure, unit-tested logic
+│       ├── roster.ts        # Step 12 — class-list parsing: header matching, the
+│       │                    # exclude-then-prefer-then-confirm class-list identification
+│       │                    # rule, ID normalization for comparison (IDs written back verbatim)
+│       ├── examSheet.ts     # Step 12 — pure exam-sheet row matching against the roster
+│       ├── workbookExport.ts # Step 12 — sheet-name sanitisation pinned to ExcelJS's own
+│       │                    # thrown rules, collision detection, the actual sheet writer
+│       ├── rosterMatch.ts   # Step 12 — live "is this ID on the list" matching, plus a
+│       │                    # single-candidate suggestion offered only when it's unique
 │       ├── types.ts         # Mirrors backend/app/models.py
-│       └── *.test.ts(x)     # 79 vitest tests
+│       └── *.test.ts(x)     # 238 vitest tests
 │
 ├── testset/                 # 30 labelled test photographs
 │   ├── images/               # 2 originals, 7 phone captures, 18 from a real class, 3 synthetic
@@ -522,8 +552,8 @@ request succeeded. API Gateway sidesteps Function URL auth entirely. See
 ### Tests
 
 ```bash
-cd backend && source venv/bin/activate && pytest   # 148 tests, fully offline
-cd frontend && npx vitest run                      # 79 tests (npx vitest for watch mode)
+cd backend && source venv/bin/activate && pytest   # 246 tests, fully offline
+cd frontend && npx vitest run                      # 238 tests (npx vitest for watch mode)
 cd frontend && npm run lint                        # oxlint
 cd frontend && npm run build
 ```
@@ -667,9 +697,20 @@ reasoning.
 
 ## Deliberately not built
 
-Client-side detection with OpenCV.js · roster import · a server-side
-database or multi-quiz history · multi-user auth · a template generator
-(the grid is a Docs table pasted by hand, on purpose).
+Client-side detection with OpenCV.js · a server-side database or
+multi-quiz history · multi-user auth · a template generator (the grid is
+a Docs table pasted by hand, on purpose).
+
+**Roster import is no longer on this list.** It was deferred "to avoid
+file-upload complexity" until it became clear the roster already exists —
+a workbook the instructor keeps all semester — so the complexity being
+avoided was a roster *management* system, not a file picker. Step 12
+(plan.md §17) picked it back up: an optional upload at Setup, matched
+against by student ID, written back as a new sheet on export, the
+instructor's own file otherwise untouched. All four phases — reading the
+roster in, writing the sheet back out, roster-aware review, and
+reconciliation (coverage, duplicate blocking, an opt-in totals column,
+persistence across a refresh) — are done.
 
 On the default CNN path, **no third party ever sees a script** — nothing
 leaves the laptop at any point. That is a real and meaningful property, but

@@ -6,6 +6,7 @@
 // index would throw on write instead of letting two conflicting records
 // sit side by side for the instructor to compare.
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
+import type { RosterUpload } from './roster';
 import type { QuizConfig, StudentRecord } from './types';
 import { normalizeSerial } from './validateMarks';
 
@@ -29,12 +30,26 @@ interface ScanDB extends DBSchema {
     key: string;
     value: string;
   };
+  // v4 (step 12.14). A separate store from `config`, deliberately, for the
+  // opposite reason `meta` is separate from it: `meta`'s source id must
+  // SURVIVE resetAll() (it identifies a writer across sessions), while
+  // this must be CLEARED by it (a class list belongs to one session, and
+  // "Reset everything" starting a genuinely new class must not silently
+  // carry the old one's roster forward). `workbookBytes` is a plain
+  // ArrayBuffer — structured-clone-safe on its own, unlike an
+  // `ExcelJS.Workbook` instance, which is why `RosterUpload` never holds
+  // one; Setup.tsx re-loads a fresh Workbook from these bytes each time.
+  rosterUpload: {
+    key: string;
+    value: RosterUpload;
+  };
 }
 
 const DB_NAME = 'marks';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const CONFIG_KEY = 'current';
 const SOURCE_ID_KEY = 'sourceId';
+const ROSTER_UPLOAD_KEY = 'current';
 
 // No module-level connection caching on purpose: idb/the browser already
 // pool repeated opens to the same DB name+version cheaply, and caching a
@@ -79,6 +94,9 @@ function getDB(): Promise<IDBPDatabase<ScanDB>> {
           return cursor.continue().then(migrate);
         });
       }
+      if (oldVersion < 4) {
+        db.createObjectStore('rosterUpload');
+      }
     },
   });
 }
@@ -91,6 +109,35 @@ export async function saveConfig(config: QuizConfig): Promise<void> {
 export async function loadConfig(): Promise<QuizConfig | undefined> {
   const db = await getDB();
   return db.get('config', CONFIG_KEY);
+}
+
+// Step 12.14 — persisted alongside `config` at the same moment (Setup's
+// handleSubmit), so a mid-session refresh doesn't silently drop back to
+// plain mode: Scan's "of 16" header and Review's not-on-list flagging both
+// depend on the roster still being there after a reload, the same
+// crash-resilience `config`/`records` already have. A fresh upload is
+// still required to START a *new* quiz (12.1's own rule) — this exists to
+// survive a refresh mid-quiz, not to let one upload serve several quizzes.
+export async function saveRosterUpload(upload: RosterUpload): Promise<void> {
+  const db = await getDB();
+  await db.put('rosterUpload', upload, ROSTER_UPLOAD_KEY);
+}
+
+export async function loadRosterUpload(): Promise<RosterUpload | undefined> {
+  const db = await getDB();
+  return db.get('rosterUpload', ROSTER_UPLOAD_KEY);
+}
+
+// Starting a new quiz in PLAIN mode has to clear whatever an earlier
+// quiz's workbook upload left behind, not just skip saving a new one —
+// otherwise a refresh mid-session restores the old roster (via the
+// saved-config quick-start path) onto a session the instructor explicitly
+// chose not to attach one to. `resetAll()` already clears this store too,
+// for the bigger "start a genuinely new class" case; this is the narrower
+// "same session, switched to plain mode" one.
+export async function clearRosterUpload(): Promise<void> {
+  const db = await getDB();
+  await db.delete('rosterUpload', ROSTER_UPLOAD_KEY);
 }
 
 // The serial is normalized on the way in, so the by-serial index has one
@@ -166,4 +213,7 @@ export async function resetAll(): Promise<void> {
   const db = await getDB();
   await db.clear('records');
   await db.clear('config');
+  // Step 12.14 — cleared here, unlike `meta` above: a class list belongs
+  // to one session's quiz, not to this browser across every future one.
+  await db.clear('rosterUpload');
 }

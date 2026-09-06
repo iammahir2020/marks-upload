@@ -4,6 +4,7 @@ import { useEffect, useReducer, useRef, useState } from 'react';
 import { scanImage } from './api';
 import { getAllRecords } from './db';
 import Review from './Review';
+import type { ParsedRoster } from './roster';
 import { inFlightCount, nextToReview, queueReducer } from './scanQueue';
 import type { QuizConfig } from './types';
 
@@ -22,6 +23,9 @@ const CAPTURE_JPEG_QUALITY = 0.92;
 
 interface ScanProps {
   config: QuizConfig;
+  // Step.md 12.9/12.10 — optional and defaulted to null in the component
+  // below, so the plain-mode path (no class list attached) is unaffected.
+  roster?: ParsedRoster | null;
   onShowResults: () => void;
 }
 
@@ -31,7 +35,7 @@ interface Preview {
   height: number;
 }
 
-export default function Scan({ config, onShowResults }: ScanProps) {
+export default function Scan({ config, roster = null, onShowResults }: ScanProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [entries, dispatch] = useReducer(queueReducer, []);
@@ -217,6 +221,7 @@ export default function Scan({ config, onShowResults }: ScanProps) {
             <Review
               result={reviewingEntry.result}
               config={config}
+              roster={roster}
               imagePreviewUrl={previews[reviewingEntry.id]?.url}
               onRetake={() => {
                 dismissEntry(reviewingEntry.id);
@@ -235,7 +240,11 @@ export default function Scan({ config, onShowResults }: ScanProps) {
       <div className="app-header">
         <div>
           <span className="eyebrow">{config.quizName}</span>
-          <h1>Scanned {savedCount}</h1>
+          {/* Step.md 12.9 — the class size, when a roster is attached. */}
+          <h1>
+            Scanned {savedCount}
+            {roster ? ` of ${roster.students.length}` : ''}
+          </h1>
         </div>
         <button className="btn btn-quiet" onClick={onShowResults}>
           View results &rarr;

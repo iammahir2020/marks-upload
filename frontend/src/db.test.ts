@@ -4,6 +4,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { openDB } from 'idb';
 import {
   getSourceId,
+  loadRosterUpload,
   resetAll,
   findRecordsByStudentId,
   findRecordsBySerial,
@@ -11,7 +12,9 @@ import {
   loadConfig,
   saveConfig,
   saveRecord,
+  saveRosterUpload,
 } from './db';
+import type { RosterUpload } from './roster';
 import type { QuizConfig, StudentRecord } from './types';
 
 const config: QuizConfig = {
@@ -217,5 +220,58 @@ describe('serial normalization (issues.md #2)', () => {
     const found = await findRecordsBySerial('7');
     expect(found).toHaveLength(1);
     expect(found[0].id).toBe('old');
+  });
+});
+
+// Step 12.14 — the class-list workbook, persisted so a mid-session refresh
+// doesn't silently fall back to plain mode.
+function makeRosterUpload(overrides: Partial<RosterUpload> = {}): RosterUpload {
+  return {
+    fileName: 'roster.xlsx',
+    workbookBytes: new ArrayBuffer(8),
+    roster: {
+      sheetName: 'data',
+      headerRow: 1,
+      students: [{ sl: 1, row: 1 + 1, studentId: '1912345', studentIdKey: '1912345', studentName: 'Monem Tazwar' }],
+      duplicateIds: [],
+    },
+    ...overrides,
+  };
+}
+
+describe('roster upload persistence (step 12.14)', () => {
+  it('round-trips fileName, roster and workbook bytes', async () => {
+    const upload = makeRosterUpload();
+    await saveRosterUpload(upload);
+    const loaded = await loadRosterUpload();
+    expect(loaded?.fileName).toBe('roster.xlsx');
+    expect(loaded?.roster.students).toEqual(upload.roster.students);
+    // `instanceof ArrayBuffer` fails here — jsdom's structured-clone
+    // polyfill hands back an ArrayBuffer from a different realm than the
+    // test file's own global, a known cross-realm identity quirk rather
+    // than anything about this code. toString's tag survives the realm
+    // boundary; instanceof doesn't.
+    expect(Object.prototype.toString.call(loaded?.workbookBytes)).toBe('[object ArrayBuffer]');
+    expect(loaded?.workbookBytes.byteLength).toBe(8);
+  });
+
+  it('is undefined when nothing has been uploaded', async () => {
+    expect(await loadRosterUpload()).toBeUndefined();
+  });
+
+  it('a later save replaces the earlier one — one roster per session, not accumulated', async () => {
+    await saveRosterUpload(makeRosterUpload({ fileName: 'first.xlsx' }));
+    await saveRosterUpload(makeRosterUpload({ fileName: 'second.xlsx' }));
+    expect((await loadRosterUpload())?.fileName).toBe('second.xlsx');
+  });
+
+  it('is cleared by resetAll, unlike the source id (opposite reasons: this belongs to one session)', async () => {
+    await saveRosterUpload(makeRosterUpload());
+    const sourceIdBefore = await getSourceId();
+
+    await resetAll();
+
+    expect(await loadRosterUpload()).toBeUndefined();
+    expect(await getSourceId()).toBe(sourceIdBefore); // meta survives, unaffected
   });
 });

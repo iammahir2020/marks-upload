@@ -3,12 +3,85 @@
 // record count called out (9.2), the attendance-sheet expectation stated
 // plainly (9.3), and the Excel export that's the actual point of the
 // whole exercise (9.4).
+//
+// Step.md step 12.5-12.8 (plan.md §17, Phase B) added a second export
+// path here: when `rosterUpload` is present (a class-list workbook was
+// confirmed at Setup), the instructor can also write this quiz's results
+// as a new sheet into their own file, alongside the plain download —
+// which stays exactly as it was, unconditionally, as the escape hatch
+// plan.md §17 names it. ExcelJS is already a static import below because
+// Results itself is lazy-loaded as a whole screen (App.tsx) — no separate
+// dynamic import is needed here the way Setup.tsx's upload UI requires.
 import { useEffect, useMemo, useState } from 'react';
 import ExcelJS from 'exceljs';
 import { getAllRecords, resetAll, saveRecord } from './db';
+import { buildExamSheet, type ExamSheetResult } from './examSheet';
 import { sortRecords, unverifiedReason } from './results';
+import type { ParsedRoster, RosterUpload } from './roster';
+import { matchAgainstRoster } from './rosterMatch';
 import type { QuestionValue, QuizConfig, StudentRecord } from './types';
 import { parseMarkField, sumCheck } from './validateMarks';
+import {
+  findSheetCollision,
+  sanitizeSheetName,
+  writeExamSheet,
+  writeTotalsColumn,
+  type SheetCollision,
+} from './workbookExport';
+
+// One place for the anchor-attach-then-delayed-revoke dance (issues.md
+// N7), shared by both export paths now rather than duplicated: attached
+// to the document before clicking (`click()` on a detached anchor is a
+// no-op in some browsers) and revoked on a LATER tick (revoking
+// synchronously can abort the download before the browser has read from
+// it — iOS Safari being the documented case, and this app's whole purpose
+// is a phone).
+// `BlobPart` (lib.dom, no @types/node needed) rather than naming ExcelJS's
+// own `writeBuffer()` return type directly — that type is Node's `Buffer`,
+// which node_modules/exceljs can reference under `skipLibCheck` without
+// `@types/node` ever needing to be in this tsconfig's global scope, but
+// this file is checked for real and can't name it. A Node `Buffer` is
+// itself a valid `BlobPart` at runtime (it's a `Uint8Array`), so nothing
+// about the actual value changes — only how it's typed here.
+function triggerDownload(buffer: BlobPart, filename: string) {
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, 30_000);
+}
+
+// State for the confirm prompt between clicking "Export into class
+// marksheet" and the actual write. Holds a workbook already loaded fresh
+// from `rosterUpload.workbookBytes` — never the original bytes themselves
+// — so cancelling and re-triggering costs nothing and can't leave a
+// half-written workbook lying around in state. `result` is computed once
+// here and reused by finishWorkbookExport, rather than rebuilt — it's also
+// what the coverage summary and duplicate block below read from.
+//
+// Step.md 12.12 — this panel is now ALWAYS shown on a workbook-mode
+// export, not only when a name needed sanitising or collided. Before
+// 12.12, an export with nothing to confirm skipped straight to the write
+// (this app's general "don't add a tap" rule, applied to export). 12.12's
+// own coverage requirement — "list who is missing before the download" —
+// means there is now always at least ONE fact worth showing, so the
+// shortcut is gone rather than kept as a second, inconsistent path.
+interface PendingWorkbookExport {
+  workbook: ExcelJS.Workbook;
+  sanitizedName: string;
+  nameChanged: boolean;
+  collision: SheetCollision | null;
+  result: ExamSheetResult;
+}
 
 // A quiz name is user text and becomes a filename. Stripping the characters
 // that are illegal or path-bearing on the platforms this lands on, so a quiz
@@ -26,14 +99,26 @@ function exportFilename(quizName: string): string {
 
 interface ResultsProps {
   config: QuizConfig;
+  // Optional and defaulted to null rather than required: every existing
+  // call site (App.tsx's saved-config quick-start, every test render)
+  // predates this and passes nothing — plain mode must stay exactly as it
+  // was, byte for byte, for anyone who never uploaded a workbook.
+  rosterUpload?: RosterUpload | null;
   onBack: () => void;
   onReset: () => void;
 }
 
-export default function Results({ config, onBack, onReset }: ResultsProps) {
+export default function Results({ config, rosterUpload = null, onBack, onReset }: ResultsProps) {
   const [records, setRecords] = useState<StudentRecord[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [pendingWorkbookExport, setPendingWorkbookExport] = useState<PendingWorkbookExport | null>(null);
+  const [workbookExportError, setWorkbookExportError] = useState<string | null>(null);
+  // Step.md 12.13 — off by default: this is the only export operation that
+  // writes into a sheet the instructor authored rather than one this app
+  // created, so it needs an explicit opt-in rather than happening because
+  // the roster export itself was requested.
+  const [includeTotalsColumn, setIncludeTotalsColumn] = useState(false);
 
   async function handleReset() {
     await resetAll();
@@ -66,8 +151,8 @@ export default function Results({ config, onBack, onReset }: ResultsProps) {
     ws.columns = [
       { header: 'Serial', key: 'serial', width: 10 },
       { header: 'Student ID', key: 'studentId', width: 16 },
-      ...config.questions.map((qc) => ({ header: `Q${qc.q}`, key: `q${qc.q}`, width: 8 })),
-      { header: 'Total', key: 'total', width: 10 },
+      ...config.questions.map((qc) => ({ header: `Q${qc.q} (${qc.max})`, key: `q${qc.q}`, width: 8 })),
+      { header: `Total (${config.totalMax})`, key: 'total', width: 10 },
     ];
     ws.getRow(1).font = { bold: true };
 
@@ -89,28 +174,60 @@ export default function Results({ config, onBack, onReset }: ResultsProps) {
     );
 
     const buffer = await wb.xlsx.writeBuffer();
-    const blob = new Blob([buffer], {
-      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    triggerDownload(buffer, exportFilename(config.quizName));
+  }
+
+  // Step.md 12.5-12.8 — the second export path, only reachable when a
+  // class-list workbook was confirmed at Setup. Always starts from
+  // `rosterUpload.workbookBytes`, the ORIGINAL upload, never a workbook
+  // instance kept around from an earlier export in this same session —
+  // that's what makes exporting the same quiz twice produce one sheet
+  // rather than two (plan.md §17): each run starts from the same pristine
+  // bytes and re-decides the same name/collision from scratch.
+  async function handleWorkbookExportClick() {
+    if (!rosterUpload) return;
+    setWorkbookExportError(null);
+
+    const sanitized = sanitizeSheetName(config.quizName);
+    if (sanitized.name === '') {
+      // Only reachable if the quiz name is made ENTIRELY of characters
+      // Excel's own sheet-name rule forbids (e.g. "???") — validateConfig
+      // already requires a non-empty name, so this is a narrow edge, but
+      // an unwritable sheet name must never fail silently.
+      setWorkbookExportError(
+        "This quiz's name can't become a valid sheet name — rename it in Setup and try again.",
+      );
+      return;
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(rosterUpload.workbookBytes);
+    const collision = findSheetCollision(workbook, sanitized.name, rosterUpload.roster.sheetName);
+    const result = buildExamSheet(rosterUpload.roster, records, config);
+
+    setPendingWorkbookExport({
+      workbook,
+      sanitizedName: sanitized.name,
+      nameChanged: sanitized.changed,
+      collision: collision.collides ? collision : null,
+      result,
     });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = exportFilename(config.quizName);
-    // Attached to the document before clicking, and revoked on a LATER tick
-    // rather than the same one (issues.md N7). Both matter on the device
-    // this is actually used on: `click()` on a detached anchor is a no-op in
-    // some browsers, and revoking a blob URL synchronously after click()
-    // can abort the download before the browser has read from it — iOS
-    // Safari being the documented case, and this app's whole purpose is a
-    // phone. This is the one operation the entire session exists to
-    // perform, so it gets the belt-and-braces version.
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      a.remove();
-      URL.revokeObjectURL(url);
-    }, 30_000);
+  }
+
+  async function finishWorkbookExport(pending: PendingWorkbookExport, finalName: string, overwrite: boolean) {
+    if (!rosterUpload) return;
+    writeExamSheet(pending.workbook, finalName, overwrite, pending.result, config);
+    // Step.md 12.13 — opt-in, off by default (see the checkbox below).
+    // Writes into the roster sheet itself, not the exam sheet just added.
+    if (includeTotalsColumn) {
+      writeTotalsColumn(pending.workbook, rosterUpload.roster, finalName, config.totalMax, pending.result);
+    }
+    const buffer = await pending.workbook.xlsx.writeBuffer();
+    // The updated copy of the instructor's own file — same filename, so it
+    // reads as "the same file, now with this quiz added" rather than a
+    // new, separately-named artifact to keep track of.
+    triggerDownload(buffer, rosterUpload.fileName);
+    setPendingWorkbookExport(null);
   }
 
   if (!loaded) return null;
@@ -164,6 +281,62 @@ export default function Results({ config, onBack, onReset }: ResultsProps) {
         </button>
       </div>
 
+      {/* Step.md 12.5-12.8 — only rendered when Setup confirmed a class-list
+          workbook. The plain "Download Excel" button above stays exactly as
+          it was, unconditionally — plan.md §17's own "escape hatch" for
+          whenever this path can't be used or a conflict can't be resolved
+          before class ends. */}
+      {rosterUpload && (
+        <div className="card stack-sm" style={{ padding: 12 }}>
+          <div className="row-between">
+            <span>
+              Class list: <strong>{rosterUpload.roster.sheetName}</strong>
+              {' — '}
+              {rosterUpload.roster.students.length}{' '}
+              {rosterUpload.roster.students.length === 1 ? 'student' : 'students'}, from{' '}
+              <strong>{rosterUpload.fileName}</strong>
+            </span>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={handleWorkbookExportClick}
+              disabled={records.length === 0}
+            >
+              Export into class marksheet
+            </button>
+          </div>
+          <span className="text-sm muted">
+            Writes a new sheet into your own file — every other sheet, including the class
+            list, is left untouched. Charts or pivot tables already in the file are not
+            preserved.
+          </span>
+
+          {/* Step.md 12.13 — opt-in, off by default. The only export
+              operation that writes into a sheet the instructor authored. */}
+          <label className="text-sm" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={includeTotalsColumn}
+              onChange={(e) => setIncludeTotalsColumn(e.target.checked)}
+            />
+            Also add this quiz's totals as a column in the class list
+          </label>
+
+          {workbookExportError && (
+            <p role="alert" className="error-text">
+              {workbookExportError}
+            </p>
+          )}
+
+          {pendingWorkbookExport && (
+            <PendingExportPanel
+              pending={pendingWorkbookExport}
+              onCancel={() => setPendingWorkbookExport(null)}
+              onFinish={finishWorkbookExport}
+            />
+          )}
+        </div>
+      )}
+
       {records.length === 0 ? (
         <div className="empty-state">No records saved yet — confirmed scripts will show up here.</div>
       ) : (
@@ -173,30 +346,157 @@ export default function Results({ config, onBack, onReset }: ResultsProps) {
               <tr>
                 <th className="col-serial">Serial</th>
                 <th className="col-id">Student ID</th>
+                {/* Step.md 12.11 — only when a class list is attached, so
+                    the plain-mode table keeps its exact original columns. */}
+                {rosterUpload && <th className="col-id">Name</th>}
                 {config.questions.map((qc) => (
                   <th key={qc.q} className="col-mark">
-                    Q{qc.q}
+                    Q{qc.q} ({qc.max})
                   </th>
                 ))}
-                <th className="col-mark">Total</th>
+                <th className="col-mark">Total ({config.totalMax})</th>
                 <th className="col-check">Check</th>
               </tr>
             </thead>
             <tbody>
               {sorted.map((record) => (
-                <ResultsRow key={record.id} record={record} config={config} onUpdate={updateRecord} />
+                <ResultsRow
+                  key={record.id}
+                  record={record}
+                  config={config}
+                  roster={rosterUpload?.roster ?? null}
+                  onUpdate={updateRecord}
+                />
               ))}
             </tbody>
           </table>
         </div>
       )}
 
-      {/* 9.3 — stated as an expectation, not a surprise (plan.md §10). */}
+      {/* 9.3 — stated as an expectation, not a surprise (plan.md §10).
+          plan.md §17 made half of this conditional: with a class list
+          attached, the exported sheet already lists every student by name,
+          blank if unscanned — the gap is visible without a manual check.
+          Without one, the original limitation still holds exactly as
+          written. */}
       <p className="text-sm muted">
-        This app has no class list, so it can't tell whether a serial is out of range or a
-        student was skipped entirely — check the exported file against your attendance sheet
-        for gaps.
+        {rosterUpload
+          ? 'Your class list is attached — the exported sheet lists every student on it, blank if they weren’t scanned, so a skipped student is visible without a separate attendance check.'
+          : "This app has no class list, so it can't tell whether a serial is out of range or a student was skipped entirely — check the exported file against your attendance sheet for gaps."}
       </p>
+    </div>
+  );
+}
+
+// How many missing names to list before summarising the rest — a large
+// class shouldn't turn the confirm step into a wall of text, but the
+// instructor still needs to SEE the coverage gap, not just a count.
+const MISSING_STUDENTS_PREVIEW = 10;
+
+interface PendingExportPanelProps {
+  pending: PendingWorkbookExport;
+  onCancel: () => void;
+  onFinish: (pending: PendingWorkbookExport, finalName: string, overwrite: boolean) => void;
+}
+
+// Step.md 12.12 — always shown once "Export into class marksheet" is
+// clicked (no more "skip when nothing to confirm" shortcut, see
+// PendingWorkbookExport's own comment on why). Three states, in priority
+// order: a duplicate match BLOCKS the export outright (plan.md §17 — the
+// worst failure this app has, and the plain download stays available as
+// the escape hatch); otherwise a name collision needs Overwrite/Rename/
+// Cancel; otherwise a plain confirm showing the sheet name and who's
+// missing, with nothing to resolve but "Continue."
+function PendingExportPanel({ pending, onCancel, onFinish }: PendingExportPanelProps) {
+  const { result, collision, sanitizedName } = pending;
+
+  if (result.duplicates.length > 0) {
+    return (
+      <div className="banner banner-danger" role="alert">
+        <p>
+          {result.duplicates.length === 1
+            ? 'One student on your class list has two scanned scripts matching them — fix this in the table above before exporting.'
+            : `${result.duplicates.length} students on your class list each have two scanned scripts matching them — fix these in the table above before exporting.`}
+        </p>
+        <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
+          {result.duplicates.map((d) => (
+            <li key={d.studentIdKey}>
+              {d.studentId} — {d.studentName}: {d.records.length} scripts
+            </li>
+          ))}
+        </ul>
+        {/* No Overwrite/Continue here at all — the plain "Download Excel"
+            button above is the only way out until the conflict is
+            resolved, exactly as plan.md §17 intends. */}
+        <div className="banner-actions">
+          <button className="btn btn-secondary btn-sm" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const missing = result.missingStudents;
+  const previewNames = missing
+    .slice(0, MISSING_STUDENTS_PREVIEW)
+    .map((s) => s.studentName || s.studentId)
+    .join(', ');
+  const coverageLine =
+    missing.length === 0 ? (
+      'Every student on your class list has been scanned.'
+    ) : (
+      <>
+        {missing.length} {missing.length === 1 ? 'student' : 'students'} not yet scanned:{' '}
+        {previewNames}
+        {missing.length > MISSING_STUDENTS_PREVIEW ? ` and ${missing.length - MISSING_STUDENTS_PREVIEW} more` : ''}.
+      </>
+    );
+
+  return (
+    <div className="banner banner-warning" role="alert">
+      {collision ? (
+        <>
+          <p>
+            {collision.isRosterSheet
+              ? `"${sanitizedName}" is your class list's own sheet — it can't be overwritten.`
+              : `A sheet named "${sanitizedName}" already exists in this file.`}
+          </p>
+          <p>{coverageLine}</p>
+          <div className="banner-actions">
+            {!collision.isRosterSheet && (
+              <button
+                className="btn btn-danger-solid btn-sm"
+                onClick={() => onFinish(pending, sanitizedName, true)}
+              >
+                Overwrite it
+              </button>
+            )}
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => onFinish(pending, collision.suggestedRename, false)}
+            >
+              Use "{collision.suggestedRename}" instead
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={onCancel}>
+              Cancel
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p>This sheet will be named "{sanitizedName}".</p>
+          <p>{coverageLine}</p>
+          <div className="banner-actions">
+            <button className="btn btn-primary btn-sm" onClick={() => onFinish(pending, sanitizedName, false)}>
+              Continue
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={onCancel}>
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -204,6 +504,7 @@ export default function Results({ config, onBack, onReset }: ResultsProps) {
 interface ResultsRowProps {
   record: StudentRecord;
   config: QuizConfig;
+  roster: ParsedRoster | null;
   onUpdate: (record: StudentRecord) => void;
 }
 
@@ -220,9 +521,14 @@ function isUnchanged(a: StudentRecord, b: StudentRecord): boolean {
   );
 }
 
-function ResultsRow({ record, config, onUpdate }: ResultsRowProps) {
+function ResultsRow({ record, config, roster, onUpdate }: ResultsRowProps) {
   const [studentId, setStudentId] = useState(record.studentId ?? '');
   const [serial, setSerial] = useState(record.serial ?? '');
+  // Step.md 12.11 — derived from the LIVE (possibly just-edited) studentId
+  // field, same "derive, don't store" reasoning the sum check below
+  // already follows: correcting the ID in this table should update the
+  // name shown next to it immediately, not lag behind a save.
+  const rosterMatch = matchAgainstRoster(studentId, config.idDigits, roster);
   const [marks, setMarks] = useState<Record<number, string>>(() => {
     const map: Record<number, string> = {};
     for (const qc of config.questions) {
@@ -305,6 +611,20 @@ function ResultsRow({ record, config, onUpdate }: ResultsRowProps) {
           onBlur={commit}
         />
       </td>
+      {/* Step.md 12.11 — the header only renders this column when a roster
+          is attached, so `roster` is non-null here whenever this cell
+          exists at all; kept simple rather than plumbing a second flag. */}
+      {roster && (
+        <td>
+          {rosterMatch.status === 'matched' ? (
+            rosterMatch.student.studentName
+          ) : rosterMatch.status === 'not-on-list' ? (
+            <span className="badge badge-warning">Not on list</span>
+          ) : (
+            <span className="muted">—</span>
+          )}
+        </td>
+      )}
       {config.questions.map((qc) => (
         <td key={qc.q} className="col-mark">
           <input

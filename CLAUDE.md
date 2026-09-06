@@ -9,8 +9,12 @@ instructor confirm or correct them on the spot, and exports the whole session
 as one Excel file.
 
 Single instructor, one quiz session, one class (pilot: CSE211L). No auth, no
-uploads, no server-side database. Session state lives in IndexedDB until
-export.
+server-side database. Session state lives in IndexedDB until export. "No
+uploads" described the MVP pilot; an optional one was added 2026-09-07
+(plan.md §17, step.md step 12, specced but not yet built) — the
+instructor's own class-list workbook, read at Setup and written back into
+at export. Everything else about the sentence above still holds for
+whoever doesn't use it.
 
 ## Current state — read this first
 
@@ -22,7 +26,7 @@ source of truth.
 | File | What it is |
 |---|---|
 | [plan.md](plan.md) | Architecture, data models, screens, API contract, resolved decisions |
-| [step.md](step.md) | Execution plan — steps 0–11, each with a *Before you start*, substeps, a test, and a *Done when* bar. Steps 0–10 match plan §14; step 11 (hosted demo) is a later, deliberate extension and runs in three independently-shippable phases. Ends with the Progress table. |
+| [step.md](step.md) | Execution plan — steps 0–12, each with a *Before you start*, substeps, a test, and a *Done when* bar. Steps 0–10 match plan §14; step 11 (hosted demo) and step 12 (class-list workbook round trip) are later, deliberate extensions beyond plan §13's MVP scope, each running in independently-shippable phases — three for 11, four for 12. **All four phases of step 12 are done** (2026-09-07: roster upload/parsing/identification at Setup, writing the exam sheet back into the instructor's own file, roster-aware review/results, and pre-export coverage/duplicate-blocking/an opt-in totals column/IndexedDB persistence — each verified against the real 16-student marksheet, not only synthetic shapes); it reverses three of plan §15/§2/§13's recorded decisions on purpose, amended in 12.0. What remains is real-phone verification of the file picker and download, needing the user's own participation. Ends with the Progress table. |
 | [stack-reference.md](stack-reference.md) | Library-level notes from Context7: exact calls, starting parameter values, known traps |
 | [learn.md](learn.md) | Plain-language walkthrough of what each finished step's code actually does, for learning alongside the build. Updated after each step — see "How to work here." |
 | [issues.md](issues.md) | **The open-defect register — read it before trusting any screen or endpoint.** Two audits: 2026-08-27 (15 findings) and a full re-read on 2026-08-31 (28 more, N1–N28). **38 of 49 are now fixed** on 2026-08-31 — frontend (12), pair (11, closing both HIGH findings: N1 path traversal, N2 unbounded config), hot-path (**N4**, where a blank ID cell was producing a confident fabricated digit — demonstrated, not inferred, plus N18), cnn-path (N16, N17, N24, 15), and dormant (4, cleared *ahead of* step 3r.6's comparison run, because that run is `RECOGNIZER=both` and #3 would have handicapped the baseline it measures). **8 remain open.** Four are Low deploy/infra. The other four (**N31-N34**) came from the first live grading session on the deployed URL and are the **first thing to pick up** — see issues.md's "Start here". Two are High: **N31**, where harvesting mislabels a crop if the instructor works around an out-of-range mark, and **N32**, where a confident serial digit is discarded along with an uncertain sibling. Everything the desk audits found on the `cnn` path is closed; what is open now came from using the thing. Suites went 148/79 → **246/119**; they passed before the audits too, which is the point worth internalising. It also carries an explicit "what this audit did NOT cover" section naming the files never opened. |
@@ -147,7 +151,71 @@ only; install the binary separately (`apt install tesseract-ocr`) before step
 Created starting step 0.1. Backend through step 3's rate-limited fallback
 plus steps 2r.0/2r/3r's full local CNN path, and frontend through step 9's
 Results screen and Excel export (code done, a real full-class export/
-reconcile still pending), all exist. Step 10 doesn't yet. **Step 11's
+reconcile still pending), all exist. Step 10 doesn't yet. **All four
+phases of step 12 do** (2026-09-07, plan.md §17): `frontend/src/roster.ts`
+(header matching, the exclude-then-prefer-then-confirm class-list
+identification rule, ID normalization for comparison) and `Setup.tsx`'s
+mode toggle, upload UI, and confirm/picker card (Phase A); `examSheet.ts`
+(pure row-matching against the roster) and `workbookExport.ts` (sheet-name
+sanitisation pinned to ExcelJS's own thrown rules, case-insensitive
+collision detection that refuses to ever mark the class-list sheet
+overwritable, and the actual sheet writer), wired into `Results.tsx` as a
+second export button alongside the untouched plain download (Phase B).
+`RosterUpload` now threads `Setup.tsx` → `App.tsx` → `Results.tsx`. Both
+phases verified against the real marksheet directly, not only synthetic
+shapes, and Phase B's output was additionally round-tripped through a real
+`soffice --headless` conversion. `frontend/src/rosterMatch.ts` (Phase C)
+answers a different question neither of the above needed to: given one
+studentId, is it on the list, and if not, is there exactly one roster
+student it's plausibly a misread of (one digit off, or consistent with a
+partial `?`-marked read) — offered only when that candidate is unique,
+never the closest of several. `roster`/`rosterUpload` now also threads
+`App.tsx` → `Scan.tsx` → `Review.tsx`, so `Scan.tsx` can show "Scanned 7 of
+16" and `Review.tsx` can show a matched name or a tap-to-accept suggestion
+next to the Student ID field; `Results.tsx` gained a live Name column.
+Verified against the real 16-student roster's actual IDs, not just a
+synthetic 2-student one. **Phase D**: `examSheet.ts`'s `missingStudents`
+(who hasn't been scanned) feeds `Results.tsx`'s confirm panel, now always
+shown on a workbook export and BLOCKING outright — Cancel only, the plain
+download left as the escape hatch — the moment `buildExamSheet` reports a
+duplicate. `workbookExport.ts`'s `writeTotalsColumn` (an opt-in checkbox,
+off by default) writes each roster student's total into the class-list
+sheet itself, matched to the SAME quiz's column by exact header text on
+re-export; it writes to each student's own real sheet row
+(`RosterStudent.row`, added specifically for this — see roster.ts's own
+comment on the bug that field prevents) rather than assuming a gap-free
+block of rows. `db.ts` gained a fourth store so the roster survives a
+mid-session refresh, restored on mount and threaded through both the
+saved-config quick-start button and "View results." All four phases
+verified against the real 16-student roster directly.
+
+**Five fixes from actually using step 12 on a real phone (2026-09-07)**,
+found after the phases above were already marked done — the same pattern
+step 6/9's own live-testing fixes followed. The mode toggle's two buttons
+could overflow the screen on a narrow phone (`.btn`'s `white-space:
+nowrap` plus a `.row` with no wrap — fixed with a scoped `flexWrap: wrap`
+on that one row, not the shared class). The file input kept showing "No
+file chosen" after a successful upload, because clearing it (so re-picking
+the same filename still fires `onChange`) also clears the browser's own
+displayed name — fixed with a `selectedFileName` state that shows the real
+answer regardless of what the native input says. Column headers ("Q1",
+"Total") now carry their max mark ("Q1 (5)", "Total (20)") on the Results
+table, both export paths, **and** the opt-in totals column added to the
+class-list sheet itself ("Quiz 1 (20)", `writeTotalsColumn`'s own
+`headerText`, matched on re-export by the full annotated string — a quiz
+whose max has genuinely changed since the last export gets a fresh column
+rather than a silently different number under the old one). None of this
+was free: `hasExamSignature` matched `Total` by exact canonical key, and
+"Total (20)" canonicals to "TOTAL20" — shipping the header change without
+also loosening that check to `/^TOTAL\d*$/` would have stopped a workbook
+this app itself wrote from being recognized as exam-shaped on its next
+re-upload, reopening the exact misdetection plan.md §17's exclusion rule
+exists to prevent. Caught before shipping, guarded by two new
+`roster.test.ts` cases (one proving the new header format still matches,
+one proving a real "Total Marks Trend" column still correctly doesn't)
+and verified against the real 16-student roster directly, including a
+re-upload of the app's own output to confirm `data` is still identified
+correctly with the annotated headers actually present. **Step 11's
 phases A and B do** — `app/config.py`, `app/stores.py`, the `Dockerfile`,
 and per-faculty source tagging through `db.ts`'s `getSourceId()`; phase C
 (the AWS deploy itself) does not. The CNN
@@ -341,24 +409,70 @@ marks-upload/
         ├── types.ts            # QuizConfig, StudentRecord — mirrors app/models.py
         ├── db.ts               # IndexedDB (idb) — step 5.2; resetAll() (2026-08-30)
         │                       # clears records+config; getSourceId() (11.2.5) lives in a
-        │                       # separate `meta` store (DB v2) that resetAll deliberately spares
+        │                       # separate `meta` store (DB v2) that resetAll deliberately spares;
+        │                       # rosterUpload store (DB v4, step 12.14) — the opposite of `meta`:
+        │                       # cleared by resetAll AND by starting a new quiz in plain mode
         ├── api.ts              # POST /api/scan client (step 6.4); harvestScan,
         │                       # POST /api/harvest client (step 3r.6c)
         ├── validateConfig.ts   # pure form-validation logic, unit-tested
         ├── validateMarks.ts    # sum check, legal-value check, serial normalisation,
         │                       # identity cross-check (plan.md §10) — step 7
         ├── results.ts          # step 9.1/9.2 — sort by serial then ID, unverified-record rule
+        ├── roster.ts           # step 12.2/12.3/12.4 (plan.md §17) — class-list roster
+        │                       # parsing: header matching, the exclude-then-prefer-then-
+        │                       # confirm class-list identification rule, ID normalization
+        │                       # for comparison (verbatim IDs are never rewritten); also
+        │                       # exports RosterUpload, the shape Setup hands up to App/Results.
+        │                       # RosterStudent.row (12.13) carries each student's REAL sheet
+        │                       # row — a blank-ID row is skipped while parsing, so student i
+        │                       # is not generally at headerRow+1+i; found and fixed before
+        │                       # writeTotalsColumn could be trusted, not left as a latent bug
+        ├── examSheet.ts        # step 12.5 — pure exam-sheet row matching: roster order,
+        │                       # blank (never 0) for an unscanned student, an unmatched
+        │                       # scan appended rather than dropped, duplicates AND
+        │                       # missingStudents reported (12.12: Results.tsx blocks on the
+        │                       # former, lists the latter before every workbook export)
+        ├── workbookExport.ts   # step 12.6/12.7/12.8 — the ExcelJS-touching half of the
+        │                       # export: sanitizeSheetName (pinned to ExcelJS's own thrown
+        │                       # rules), findSheetCollision (case-insensitive; the class-list
+        │                       # sheet can never be marked overwritable), writeExamSheet;
+        │                       # writeTotalsColumn (12.13, opt-in) writes to each student's
+        │                       # own REAL row (RosterStudent.row), never headerRow+1+i —
+        │                       # see roster.ts's own comment on why that arithmetic is wrong
+        ├── rosterMatch.ts      # step 12.10 — live "is this ID on the list" matching:
+        │                       # matched/not-on-list/blank/no-roster, plus a single-candidate
+        │                       # suggestion (one digit off, or consistent with a partial
+        │                       # "?"-marked read) offered only when it's the UNIQUE explanation
         ├── scanQueue.ts        # upload-queue reducer — step 6.3
         ├── Setup.tsx           # step 5.3–5.4; saved-session notice + View +
-        │                       # Reset everything (2026-08-31)
+        │                       # Reset everything (2026-08-31); step 12.1/12.3/12.4's
+        │                       # marks-export mode toggle, roster upload, and confirm/
+        │                       # picker card (2026-09-07) — ExcelJS dynamic-imported only
+        │                       # on file selection, same reasoning as Results' lazy-load;
+        │                       # step 12.11's second privacy-disclosure paragraph + always-
+        │                       # visible line, worded to not collide with the upload error text;
+        │                       # step 12.14 — restores a persisted roster on mount, threaded
+        │                       # through both the quick-start button and View results; a fresh
+        │                       # quiz in plain mode explicitly clears the store, not just skips it
         ├── Scan.tsx            # camera + upload queue — step 6; capture-button
-        │                       # spinner/disable and Retake dead-row fix (2026-08-30)
+        │                       # spinner/disable and Retake dead-row fix (2026-08-30);
+        │                       # step 12.9's "Scanned N of M" header, roster passed to Review
         ├── Review.tsx          # review/edit/save screen (step 7); fires harvestScan
-        │                       # on Confirm, fire-and-forget (step 3r.6c)
+        │                       # on Confirm, fire-and-forget (step 3r.6c); step 12.10/12.11's
+        │                       # matched-name / not-on-list-with-suggestion UI on the ID field
         ├── Results.tsx         # step 9 — results table, inline editing, Excel export;
         │                       # React.lazy-loaded from App.tsx (ExcelJS is most of its weight);
-        │                       # "Reset everything" button + confirm banner (2026-08-30)
-        └── App.tsx
+        │                       # "Reset everything" button + confirm banner (2026-08-30);
+        │                       # step 12.5-12.8's second export button — writes into the
+        │                       # instructor's own class-list workbook when Setup attached
+        │                       # one, always alongside the untouched plain download;
+        │                       # step 12.11's Name column, present only when a roster is attached;
+        │                       # step 12.12/12.13's confirm panel — always shown on a workbook
+        │                       # export, blocking outright on a duplicate (Cancel only, plain
+        │                       # download stays available) or listing who hasn't been scanned
+        │                       # yet; the opt-in totals-column checkbox, off by default
+        └── App.tsx             # threads RosterUpload from Setup to Results, and the parsed
+                                 # roster from Setup to Scan/Review (2026-09-07)
 ```
 
 ## Commands
@@ -798,9 +912,16 @@ all-blank result as if it were a normal scan.
 
 ## Deferred — don't build these
 
-Client-side detection with OpenCV.js · roster import · server-side database
-and multi-quiz history · multi-user auth · a template generator (there
-deliberately isn't one — the grid is a Docs table pasted by hand).
+Client-side detection with OpenCV.js · server-side database and multi-quiz
+history · multi-user auth · a template generator (there deliberately isn't
+one — the grid is a Docs table pasted by hand).
+
+**Roster import is no longer on this list.** It was deferred "to avoid
+file-upload complexity"; picked back up 2026-09-07 once it became clear
+the roster already exists as a workbook the instructor keeps all semester,
+so the complexity being avoided was a roster *management* system, not a
+file picker. See plan.md §17 and step.md step 12 — specced in four
+independently-shippable phases, none built yet.
 
 **No longer simply deferred:** a local mark classifier (TFLite/ONNX) was on
 this list until the deferral's own trigger condition — "only if Gemini

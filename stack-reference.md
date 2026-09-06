@@ -289,12 +289,15 @@ import ExcelJS from 'exceljs';
 const wb = new ExcelJS.Workbook();
 const ws = wb.addWorksheet('Marks');
 
-// built from QuizConfig, so the question columns vary per quiz
+// built from QuizConfig, so the question columns vary per quiz. Headers
+// carry the max mark too ("Q1 (5)", "Total (20)"), added 2026-09-07 after
+// live phone testing — the instructor otherwise has to open Setup to
+// remember what a question was out of.
 ws.columns = [
   { header: 'Serial',     key: 'serial',    width: 8 },
   { header: 'Student ID', key: 'studentId', width: 12 },
-  ...config.questions.map(q => ({ header: `Q${q.q}`, key: `q${q.q}`, width: 6 })),
-  { header: 'Total',      key: 'total',     width: 8 },
+  ...config.questions.map(q => ({ header: `Q${q.q} (${q.max})`, key: `q${q.q}`, width: 8 })),
+  { header: `Total (${config.totalMax})`, key: 'total', width: 10 },
 ];
 
 ws.addRows(records.map(r => ({
@@ -330,6 +333,77 @@ declares it via the package's `browser` field, which Vite normally resolves on
 its own. If you hit missing-`stream`-or-`buffer` errors at build time, alias
 the import to that dist path rather than reaching for Node polyfills. Worth
 verifying the export builds early — at step 9 of §14, not the night before.
+
+### Reading and modifying an existing workbook (step 12, plan.md §17)
+
+Everything above is *writing a fresh file*. Step 12 needed the other half —
+load a workbook someone else authored, add a sheet, hand back an updated
+copy — and that surfaced traps none of the above exercises. Verified
+directly against ExcelJS 4.4.0 and a real instructor-authored `.xlsx`
+before any of step 12 was built, not assumed from docs.
+
+**A round trip preserves far more than expected, with one real gap.**
+`load()` → `addWorksheet()` → `writeBuffer()` keeps every other sheet
+intact, formulas as formulas, fonts, column widths, hidden sheets,
+pre-existing defined names, autofilters, frozen panes, data validation,
+conditional formatting, and images — checked individually, not assumed as
+a group. **Charts and pivot tables are not preserved** — ExcelJS has no
+model for either, so a workbook containing one comes back without it. This
+is the one thing worth disclosing to a user before they upload a file that
+might have one.
+
+**`addWorksheet` throws on its own naming rules — build a sanitiser
+against the throws, not the docs:**
+
+```javascript
+wb.addWorksheet('Quiz:1')     // throws — rejects * ? : \ / [ ]
+wb.addWorksheet("'Quiz'")     // throws — first/last char can't be a single quote
+wb.addWorksheet('DATA')       // throws if 'data' already exists — compared CASE-INSENSITIVELY
+wb.addWorksheet('A'.repeat(40)) // does NOT throw — truncates to 31 chars with a console warning
+```
+
+The case-insensitive collision and the leading/trailing-quote rule are
+easy to miss reading Excel's own documentation casually — both were found
+by triggering the actual exception, and a sanitiser/collision-check built
+without checking both would let a name through that `addWorksheet` then
+rejects on the one screen (export) where an unhandled throw is worst.
+Pre-truncate to 31 characters in your own sanitiser rather than relying on
+the silent auto-truncate — the auto-truncated name is never returned to
+you, so you can't show the instructor what it actually became.
+
+**`Row.values` is typed (and behaves) as `CellValue[] | Record<string,
+CellValue>`, not a plain array.** Calling `.slice()`/array methods
+directly on it fails to typecheck (TS correctly refuses to call an array
+method on the object half of the union) and its *runtime* values differ
+from `getCell(n).value` in one specific way: a cell explicitly set to
+`null` comes back as `undefined` in the `.values` array, but as genuine
+`null` from `getCell(n).value`. If a blank-vs-zero distinction matters —
+it does everywhere in this project — assert through `getCell`, not
+`.values`.
+
+**A workbook-wide collision check needs `workbook.worksheets`, not a name
+you tracked yourself.** Tab order in that array is the *real, current*
+order — verified by rewriting a workbook's own `<sheets>` XML to reorder
+tabs and reloading through ExcelJS, which reported the new order
+faithfully. Each worksheet's `.state` (`'visible' | 'hidden' |
+'veryHidden'`, default `'visible'` when unset) is exposed the same way, so
+"the first visible sheet" is a real, checkable property, not something to
+infer from index 0.
+
+**A header your OWN code writes has to still round-trip through your OWN
+detection logic on re-upload.** This app's `hasExamSignature` (roster.ts)
+identifies a sheet it wrote earlier by canonicalizing header text
+(uppercase, non-alphanumerics stripped) and checking for an exact `TOTAL`
+key. Adding a max-mark annotation to that header — `"Total"` →
+`"Total (20)"` — canonicalizes to `"TOTAL20"`, which an exact `===
+'TOTAL'` check silently stops matching. Found by asking the question
+directly, not by inspecting the string: re-upload a workbook this app just
+wrote and check what your own detector says about it. The general lesson
+matters more than the specific fix: any code that both writes a label and
+later re-parses it needs one test that writes, reloads, and re-parses, not
+just a test of each half separately. The fix itself was to loosen the
+check to `/^TOTAL\d*$/`, mirroring the project's own `/^Q\d+$/` pattern
+for the identical reason.
 
 ## PWA shell — vite-plugin-pwa (§7)
 

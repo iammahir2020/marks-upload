@@ -15,6 +15,8 @@
 import { useMemo, useState } from 'react';
 import { harvestScan, type HarvestFields, type ScanResult } from './api';
 import { findRecordsBySerial, findRecordsByStudentId, saveRecord } from './db';
+import { matchAgainstRoster } from './rosterMatch';
+import type { ParsedRoster } from './roster';
 import type { QuizConfig, StudentRecord } from './types';
 import {
   crossCheck,
@@ -28,6 +30,11 @@ import {
 interface ReviewProps {
   result: ScanResult;
   config: QuizConfig;
+  // Step.md 12.10/12.11 — optional and defaulted to null so every existing
+  // caller (Scan.tsx in plain mode, all 15 pre-existing test renders)
+  // keeps working unchanged; the not-on-list/name UI below simply doesn't
+  // render when there's no class list to check against.
+  roster?: ParsedRoster | null;
   imagePreviewUrl?: string;
   onRetake: () => void;
   onSaved: (record: StudentRecord) => void;
@@ -42,7 +49,7 @@ function marksFromResult(config: QuizConfig, result: ScanResult): Record<number,
   return map;
 }
 
-export default function Review({ result, config, imagePreviewUrl, onRetake, onSaved }: ReviewProps) {
+export default function Review({ result, config, roster = null, imagePreviewUrl, onRetake, onSaved }: ReviewProps) {
   const [studentId, setStudentId] = useState(result.student_id ?? '');
   const [serial, setSerial] = useState(result.serial ?? '');
   const [marks, setMarks] = useState<Record<number, string>>(() => marksFromResult(config, result));
@@ -54,6 +61,15 @@ export default function Review({ result, config, imagePreviewUrl, onRetake, onSa
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const lowConfidence = useMemo(() => new Set(result.low_confidence_fields), [result]);
+
+  // Step.md 12.10 — recomputed on every render from the live field value,
+  // the same "derive, don't store" discipline the sum check already
+  // follows below: a stale match cached from an earlier value would be
+  // wrong the instant the instructor corrects the field.
+  const rosterMatch = useMemo(
+    () => matchAgainstRoster(studentId, config.idDigits, roster),
+    [studentId, config.idDigits, roster],
+  );
 
   const markErrors = useMemo(() => {
     const errs: Record<number, string> = {};
@@ -236,6 +252,41 @@ export default function Review({ result, config, imagePreviewUrl, onRetake, onSa
             onChange={(e) => editIdentity(setStudentId, e.target.value)}
             inputMode="numeric"
           />
+          {/* Step.md 12.11 — the resolved name, so a misread ID is visible
+              against the script in hand, not just a digit string. */}
+          {rosterMatch.status === 'matched' && (
+            <span className="field-hint">{rosterMatch.student.studentName}</span>
+          )}
+          {/* Step.md 12.10 — flagged, never silently accepted or corrected:
+              a script genuinely can belong to a typo'd ID or a student not
+              on this list (a walk-in, an add after the roster was pulled),
+              so this warns without blocking Confirm. A suggestion is only
+              ever offered when it is the UNIQUE explanation (rosterMatch.ts)
+              and is applied by the same explicit tap every other identity
+              correction already requires — never automatically. */}
+          {rosterMatch.status === 'not-on-list' && (
+            <div className="stack-sm" style={{ gap: 4 }}>
+              <span className="badge badge-warning" style={{ width: 'fit-content' }}>
+                Not on your class list
+              </span>
+              {rosterMatch.suggestion && (
+                <span className="text-sm">
+                  Did you mean{' '}
+                  <strong>
+                    {rosterMatch.suggestion.studentId} — {rosterMatch.suggestion.studentName}
+                  </strong>
+                  ?{' '}
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => editIdentity(setStudentId, rosterMatch.suggestion!.studentId)}
+                  >
+                    Use this
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
         </label>
         <label className="field identity-field">
           <span className="field-label">Serial</span>

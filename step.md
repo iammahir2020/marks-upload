@@ -1280,6 +1280,393 @@ all-or-nothing:
 
 ---
 
+## Step 12 — Class-list workbook round trip
+
+**Goal.** Take the instructor's own semester marksheet as input, write each
+quiz's marks back into it as a new sheet, and hand the file back — so the
+export lands where the marks actually live instead of in a loose `.xlsx`
+that has to be copied across by hand.
+
+Specced 2026-09-07 from a feature note the user brought in
+(`File Upload.md`, written in a separate claude.ai conversation) plus a
+real marksheet, `Course CSE211L  Section 1 Marksheet.xlsx`. The note is
+the source document, not the spec: the substeps below deviate from it in
+several places and each deviation says why. Folded into plan.md §17,
+which carries the fuller rationale — this is that section's concrete build
+order, the same relationship step 11 has to plan §13 and the CNN track
+(steps 2r.0/2r/3r/3r.6) has to plan §16. Like step 11, this is a
+deliberate extension beyond plan §13's own MVP scope, and like step 11 it
+leaves the existing path untouched — the plain download stays, unchanged,
+as a mode you choose at Setup.
+
+**It reverses three recorded decisions**, which is the main reason it needs
+writing down rather than just building. plan §15 says "No file uploads.
+Config in at the start, file out at the end." plan §2 says the ID/serial
+cross-check "replaces what a class roster would have provided, **without
+requiring any upload**." plan §13 lists roster import as deliberately
+deferred, "skipped deliberately to avoid file-upload complexity." All three
+were right for a single-instructor pilot with no class list to hand. What
+changed is that the class list turned out to already exist, in a file the
+instructor keeps all semester — so the complexity being avoided is a file
+picker, not a roster management system.
+
+### What was verified before speccing this
+
+Against the real workbook and ExcelJS 4.4.0, because the whole step rests
+on a library reading and rewriting someone's real file without damaging
+it. Measured, not assumed:
+
+- **The real file's shape.** One sheet, `data`; header on **row 1**, exactly
+  `SL` / `STUDENT ID` / `STUDENT NAME`; 16 students in rows 2–17; no merged
+  cells, formulas or styling; one column width set; authored by LibreOffice.
+  **Student IDs are stored as text** (`"1722112"`), all 7 digits — so leading
+  zeros would survive in this file. Not relied on: a file saved differently,
+  or edited in Excel, can flip that column to numeric silently, which is why
+  12.2 normalises defensively.
+- **A full round trip preserves more than expected.** Load → append a sheet →
+  write → reload keeps every other sheet, formulas as formulas, fonts,
+  column widths, hidden sheets, **pre-existing defined names**, autofilters,
+  frozen panes, data validation, conditional formatting and images. Verified
+  individually, on both a synthetic workbook carrying all of them and on the
+  real file.
+- **Charts and pivot tables are the exception.** ExcelJS has no support for
+  either, so a workbook containing one comes back without it. This is a
+  documented library gap, *not* something measured here — no chart-bearing
+  file was available to test. 12.8 states it in the UI rather than hiding it.
+- **A blank mark round-trips as genuinely empty** (cell type 0), not as `0`.
+  Step 9's worst-possible-failure rule survives the new export path.
+- **ExcelJS enforces Excel's sheet-name rules itself and throws** — which
+  pins 12.6's sanitiser to the real rule set rather than a guessed one. It
+  rejects `* ? : \ / [ ]`, a leading or trailing `'`, an empty name, and a
+  duplicate **case-insensitively** (`DATA` collided with an existing `data`).
+  Over 31 characters it truncates with a console warning rather than
+  throwing. `File Upload.md`'s own sanitiser misses the apostrophe rule and
+  compares collisions case-sensitively.
+- **Tab order is reported faithfully and sheet state is exposed.** Rewriting
+  the `<sheets>` order inside the file's XML and reloading gave back the new
+  order, so "the first visible sheet" is exactly implementable — see 12.3 for
+  why it is a preference and not the rule.
+
+### Before you start
+
+Read [frontend/src/Results.tsx](frontend/src/Results.tsx)'s `handleExport` —
+it is the code this step extends, and its anchor-attach plus 30-second
+delayed `revokeObjectURL` are there for iOS Safari specifically (issues.md
+N7). Reuse it; do not switch to a library's own `writeFile` helper. Read
+[frontend/src/db.ts](frontend/src/db.ts) for the store/version pattern and
+for `resetAll()`'s deliberate exclusion of `meta`. Read
+[frontend/src/results.ts](frontend/src/results.ts) and
+[frontend/src/validateMarks.ts](frontend/src/validateMarks.ts) for the
+project's convention that anything decidable without a DOM lives in a pure,
+unit-tested module.
+
+### Rules this step is bound by
+
+Load-bearing, and each one is a decision rather than a detail:
+
+1. **The roster never enters `QuizConfig`.** That object is posted to
+   `/api/scan` with every single capture. Student names living in a
+   different store is what makes "no name ever reaches the backend"
+   structural instead of a thing to remember.
+2. **The app writes exactly two things, ever**: a new sheet named after the
+   quiz, and — only when the instructor ticks the box in 12.13 — one column
+   inside the class-list sheet. It never renames a sheet, never reorders
+   tabs, never deletes anything not explicitly chosen for overwrite, and
+   never writes an invisible marker of its own (12.3).
+3. **The class-list sheet can never be overwritten.** If a quiz name
+   collides with it, the collision prompt offers Rename and Cancel only.
+   The instructor is free to rename that sheet to anything, including
+   something that later collides, and losing the class list to a mis-tap
+   must not be reachable.
+4. **Blank is blank.** A roster student with no scan gets empty mark cells,
+   never `0` (step 9).
+5. **IDs are written back verbatim.** Normalisation exists for comparison
+   only; the file keeps its own ID formatting.
+6. **Nothing is auto-corrected.** A suggested ID (12.10) requires a tap.
+   Flag, never guess, holds here exactly as it does for recognition.
+7. **No backend changes, and no new dependency.** ExcelJS is already in
+   `package.json` and does all of it.
+
+### Substeps
+
+**12.0 — Amend the specs first.** plan §15's "No file uploads" bullet,
+§2's "without requiring any upload" sentence, and §13's deferred
+roster-import bullet. Three documents currently assert the opposite of what
+this step builds; leaving them is exactly the drift the 2026-08-31 audit
+kept finding. Also update §11's Setup and Results screen descriptions, and
+CLAUDE.md's layout tree and Deferred section.
+
+#### Phase A — the roster in
+
+**Done 2026-09-07** — see the Progress table's step 12 row for what was
+built and verified. 12.1–12.4 below are the spec Phase A was built against;
+left as originally written rather than rewritten in the past tense, so this
+section still reads as the substeps to satisfy if any of Phase A is ever
+touched again.
+
+- **12.1 Mode choice at Setup.** Two paths: *use my class marksheet*
+  (`.xlsx` upload) or *plain download* (today's flow, byte for byte). The
+  choice is session state alongside the config, not a `QuizConfig` field
+  (rule 1). A fresh upload is required per quiz — deliberately, so the file
+  written into is the one the instructor actually has on disk, not a stale
+  in-app copy that would silently discard whatever they edited in Excel
+  between quizzes.
+- **12.2 `roster.ts`, pure and unit-tested.** Header matching on a
+  canonical key: uppercase with every non-alphanumeric stripped, so
+  `Student ID`, `STUDENT  ID`, `student_id` and `StudentID` all collapse to
+  `STUDENTID`. The header row is found by scanning the first ~20 rows of a
+  sheet rather than assuming row 1 — `File Upload.md`'s `sheet_to_json`
+  approach assumes row 1 and would break on a title row above it. ID
+  normalisation for comparison: coerce to string, strip whitespace,
+  left-pad with zeros to `idDigits` when the value is all digits and short
+  (Excel turns `0212345` into the number `212345` when the column is
+  numeric — reproduced). Report duplicate IDs within the roster at upload,
+  not at export.
+- **12.3 Identify the class-list sheet: exclude, then prefer, then
+  confirm.** Three layers, in this order, and the order is load-bearing —
+  see plan.md §17 for why an earlier draft that ran "prefer position" before
+  "exclude exam-shaped sheets" was checked and found unsafe. **Exclude
+  first, unconditionally**: among sheets carrying `STUDENT ID` +
+  `STUDENT NAME`, drop any that also carry the full exam-sheet signature
+  (`Total` **and** a `Q<n>` column **and** `Serial`, together) — this runs
+  before position is ever consulted, never after. **Then prefer the first
+  visible sheet**, among whatever survives the exclusion — the instructor's
+  own convention, used as a tiebreaker rather than a bypass; with exactly
+  one survivor it changes nothing, with more than one (two sections in one
+  workbook) it resolves the tie instead of forcing a guess. **Always show
+  the result for confirmation** — "Class list: `data` — 16 students ·
+  Change" — with every candidate one tap away.
+
+  Why all three, in this order. Running position before exclusion fails
+  quietly: with names in the exam sheets (12.5), an exam sheet is itself a
+  valid class-list shape, so dragging its tab to the front would make it
+  win the position check *before* exclusion ever ran — demonstrated
+  directly, which is why the order was corrected before this was built, not
+  after. Exclusion alone leaves a genuine tie (two roster-shaped sheets)
+  unresolved. It also has to survive the instructor's actual stated
+  workflow — accumulating quiz columns into the class-list sheet:
+  `SL | STUDENT ID | STUDENT NAME | Q1 | Q2 | Mid | Total` must still pass.
+  Requiring `Serial` in the exam signature handles the realistic version of
+  that on its own (a column headed `Quiz 1` normalises to `QUIZ1` and does
+  not match `^Q\d+$` anyway), but the confirm step is what makes it certain
+  rather than probable. **No marker is written into the workbook** to
+  remember the answer between uploads — that was considered and declined by
+  the user, and four marker mechanisms were verified as workable first (a
+  defined name, a hidden sheet, a print footer, and workbook properties all
+  survived both an ExcelJS round trip and a LibreOffice re-save), so this is
+  a choice about not leaving invisible things in someone's file, not a
+  limitation. The cost is one tap per upload, and it is the right trade.
+- **12.4 Validation and error states.** No candidate sheet; a header row
+  with no data rows; a corrupt or non-`.xlsx` file. Each blocks with a
+  specific message naming what was wrong, never a generic failure.
+
+#### Phase B — the sheet out
+
+**Done 2026-09-07** — see the Progress table's step 12 row. 12.5–12.8
+below are the spec Phase B was built against, left as written rather than
+rewritten in the past tense.
+
+- **12.5 `examSheet.ts`, pure and unit-tested.** Given roster + records +
+  config, produce the rows and the list of problems. Columns:
+
+  ```
+  SL | STUDENT ID | STUDENT NAME | Q1 … Qn | Total | Serial
+  ```
+
+  One row per roster student, in roster order; `SL`, `STUDENT ID` and
+  `STUDENT NAME` copied verbatim (rule 5); unscanned students get blank
+  mark cells (rule 4); scanned scripts that match no roster student are
+  appended below the roster block rather than dropped.
+
+  `File Upload.md` specifies `STUDENT ID` + `Marks` only, and bans
+  `STUDENT NAME` from exam sheets because it is the only thing separating
+  them from the roster. Both are deviated from deliberately: a single
+  `Marks` column discards the per-question breakdown the whole app exists
+  to produce, and 12.3's signature test plus its confirm step replace the
+  discriminator that banning names removed.
+- **12.6 Sheet-name sanitisation.** To ExcelJS's actual enforced rule set —
+  strip `* ? : \ / [ ]`, no leading or trailing `'`, non-empty after
+  trimming, truncate to 31 characters — applied *before* `addWorksheet`,
+  since the library throws rather than sanitising. Show the instructor the
+  final name when it differs from what they typed.
+- **12.7 Collision handling.** Case-insensitive, against the sheets in the
+  uploaded file. Overwrite / Rename (auto-suffix) / Cancel — except against
+  the class-list sheet, where Overwrite is not offered at all (rule 3).
+  Overwrite is `removeWorksheet(id)` then re-add under the same name;
+  verified to leave the other sheets intact.
+- **12.8 Export and download.** Always rebuilt from the *originally
+  uploaded* bytes plus current records, so exporting twice in one session
+  is idempotent instead of accumulating duplicate sheets — and so the
+  collision check in 12.7 is against the instructor's file rather than
+  against something the app added a minute ago. Reuse `handleExport`'s
+  existing anchor and delayed-revoke path. State the charts/pivot-tables
+  limitation in the UI, next to the export, and note that the original file
+  on disk is never modified — the app hands back a new copy. ExcelJS is
+  dynamic-imported at file-selection time so the plain-download path never
+  pays for it (it is most of the Results bundle's weight, which is why
+  `App.tsx` already lazy-loads that screen).
+
+#### Phase C — roster-aware scanning
+
+**Done 2026-09-07** — see the Progress table's step 12 row. 12.9–12.11
+below are the spec Phase C was built against, left as written rather than
+rewritten in the past tense.
+
+- **12.9 "Scanned 7 of 16."** The Scan header knows the class size.
+- **12.10 Not-on-list flagging, with a candidate.** Review shows when a read
+  ID matches no roster student, and offers a single suggestion when exactly
+  one roster ID is a single digit away — or, for a partial read like
+  `12?4567`, when exactly one roster ID is consistent with the known
+  digits. Accepted by an explicit tap, never applied automatically (rule 6).
+  This is worth more than it looks: whole-ID exact match is 55.2% on the
+  real-class batch, and a class list turns an unreliable read into a
+  constrained match.
+- **12.11 Names in Review and Results.** `1722112 — Monem Tazwar`, so a
+  misread ID is visible against the script in the instructor's hand. Update
+  Setup's privacy disclosure: the class list, names included, is held on
+  the device for the session and cleared by Reset everything. `Setup.test.tsx`
+  already pins the always-visible data note and asserts it is outside the
+  collapsible `<details>` — extend it, do not move it.
+
+#### Phase D — reconciliation and accumulation
+
+**Done 2026-09-07** — see the Progress table's step 12 row. 12.12–12.14
+below are the spec Phase D was built against, left as written rather than
+rewritten in the past tense.
+
+- **12.12 Pre-export coverage and blocking.** List who is missing before
+  the download. **Block** the round-trip export when two confirmed records
+  match one roster student, naming both — writing one student's marks into
+  another's row is the worst failure this app has, the Results table is
+  already editable, and the plain download remains available as an escape
+  hatch. Step 9.3's "this app has no class list" note becomes conditional:
+  it is still true in plain mode and no longer true in workbook mode.
+- **12.13 Opt-in totals column.** A checkbox at export, off by default:
+  also add or update one column in the class-list sheet, headed with the
+  same sanitised name as the exam sheet, holding each student's total.
+  Re-exporting the same quiz updates that column in place rather than
+  adding a second one. Students not on the roster are never appended as new
+  rows to the class list — they are reported instead. This is the one
+  operation that writes into the instructor's own sheet, which is why it is
+  opt-in and why rule 2 exists.
+- **12.14 Storage.** Uploaded bytes and parsed roster in a new IndexedDB
+  store, DB version bumped, **cleared by `resetAll()`** — unlike `meta`,
+  which it deliberately spares, and for the opposite reason: a source id
+  identifies a writer across sessions, a class list belongs to one.
+
+### Test
+
+Vitest over the pure modules — `roster.ts`, `examSheet.ts`, the sanitiser —
+building workbooks in memory with ExcelJS the way the pre-spec probes did.
+**No fixture file**: `Course CSE211L  Section 1 Marksheet.xlsx` holds 16
+real students' names and IDs, and `*.xlsx` is gitignored precisely so a real
+one cannot be committed. Keep it for manual end-to-end runs only.
+
+Cases the suite must carry, each written as the failure rather than the
+implementation: header spelled four different ways; header not on row 1;
+IDs stored as numbers with a leading zero lost; a roster with duplicate
+IDs; a workbook with no candidate sheet; two candidate sheets; an exam
+sheet dragged to the front; a class-list sheet that has accumulated
+`Q1`/`Q2`/`Mid`/`Total` columns; a quiz name that sanitises to empty, to 31+
+characters, and to the class-list sheet's own name; a re-export of the same
+quiz; a scanned ID absent from the roster; a roster student never scanned;
+two records matching one roster student.
+
+Then by hand, on the real file and the real phone, because none of the
+above proves the part that actually has to work: upload from the phone's
+file picker, scan a few scripts, export, and **open the result in both
+Excel and LibreOffice** — class list untouched, prior sheets untouched,
+blanks genuinely blank rather than zero, marks matching the on-screen
+table. Then re-upload that downloaded file as the next quiz's input and do
+it again. The second round trip is the real test; the first only proves the
+file was written.
+
+### Done when
+
+A full quiz session runs end to end in workbook mode: the instructor's own
+marksheet goes in, a correctly-named sheet with the full breakdown comes
+out, the class list and every prior exam sheet are unchanged, and the
+downloaded file re-uploads cleanly as the next quiz's input. A student on
+the list who was never scanned shows as a blank row and is named before
+export; a scanned script matching nobody is visible rather than dropped;
+two scans of one student block the export instead of silently picking one.
+Plain mode still behaves exactly as it did before this step. And the phone
+can actually do it — the file picker and the download, on the real device,
+not just in a desktop browser.
+
+**Every clause above is met except the last one.** All four phases are
+done (2026-09-07) and verified against the real 16-student marksheet
+directly — the full loop (roster in, sheet out, roster-aware review,
+coverage/blocking/opt-in totals) has been run against real data, in
+Node, end to end. What hasn't happened is a human doing it on an actual
+phone: the file picker, the confirm taps, the download, on a real device
+rather than a desktop browser's dev tools. Same category as camera/PWA
+verification elsewhere in this project — needs the user's own
+participation and can't be simulated from here.
+
+Each phase has its own bar, so progress is real rather than
+all-or-nothing:
+
+- **A is done when** the real marksheet uploads, the class list is
+  identified and confirmed, 16 students are parsed with IDs intact, and
+  every invalid file is refused with a message naming the reason. **Met
+  2026-09-07** — confirmed against `Course CSE211L  Section 1
+  Marksheet.xlsx` itself, not only the synthetic shapes `roster.test.ts`
+  builds: `analyzeWorkbook`/`parseRosterSheet` correctly identify `data`
+  unambiguously and parse all 16 students, names and IDs intact, zero
+  false duplicates. Run once by hand outside the test suite (the file
+  can't be a fixture — see 12.2's own note); the unit and component
+  suites carry the adversarial cases (dragged tab, ambiguous sheets,
+  corrupt file, empty header) that this one real file doesn't exercise.
+  Not yet verified on an actual phone's file picker — that's this phase's
+  one open item, same category as camera/PWA hand-verification elsewhere.
+- **B is done when** an export writes a correct sheet into that file,
+  opens cleanly in Excel and LibreOffice with every other sheet intact,
+  and exporting twice produces one sheet rather than two. **Met
+  2026-09-07** — each clause checked with real evidence, not inferred:
+  the actual production code (`roster.ts`/`examSheet.ts`/`workbookExport.ts`,
+  not a synthetic stand-in) ran against `Course CSE211L  Section 1
+  Marksheet.xlsx` itself, the output was piped through a real
+  `soffice --headless --convert-to xlsx` (not a library simulating one),
+  and the re-saved file was reloaded and checked: both sheets present, the
+  16-student class list untouched, the exam sheet's scanned row and its
+  blank (never `0`) unscanned row both intact. Idempotency (exporting
+  twice → one sheet) is covered by `workbookExport.test.ts`'s own test
+  rather than repeated against the real file. Run once by hand outside the
+  suites, same reasoning as Phase A's own real-file check — the marksheet
+  can't be a fixture.
+- **C is done when** an ID that is not on the class list is visibly
+  flagged during review, a single-digit misread offers the right candidate,
+  and no suggestion is ever applied without a tap. **Met 2026-09-07** —
+  checked against the real 16-student roster, not only synthetic 2-student
+  ones: a real single-digit misread and a real partial read (one digit
+  unread) both resolve to the correct unique student, and a genuinely
+  bogus ID gets no suggestion at all — confirming that among 16 real IDs,
+  none happens to sit one digit from a wrong one and produce a false
+  positive. The ambiguous case (two roster students each one digit away,
+  or each consistent with a partial read) is a permanent unit test, not
+  just an assumption that "unique" would naturally hold.
+- **D is done when** the pre-export summary names the missing students,
+  a duplicate blocks the export, and the opt-in column lands in the class
+  list without disturbing anything else in that sheet. **Met 2026-09-07**
+  — and one real bug was caught and fixed before any of this could be
+  trusted: `RosterStudent` had no field recording which sheet row a
+  student actually sits on, so writing the totals column by the arithmetic
+  shortcut `headerRow + 1 + i` would have silently written a total next to
+  the WRONG name the moment a roster had even one blank-ID row skipped
+  during parsing — added `RosterStudent.row`, guarded by a permanent
+  regression test at both the parsing layer (`roster.test.ts`) and the
+  point it would actually cause damage (`workbookExport.test.ts`, a
+  constructed roster with a real gap). Checked against the real
+  16-student roster directly, not only synthetic shapes: scanning 14 of
+  16 with one deliberate duplicate correctly listed the other 2 as
+  missing, correctly identified the one duplicate, and the totals column
+  landed on the exact right row for every one of the 16 real students —
+  including the duplicate's row taking the more recently confirmed
+  record's total, and a genuinely unscanned student's cell staying blank.
+
+---
+
 ## Progress
 
 | Step | State |
@@ -1300,6 +1687,7 @@ all-or-nothing:
 | 9 — Results and Excel export | in progress — `frontend/src/results.ts` (9.1/9.2, pure and unit-tested: 8 tests) sorts by serial then student ID, both compared numerically with leading zeros stripped via `normalizeSerial` (so "2"/"02" sort together and a missing serial sorts last, matching plan.md §11's own mockup) and flags a single-identity record with which field is missing ("no serial"/"no ID"). `Results.tsx` (9.1) renders the table with per-row inline editing — each field commits to IndexedDB on blur, reusing `isLegalValue`/`sumCheck` from `validateMarks.ts` so a bad edit is rejected the same way an initial Review-screen edit already is, and an edit that would clear *both* identity fields is refused outright (CLAUDE.md's "at least one of studentId/serial must be non-null" invariant, now enforced at edit time too, not just at first save). Record count and unverified count shown (9.2); the attendance-sheet expectation stated plainly, not as a surprise (9.3, plan.md §10). Excel export (9.4) builds `ws.columns` from `QuizConfig` so question columns follow the quiz; verified two ways beyond the component test that just checks the download fires: the exact row-building logic was run standalone through real ExcelJS (not mocked) and read back programmatically — confirmed half marks land as JS numbers (`2.5`), not text, and every blank field (a missing serial, an unrecognized question, a missing total) comes back genuinely blank, never `0`, matching step 9's own "the worst possible failure" warning — then the same file was opened in LibreOffice (real Excel unavailable in this environment) via both a PNG and a PDF render; the PDF confirmed the same values across what turned out to be two print pages (a LibreOffice pagination artifact — the PNG render alone looked like a misaligned column at first glance until the second page's `Total` values were checked directly). Bundle verified per the Test section's own instruction to check this first: `exceljs` builds cleanly with Vite, no stream/buffer polyfill issues. One unplanned but low-risk addition: `Results` is now `React.lazy`-loaded from `App.tsx`, since ExcelJS is most of its bundle weight (934KB) and the screen is rarely visited — this keeps it out of the main Setup/Scan/Review bundle (back down to ~210KB) without changing anything the spec asked for. 65 frontend tests pass (59 + 6 new for `Results.tsx`, on top of `results.ts`'s own 8). **Not done** — the actual "open a real export in Excel and LibreOffice" check (step 9's own Test section) has only had the LibreOffice half done for real; a genuine full class session's worth of records has not been exported and reconciled by hand yet. **"Reset everything" added (2026-08-30)**: nothing previously cleared a finished session — records and quiz config would still be there next time the app opened. New `db.ts`'s `resetAll()` clears both IndexedDB stores in one call; `Results.tsx` gets a "Reset everything" button that opens the same inline confirm/cancel warning-banner pattern `Review.tsx` already uses for a conflict, so nothing is deleted without an explicit second click. Confirming wipes the DB and calls back to `App.tsx`, which — with no config left — lands the instructor back on Setup for a genuinely clean session. 2 new component tests (confirm-then-cancel deletes nothing; confirm-then-delete clears both stores and calls back), 67 frontend tests pass total, `tsc` clean, production build clean. |
 | 10 — Full rehearsal | not started |
 | 11 — Free-tier demo deployment | **DONE and LIVE (2026-08-31)** at https://d2n2meq17rr1oi.cloudfront.net — specced 2026-08-30 after the user asked about sharing this with other faculty as a demo. A deliberate extension beyond plan.md §13's MVP scope, which puts hosting out of scope; the laptop workflow stays the supported path and nothing here changes it. Research done rather than assumed: **no mainstream free tier offers a persistent disk** (Koyeb free excludes volumes, Render attaches them to paid services only, Fly.io dropped its free tier for new signups, HF Spaces charges for persistence), so 11.2's move of harvested crops to free object storage is a prerequisite rather than a refinement — on local disk they would be lost on every redeploy and idle-sleep. Step 3r.6e's default flip is what makes free hosting viable at all: no `GEMINI_API_KEY` to share (five faculty on the remote path would rate-limit each other), no Tesseract binary (pure `pip install`, no `apt` layer), 124 MB RSS against a 512 MB free tier, and a measured ~0.1 s detection + ~0.01 s ID read on a real 1920×1080 capture, extrapolating to a usable 5–10 s on 0.1 vCPU. **11.0 is blocking and worth doing regardless of hosting**: `debug_uploads/` currently holds 587 real photos / 97 MB and is the only thing storing whole scripts (it also contradicts the "backend is stateless" invariant CLAUDE.md asserts), and `harvest.py`'s per-crop `uuid4` does not actually unlink a student's digits because they are written in loop order — sorting by mtime reconstructs the ID. Neither is a hosting bug; hosting just makes them consequential. **Target chosen 2026-08-30: AWS**, the user having $140 in credits ($100 free-tier + two $20 activity credits, issued 18 Aug 2026). The design lands inside AWS's *always-free* tiers rather than spending credits — Lambda (1M requests + 400,000 GB-s/month, permanent) behind a Function URL for the backend, S3 + CloudFront (1 TB egress/month, permanent) for the frontend, S3 for crops. At 2 GB / ~2 s per scan that is ~100,000 free scans a month against a realistic demo load of ~300. Two measurements cleared the risk before committing: real captures average 166 KB (largest 807 KB) against Lambda's 6 MB payload cap, and cold init measured 0.9 s (0.48 s heavy imports, 0.42 s app + model), so cold starts land at 2–4 s. **The AWS target also hardens 11.0.1/11.2 from advisable to mandatory**: Lambda's filesystem is read-only outside `/tmp`, so `debug_uploads/` and `HARVEST_DIR` would raise `OSError` on the first scan rather than merely losing data. One trap recorded so it is not rediscovered: the credits' 18 Aug 2027 expiry is *not* the account's lifetime — a Free plan account closes after ~6 months (≈18 Feb 2027), so 11.6.0 moves to the Paid plan plus a budget alarm, which costs nothing extra here because the workload sits in always-free tiers regardless — though upgrading is a three-click, anytime operation with credits carried over and a 90-day grace period after closure, so staying on Free while building is genuinely safe; the deadline that matters is "before other faculty depend on it", not a technical one. **Specced as three independently-shippable phases** (2026-08-30): **A** = 11.0's two privacy defects, worth doing regardless of hosting and touching nothing else; **B** = 11.1–11.3's config seams, S3 store and container, all written so an unset environment reproduces today's laptop app byte-for-byte; **C** = 11.4–11.7's hardening, disclosure, deploy and verification. Each phase has its own test bar and Done-when. The load-bearing local check is `docker run --read-only --tmpfs /tmp`, which reproduces Lambda's filesystem constraint on a laptop and is what would catch a missed write path in seconds rather than through CloudWatch. **Phase A (11.0) done 2026-08-30, shipped on its own ahead of any deployment work — both items were live defects, not hosting prep.** *11.0.1*: the `DEBUG_UPLOADS_DIR` constant, its comment block and the `mkdir`/`stamp`/`write_bytes` lines are gone from `main.py`, along with the now-unused `datetime` import (checked for other uses first — there were none); `backend/debug_uploads/` deleted from disk, **605 files / 99 MB of real student scripts**. Nothing tracked changed, since it was gitignored. Verified before deleting rather than after: every photo `testset/labels.json` references from that directory (the 7 `phone_*` captures) was already copied into `testset/images/`, so no labelled test material was lost. *11.0.2*: `harvest.py`'s `_save` now stamps `os.utime(dest, (CONSTANT_MTIME, CONSTANT_MTIME))` after `shutil.copyfile` — inside `_save`, not at each call site, so no field added later can forget it — with a comment saying why, since a constant mtime reads as a bug to the next person. **The leak was confirmed real on this repo's own data before being fixed, not taken on faith**: sorting the existing harvested `id_digits/` crops by mtime and reading their filename labels in order recovered **2 of the 18 real class student IDs verbatim** (`5567890`, `5678900`), and would have recovered more with a better group-boundary heuristic — the 16-photo `harvest_real_photos.py` batch wrote its digits with sub-millisecond gaps, blurring request boundaries, and a student's digits split across `confirmed/`/`corrected/` when some were corrections. After the fix, zero. *Gap the spec did not cover, found by running its own check*: `os.utime` only protects **future** writes, but the **727 crops already collected** carried 133 distinct real mtimes — and that existing corpus is exactly what 11.2 uploads to S3, so the leak would have shipped. Backfilled all 727 to `CONSTANT_MTIME` (133 distinct → 1) after confirming nothing anywhere reads a harvested crop's mtime. *11.0.3*: both adversarial checks run. `find backend -name '*.jpg' -mmin -5` after a real scan through the endpoint returns nothing — in fact the scan writes nothing at all under `backend/` — and the mtime sort now carries no information. The step's suggested regression test exists as `test_harvest.py::test_mtime_ordering_cannot_reconstruct_a_student_id`, written as the *attack* (sort every crop from one `harvest()` call by mtime, assert the ordering is information-free) rather than as an assertion that `utime` was called, and **proven non-vacuous by temporarily removing the `os.utime` line and watching it fail** with three visibly ordered mtimes. Regression: 85 backend tests pass (84 → 85), 31/31 detection regression, 67 frontend tests pass; a real `/api/scan` against `filled_file.jpeg` returns the same values as every prior run (`student_id: "2632711"`, `serial: "07"`, `q1` correctly flagged rather than guessed). `batch_detect.py` reports 15/30, which is its own long-standing hardcoded `--questions 5` against a test set of 3/5/7/8-question templates, not a regression from this work. Docs reconciled to match: README.md, plan.md §9/§13/§16 and CLAUDE.md all previously asserted `debug_uploads/` existed and that the backend was "stateless except in two places".. **Phase B (11.1–11.3) done 2026-08-30.** Its governing constraint held throughout: *an unset environment is byte-for-byte the laptop app*, and that is asserted rather than trusted — `tests/test_config.py` keeps a literal copy of the pre-step-11 CORS regex (deliberately not imported, which would make the test tautological) and checks every default. *11.1*: new `app/config.py` is the only place under `app/` that reads the environment, loading dotenv exactly once at import — `main.py` imports it first, since `RECOGNIZER` is resolved at import time and that ordering had already nearly broken `.env` selection once during the CNN flip. `ALLOWED_ORIGINS` (comma-separated) replaces the LAN regex for a hosted frontend; unset keeps the regex exactly. A blank or all-whitespace allowlist falls back to the regex rather than resolving to `[]`, which would allow *no* origin and silently break every client — `None` and `[]` mean genuinely different things here. `HARVEST_ENABLED` accepts the spellings people actually type and keeps its default on an unrecognised value, so a typo cannot silently switch collection off. `VITE_API_BASE` needed no code change (`apiBase()` already honoured it) but is now documented in a new `frontend/.env.example` with the build-time-not-runtime caveat spelled out. *11.2*: new `app/stores.py` puts the seam at `_save`, exactly where the step said — `LocalStore` (default, unchanged behaviour) and `S3Store` behind a deliberately one-method protocol, since harvesting only ever appends. The key is identical across both backends (`<source>/<field>/<tag>/<value>_<uuid>.png`), which is what lets `aws s3 sync` reproduce the training layout byte for byte. Source tagging (11.2.4/11.2.5) is per-faculty and client-generated: `db.ts`'s `getSourceId()` mints a `crypto.randomUUID()` once per browser, `api.ts` sends it, and a request without one lands under `unknown/` rather than getting one invented server-side. **A schema decision the step did not anticipate**: the id could not live beside the quiz config, because `resetAll()` clears that store and "Reset everything" is normal between classes — regenerating the tag on every reset would split one writer's handwriting across unrelated prefixes and defeat plan.md §16's held-out-writer evaluation, the exact thing the tag exists for. It lives in a new `meta` store (DB v1→v2) that `resetAll()` deliberately leaves alone, with an `oldVersion`-guarded migration so an instructor mid-pilot keeps their records; **the migration test was proven non-vacuous by removing the guard and watching it fail** with a `ConstraintError`. A hostile `source` is sanitised — `/api/harvest` is public and `../../etc/passwd` would otherwise escape the harvest root. *11.3*: `Dockerfile` + `.dockerignore`, **no `apt` layer at all** — that is step 3r.6e's CNN default cashing out, since the remote path needed the Tesseract binary. **One deliberate deviation from the step's own How**, which specified the `public.ecr.aws/lambda/python` base image *and* the Lambda Web Adapter: those pull in opposite directions, because the adapter is what speaks the Lambda Runtime API, so keeping the base image's runtime interface client would make the container answer Lambda's invocation envelope instead of a plain `POST /api/scan` — breaking the very local verification 11.3.5 exists for, and which the step's own test command performs. A plain `python:3.10-slim` base plus the adapter keeps the tested thing and the shipped thing identical. Image is 740 MB (Lambda's limit is 10 GB); `digit_cnn.onnx` confirmed committed and copied in, so there is no download or training step at boot. **Verification, the part that earned the phase**: `docker run --read-only --tmpfs /tmp` reproduced Lambda's filesystem on the laptop and a real scan through it returned values identical to the laptop's (`student_id: "2632711"`, `serial: "07"`, `q1` flagged not guessed). Harvesting on the default local backend then failed exactly as the step predicted — `OSError: [Errno 30] Read-only file system: '/var/task/training_data'` — which is the *success* case: the failure this step was written to prevent, surfaced in a second rather than through CloudWatch after a deploy. `HARVEST_ENABLED=false` returns a clean `{"harvested": false}` 200; `HARVEST_BACKEND=s3` moves the failure to `InvalidAccessKeyId`, i.e. the filesystem is no longer in the path at all and only a real bucket is missing. **A real gap only the container could find**: `S3Store` imports `boto3`, and AWS docs say boto3 ships in the Lambda runtime — true of the *managed* runtime and the Lambda base image, false for a custom container on a slim base. Every unit test passed throughout because they stub `boto3` (correctly — their subject is key construction), so only building and running the image caught `ModuleNotFoundError`. Fixed with a new `requirements-deploy.txt`, following the existing `requirements-cnn.txt` split. Also migrated, same shape of problem as 11.0.2's backfill: the 727 already-collected crops sat at the old top level and would have left the corpus in two layouts, so they moved under one `pilot-legacy/` prefix with a README — deliberately not a more specific name, since they mix the instructor's own review-screen Confirms with the real-class batch and can no longer be told apart. `harvest_real_photos.py` now tags its batch `pilot-real-class`. **A test-isolation bug found and fixed in this step's own new tests**: `test_config.py` reloads `app.config` to test non-default environments, and its first teardown reloaded *before* monkeypatch undid the env — pytest finalises in reverse setup order, so the patched `HARVEST_BACKEND=s3` baked itself into the module for the rest of the session. Every test passed alone; three unrelated ones failed in the suite. Fixed with an explicit `monkeypatch.undo()` before the reload. Regression: **120 backend tests (85 → 120)**, 31/31 detection regression, **72 frontend (67 → 72)**, `tsc` clean, production build clean, design-tell scanner clean. **Not done, and needs the user's AWS account**: an actual write to a real bucket, which is why phase B's own bar is met "except the real-bucket write" — that belongs to phase C.. **11.4 and 11.5 done 2026-08-30**, pulled forward ahead of the deploy on purpose: both are pure code, need no AWS account, and 11.5 turned out to be a correction rather than an addition. *11.4*: new `app/ratelimit.py` — a sliding-window per-IP limiter plus client-IP extraction — wired into `main.py` as a single `guard` middleware. Sliding rather than fixed-bucket, because a calendar-minute bucket lets a caller spend the full budget at 11:59:59 and again at 12:00:00, doubling the real rate exactly when a retry storm is likeliest; and an over-limit request is deliberately *not* recorded, or a client that keeps hammering pushes its own window forward and stays locked out indefinitely. Middleware rather than a route dependency because the size check must run *before* the body is read — a dependency runs after FastAPI has already parsed the multipart form, by which point an oversized upload is in memory and the cap has done nothing. Defaults chosen against real measurements, not round numbers: **`MAX_UPLOAD_BYTES` 5 MB** (real captures average 166 KB, largest 807 KB) which also sits under the ~6 MB Function URL ceiling so oversized bodies get a clear 413 from us rather than an opaque platform rejection; **`RATE_LIMIT_REQUESTS` 30/min**, about 10x an instructor's real ~3/min, high enough to survive several faculty behind one institutional NAT sharing an apparent IP, and low enough that a single IP sustaining it for a month lands ~43,000 scans — still inside Lambda's always-free tier, so even a hostile-but-slow caller cannot generate a bill. **Deliberately no new dependency**: `slowapi` carries the identical per-instance limitation on Lambda, so it buys nothing. **The limitation is documented rather than glossed** — the counter is per process, so on Lambda it is per *container instance* and an attacker spreading across cold starts is limited far less than the numbers suggest; making it exact needs Redis/DynamoDB on the request path, for a demo whose documented answer to sustained abuse is 11.4.3's "take the URL down". Two behaviours that would be easy to get wrong are pinned by tests: **CORS preflights are exempt** (browsers send them automatically; counting them silently halves the real budget) and **a 429 still carries CORS headers** (without them a browser reports an opaque CORS failure instead of the real status, so the frontend could never tell the user to slow down) — the latter depends on `CORSMiddleware` wrapping `guard`, an ordering property of registration. Client IP comes from `X-Forwarded-For` since `request.client.host` behind a Function URL and CloudFront is the *proxy*, which would put every caller in one bucket and make the limit global; that header is spoofable, and the trade is taken explicitly — keying on the proxy is a guaranteed outage for legitimate users versus a possible evasion by an attacker the threat model already concedes. *11.5*: **this corrected a false claim, not just a missing one.** `Setup.tsx` had said "Everything stays on this device until you export it" since step 5 — and `/api/harvest` has been saving labelled cell crops server-side since 3r.6c, so the app had been overstating its privacy for two steps. Replaced with the true statement in two halves: the *photograph* is never stored (true since 11.0.1), and *individual cells* — one digit or mark each — are kept with the values the instructor confirms and used to train and tune recognition, carrying no name, nothing linking back to a student, and no way to reassemble a whole ID. A one-line summary also renders **outside** the collapsible "How this works" section, since that renders collapsed once a config is saved and a returning instructor — the one whose students' handwriting is actually being collected — would otherwise never see it again. New `Setup.test.tsx` pins both, including an explicit assertion that the visible line is not inside a `<details>`. Verified in the real container, not only in tests: with `RATE_LIMIT_REQUESTS=3`, requests 1–3 returned 200 and 4–5 returned 429 with a `Retry-After: 49` header, a different `X-Forwarded-For` was unaffected, and a 6 MB body was refused 413. Regression: **137 backend tests (120 → 137)**, 31/31 detection, **74 frontend (72 → 74)**, `tsc` clean, build clean, design-tell scanner clean.. **Crop retrieval built 2026-08-31** (`fetch-crops.sh`), closing a gap the step never named: 11.2 moved crops *to* S3 but nothing described getting them *back*, and 3r.6b's fine-tuning cannot start without that. Merges all three destinations — laptop disk, `local-stack.sh`'s MinIO, and a deployed bucket — into `backend/training_data/all/` (gitignored), which works precisely because 11.2 kept the key layout identical across backends. `cp -a` preserves the constant mtime from 11.0.2 rather than restamping it. It also reports what it pulled, since two properties of this corpus would quietly ruin a fine-tuning run: **ID digits are imbalanced 4.1x** (rarest 20, commonest 82) and **half marks are 9.4x rarer than whole marks** (31 vs 290) — and half marks are exactly the values the model finds hardest to separate. It also warns when everything is tagged `confirmed`, because `harvest_real_photos.py` posts `original == confirmed` and so files its whole batch that way regardless of what the model would have read: valid labelled data, not a valid list of failures. Verified end to end against a running MinIO: 727 local + 10 remote = 737 crops merged, correct per-source split. Fine-tuning itself (3r.6b) remains unbuilt — which head, how to hold out a source, how to weight corrections are still open in plan.md §16.. **Corpus reset + collection hygiene (2026-08-31), by explicit user decision.** The 737-crop corpus was discarded and rebuilt. Justification, measured rather than assumed: the digit histogram (`2` x82 vs `4` x20) reflected the two scripts re-photographed dozens of times during step 6/7 phone testing (IDs `2632711`/`2632700`, both 2-heavy), not handwriting; `pilot-legacy` mixed the phone-test Confirms with the real-class batch irreversibly, making plan.md §16's held-out evaluation impossible; and 229-737 crops is far below what fine-tuning needs (EMNIST is 240k), so the corpus had no training value and the reset cost nothing. **The valuable half was regenerable** — the 18 photos and their ground truth live in `testset/` — which is what made the decision easy. Three fixes shipped before the wipe, so the next corpus cannot repeat it: *(1)* `TEST_SOURCE_PREFIX = "test-"` is reserved and `fetch-crops.sh` drops those sources unless `INCLUDE_TEST=1` — structural, because the convention it replaces is the thing that already failed; *(2)* `harvest_real_photos.py` now runs a real `/api/scan` first and uses that as `original`, so `confirmed`/`corrected` finally means something — it previously posted `original == confirmed`, filing all 16 photos as "the model got this right" when the model was never asked; *(3)* crop keys are now **content-addressed** (`sha256[:32]` of the crop bytes, replacing `uuid4`), making re-harvests idempotent so duplication is structurally impossible rather than something to remember — it preserves the unlinkability uuid4 provided (different digits hash differently) and its one trade, that a content-addressed store lets a holder of a candidate crop test membership, is recorded in code rather than glossed. Two tests pin dedupe, and the second matters as much as the first: re-harvesting the same crop 5x leaves 1 file, and **two different students' `7`s both survive** (dedupe by content, never by label, or the corpus loses the variation it exists to capture). Fixing this exposed an unrealistic fixture — `_make_cells` wrote identical bytes to every placeholder, so they all collapsed under dedupe; corrected the fixture rather than weakening the dedupe. **Result after wipe + truthful re-harvest**: 229 crops, one source (`pilot-real-class`), **211 confirmed / 18 corrected** — 18 genuine model failures where previously there were zero. Two numbers carried honestly: the ID imbalance reads *worse* (13x vs 4.1x) but is not — the old figure was flattened by duplicates, and 13x across 16 real students is what a small honest sample looks like; and **half marks are now 0** (101 whole, 0 half), since this class awarded none, leaving nothing to learn from on exactly the values the model finds hardest — which is what step 3r.6a's unused collection-sheet generator exists for. **Step 11.4's rate limiter caught its own author**: the re-harvest 429'd partway through (2 requests x 18 photos vs a 30/min budget) — the limiter working on the first real workload to exercise it; fixed client-side by honouring `Retry-After`, which also means the script works against the deployed URL. **Deployment preparation (11.6), no AWS resource created.** New `preflight.sh` validates everything checkable without creating anything and exits with the blocker count: tooling, identity, per-service permission probes, whether target names are free, that the image builds for `linux/amd64` (705 MB vs Lambda's 10 GB) and carries the adapter, the `.onnx`, `boto3`/`onnxruntime`/`scipy`/`cv2` but **not** `torch`, that a real scan succeeds on a read-only root, that `VITE_API_BASE` actually reaches the bundle, and that both suites pass. New `aws/deploy-policy.json` is a least-privilege IAM policy derived from `deploy.sh`'s actual API calls (verified programmatically: no call uncovered), scoped to one ECR repo, one function, one role, two buckets — with `iam:PassRole` pinned to a single role ARN *and* conditioned on `iam:PassedToService: lambda.amazonaws.com`, and CloudFront documented as unavoidably `Resource: "*"` since a distribution's ARN does not exist until creation. **The Lambda Web Adapter was verified for the first time** via the AWS Runtime Interface Emulator — it activates only inside a Lambda environment, so every prior local test ran plain uvicorn with the adapter inert. A full multipart scan through a real Function-URL-shaped event returned identical values, cold init 1.26 s. That run also **caught a sizing error of my own**: Lambda's 6 MB request cap applies to the *base64-encoded* event (4/3 inflation), so the 5 MB upload cap allowed a 6.7 MB payload the platform would reject opaquely — exactly what the cap existed to prevent; lowered to 4 MB with the test now asserting encoded rather than raw size. Also fixed: the adapter reads `AWS_LWA_PORT` with bare `PORT` only a legacy alias (Dockerfile now sets both — a mismatch is invisible locally and hangs in production). **Two bugs found in `deploy.sh` by reading it before running it**: the post-create waiter was `function-updated`, which watches `LastUpdateStatus` and does *not* wait for a container-image function to leave `Pending`, so the smoke test could fire at a function that cannot serve (now `function-active-v2` after create, `function-updated-v2` between the two update calls where it is required); and IAM eventual consistency was papered over with `sleep 12`, now a retry loop that re-runs the failing call unredirected on the last attempt so the real error is visible. **Three bugs found in my own tooling**, all the same shape — something that looks fine while destroying evidence: `local-stack.sh`'s MinIO had no volume, so `down` deleted every crop collected during a test (now a named volume `down` spares, with a separate `reset`); a `|| true` hid a bucket-creation failure caused by publishing MinIO's console port but not its API port; and `preflight.sh` built the frontend into `dist/` with a throwaway `VITE_API_BASE`, so running the safety check left the real build pointing at a nonexistent host. Also diagnosed and fixed a live "Failed to fetch" on the phone: **the LAN IP is baked into two artifacts that go stale independently** — the bundle (`VITE_API_BASE` is inlined at build time) and the TLS cert's SANs. The frontend had been built on a phone hotspot (`172.20.10.6`) and used on home wifi (`192.168.0.108`); `local-stack.sh` already rebuilt the bundle each `up`, and now also regenerates the cert when its SANs miss the current IP and prints the address it built for. **A least-privilege trap worth recording**: `preflight.sh` probed `aws iam list-roles` — account-wide, deliberately omitted from the policy, and never called by `deploy.sh` — and reported a blocker on a *correct* policy. The tempting fix (add `iam:ListRoles`) would have loosened a correct policy to satisfy a bad test; the real fix was to probe the role `deploy.sh` touches, which exposed a second flaw: the probes could not distinguish "not authorised" from "does not exist yet", and before a first deploy a `NoSuchEntity` is a pass. Final state: `AWS_PROFILE=marks-scanner ./preflight.sh` reports **0 blockers, 0 warnings**. **Frontend (2026-08-31)**: `Setup.tsx` now surfaces saved IndexedDB data on the first screen — a count of already-scanned scripts, a View button routing to Results with the saved config, and a Reset behind the same confirm/cancel banner `Results.tsx` uses; reset also clears the form rather than leaving the old quiz's values in it. Wording deliberately distinct from `HOW_IT_WORKS`'s "saved on this device", since the same phrase meaning two things on one screen is a reading hazard. **A verification command was found to be doing nothing**: `npx tsc --noEmit` in `frontend/` typechecks *nothing* (the root `tsconfig.json` is a solution file, `"files": []` plus references) and had been passing on genuinely broken code; `npm run build` (`tsc -b`) catches it and was also being run, so coverage was real, but the extra command was theatre — recorded in CLAUDE.md. Regression: **139 backend tests**, 31/31 detection, **79 frontend (74 -> 79)**, build clean, design-tell scanner clean. **Still not started**: the deploy itself (11.6.1-11.6.5) and 11.7's verification. **Phase C completed and DEPLOYED 2026-08-31.** Live at `https://d2n2meq17rr1oi.cloudfront.net`. *Observability first (not in the original spec, added because CloudWatch can only show what the app emits and the app logged nothing)*: new `app/observability.py` writes one JSON object per line to stdout, which Lambda captures with no agent and Logs Insights parses natively — `{"event":"scan","status":"ok","ms_detect":85,"ms_read_id":13,"ms_read_marks":27,"ms_total":126,"flagged":["q1"]}`. Per-stage timings exist because "scans are slow" is unactionable while "detection is 2.1 s" is not. **Privacy is structural rather than a rule**: a key denylist drops `student_id`/`serial`/`total`/`value` whatever is passed, and a scrubber redacts any 4+ digit run inside a string, catching an ID smuggled through a message or exception. Step 11.7.3's requirement is verified against *real emitted output* — `test_observability.py` runs a real scan, asserts the ID was genuinely recognised, then asserts it appears nowhere in the logs. **Proven non-vacuous the hard way**: leaking the ID into a log call still passed, because the scrubber caught it; only disabling the scrubber *and* leaking made it fail. Both layers are real. `aws/MONITORING.md` holds saved-query-ready Logs Insights queries. *Deploy*: ECR image (705 MB), Lambda (2 GB / 60 s, Active), crops bucket (private), execution role (write-only to crops, no read — a compromised function cannot exfiltrate what it collected), log retention 30 days (new groups default to *Never expire*, a slow privacy leak as much as a cost one), CloudFront + S3 frontend. **The architecture deviates from 11.6.2 for a reason discovered only by deploying**: the spec called for a Lambda Function URL and argued against API Gateway on cost and its 29–30 s timeout. This account **refuses Function URL invocation by any non-IAM principal** — `AuthType NONE` with a textbook-correct public resource policy returned 403 and never reached the function; CloudFront's service principal with a correct OAC grant (principal, action, `FunctionUrlAuthType: AWS_IAM`, and a `SourceArn` matching the distribution exactly, all verified) also returned 403; only a directly IAM-signed request returned 200. Not an Organizations SCP (the account is not in an org), not ordering (URL deleted and recreated after the permission — same 403), not propagation, not function state. **Several hours went into proving a correct configuration was correct**, and the misleading detour was a genuine second bug on top: multipart POSTs failed with a *signature mismatch* (CloudFront OAC does not include the request body in its SigV4 signature) while bodyless GETs failed with an *authorization* error — two different failures that looked like one. Building the documented `x-amz-content-sha256: UNSIGNED-PAYLOAD` CloudFront Function fixed the body problem and changed nothing, because the body was never the blocker; only testing a bodyless GET separated them. **API Gateway HTTP API sidesteps Function URL auth entirely** and worked immediately. Cost objection re-examined honestly: ~300 requests/month against $1/million is ~$0.0003/month, so cost was overstated; the timeout is the real constraint (9 s cold start plus a scan fits 30 s, but not by a wide margin), which is why the warm-up is wired into the deploy rather than left as advice. One trap: `create-api --target` builds the integration and route but **not** the Lambda invoke permission, so a fresh API returns a bare `Internal Server Error` with nothing in CloudWatch — the request never reaches the function. **A self-inflicted bug worth recording**: the first distribution carried the usual SPA fallback (403 → `/index.html`, 200), which applies **distribution-wide** rather than per behaviour and was silently rewriting API errors into an HTML page with a 200 status — the failing POST looked like a success returning gibberish. This app has no client-side routing, so the fallback was never needed; removed from the live distribution and the template. **Verified live, not assumed**: frontend 200; a real scan through `/api/scan` returned `student_id: "2632711"`, `serial: "07"`, `q1` flagged — identical to the laptop; and the caching foot-gun tested directly by scanning a *different* photo, which returned `6543208`/`22` rather than a cached first result. **Measurements that corrected earlier estimates**: cold start is **~9 s**, not the 2–4 s extrapolated from a laptop runtime emulator (the adapter logs `app is not ready after 8000ms`); peak memory **201 MB of 2048 MB** — not worth reducing, since memory is CPU on Lambda and startup is already the slow part. Cleanup after the fact: the unused Function URL and its two stale permissions deleted, `deploy.sh` rewritten to the API Gateway design so a re-run reproduces what actually works, and the deploy policy extended with scoped API Gateway and log-read permissions (14 statements). **Cost reality, correcting an earlier "$0/month" claim**: ~$0.10/month, dominated by ECR image storage (705 MB against a 500 MB free tier that is 12-month, not always-free); S3's free tier is also 12-month. The account is on the AWS Free plan, which **cannot be billed** — spend is bounded by credits ($140 remaining, expiring 18 Aug 2027) and the account closes rather than charging, so the real risk is credit drain ending the demo, not a surprise bill. A $5 monthly budget with credits **excluded** from the calculation (a plain cost budget reads $0.00 forever, since credits absorb everything) alerts at 50% actual and 100% forecasted. **Still not done**: 11.7's verification as a user — a real phone, on mobile data, full loop through Excel export, plus handing the URL to someone who has never seen it. |
+| 12 — Class-list workbook round trip | **All four phases done 2026-09-07** — see the phase-by-phase account below; only real-device file-picker verification remains, which is a step-level item, not a phase. Written up from a feature note the user brought in from a separate claude.ai conversation (`File Upload.md`, kept at the repo root as the source document) plus a real semester marksheet, `Course CSE211L  Section 1 Marksheet.xlsx`. Reverses three recorded decisions — plan §15's "No file uploads", §2's "without requiring any upload", and §13's deferred roster import — deliberately, on the grounds that the class list already exists in a file the instructor keeps all semester, so the complexity §13 was avoiding is a file picker rather than a roster management system. **The library question was settled by measurement before anything was specced**: `File Upload.md` proposes SheetJS, which plan §15 already rejected (npm package frozen since 2022, two unpatched advisories, current builds only from the vendor's CDN), so every snippet in it was re-verified against ExcelJS 4.4.0 — already a dependency — on the real file. A load → append-sheet → write → reload cycle preserves other sheets, formulas as formulas, fonts, column widths, hidden sheets, pre-existing defined names, autofilters, frozen panes, data validation, conditional formatting and images; charts and pivot tables are the known gap (a library limitation, not measured here, and disclosed in the UI by 12.8). A blank mark round-trips as a genuinely empty cell rather than `0`, so step 9's worst-possible-failure rule survives the new path. ExcelJS enforces Excel's sheet-name rules itself and *throws* — `* ? : \ / [ ]`, no leading/trailing apostrophe, non-empty, duplicates case-insensitively, truncation past 31 chars — which pinned 12.6's sanitiser to the real rule set and exposed two gaps in the note's own version. Tab order is reported faithfully (verified by rewriting `<sheets>` order inside the file's XML and reloading) and sheet state is exposed, so "the first visible sheet" is exactly implementable. **The real file:** one sheet `data`, header on row 1 (`SL`/`STUDENT ID`/`STUDENT NAME`), 16 students, IDs stored as *text*, no merges or formulas, LibreOffice-authored. **Four decisions came from the user rather than from the note**, each changing the design: the exam sheet carries the full per-question breakdown, not a single `Marks` column; the workbook is uploaded at Setup rather than at export, so the class list is available while scripts are still in hand; exam sheets *do* carry `STUDENT NAME` (the note bans it as the only roster discriminator — replaced by a three-layer exclude-prefer-confirm rule in 12.3, since the note's rule also breaks once quiz columns accumulate in the class-list sheet, which is the user's actual workflow). **12.3's own layer order was itself caught and corrected before any code was written**: a first draft ran "prefer first-visible-sheet" before "exclude exam-shaped sheets," which — once names were added to exam sheets per the decision above — would let a dragged exam-sheet tab win the position check before exclusion ever ran, reproducing the exact silent misdetection the rule exists to prevent; verified directly, then fixed by making exclusion unconditional and first, with position only a tiebreaker among survivors. And **no marker is written into the workbook** to remember which sheet is the class list, so it is confirmed on every upload. Four marker mechanisms were verified as workable first — a defined name, a hidden sheet, a print footer and workbook properties all survived both an ExcelJS round trip and a real LibreOffice re-save — so that is a choice about not leaving invisible things in someone else's file, not a limitation. Also decided: an opt-in per-quiz totals column written into the class-list sheet (12.13), which is the only operation that ever writes into a sheet the instructor owns. Four independently-shippable phases with their own bars; no backend changes and no new dependency in any of them. **Phase A done 2026-09-07**: `frontend/src/roster.ts` (12.2's header matching/ID normalization, 12.3's exclude-then-prefer-then-confirm rule as `analyzeWorkbook`/`parseRosterSheet`) and `Setup.tsx`'s mode toggle, file upload, confirm card and "Change" picker (12.1/12.4), gating submission on a valid parsed roster in workbook mode. ExcelJS dynamic-imported only on file selection — confirmed at the build level, not just asserted: `vite build` puts it in the same `exceljs.min-*.js` chunk Results.tsx already lazy-loads (929 KB), entirely absent from the 225 KB main bundle Setup itself ships in. 30 new `roster.test.ts` cases (building workbooks in memory with ExcelJS, no fixture file — the real marksheet holds real students) plus 8 new `Setup.test.tsx` cases for the component wiring; both suites include the corrected-algorithm regression (a dragged exam-sheet tab must not win) as an executable test, not just prose. Frontend suite: 119 → 159. Not yet threaded past Setup: the parsed roster isn't passed to App/Scan/Review/Results (deliberately deferred to Phases B/C, so this phase's diff stays scoped to Setup's own Substeps); a returning instructor who reaches the saved-config quick-start view (skipping Edit) gets plain mode, since the in-memory-only roster (persistence is 12.14, Phase D) can't survive to a second page load anyway. **Phase B done 2026-09-07**: `frontend/src/examSheet.ts` (12.5's pure row-matching — roster order, blank-never-`0` for an unscanned student, an unmatched scan appended rather than dropped, and duplicate detection reported though not yet acted on — that's 12.12/Phase D) and `frontend/src/workbookExport.ts` (12.6's `sanitizeSheetName`, pinned to ExcelJS's own thrown rules including the apostrophe case the source note missed; 12.7's `findSheetCollision`, case-insensitive and refusing to ever mark the class-list sheet overwritable; `writeExamSheet`). This closed the gap Phase A left open: `RosterUpload` (roster.ts) now threads from `Setup.tsx` through `App.tsx` to `Results.tsx`, which gained a second, always-optional export button next to the untouched "Download Excel" — a confirm/collision banner only appears when there's something to decide (a changed sheet name or a real collision), mirroring the project's own "don't add a tap" reasoning from the scan loop. `handleExport`'s existing anchor/30s-delayed-revoke download logic (issues.md N7) was extracted into a shared `triggerDownload`, not rewritten — the full pre-existing export test suite passed unchanged after the extraction, which is what confirms it. **Verified against the real file with actual evidence, twice**: once by calling the production parse/build/write functions directly against `Course CSE211L  Section 1 Marksheet.xlsx` (16 students, a genuine duplicate, a genuine unmatched script, all handled correctly); once more by piping that exact output through a real `soffice --headless --convert-to xlsx` and reloading the result — both sheets present, the class list's 16 rows untouched, the exam sheet's blank cells still genuinely blank after a real LibreOffice re-save, not just an ExcelJS round trip. 21 new `examSheet.test.ts`/`workbookExport.test.ts` cases plus 8 new `Results.test.tsx` cases (straight-through export, sanitisation prompt, Overwrite/Rename/Cancel, the protected-class-list-sheet case, cancel-writes-nothing). Frontend suite: 159 → 188. **Phase C done 2026-09-07**: a new `frontend/src/rosterMatch.ts` (12.10) answers the live "does this ID belong to someone on the list" question `roster.ts`/`examSheet.ts` didn't need to — `matchAgainstRoster` returns matched/not-on-list/blank/no-roster, and `suggestRosterCandidate` offers a single-digit-away or partial-read-consistent roster student **only when it is the unique explanation**, never the closest of several (an ambiguous case — two candidates equally plausible — is a permanent test, not an assumption). `Scan.tsx`'s header reads "Scanned 7 of 16" (12.9); `Review.tsx` shows the matched name next to the Student ID field or a "Not on your class list" flag with a tap-to-accept "Use this" suggestion, wired through the same `editIdentity` every other identity correction already uses, so accepting one also clears a stale conflict banner the same way a manual retype would (12.10); `Results.tsx` gained a Name column, present only when a roster is attached, computed live from each row's own (possibly just-edited) Student ID rather than stored (12.11). `roster`/`rosterUpload` now threads `App.tsx` → `Scan.tsx` → `Review.tsx` and `App.tsx` → `Results.tsx`, closing the gap Phase B left open; every new prop is optional and defaulted to `null`, so all 36 pre-existing render calls across `Review.test.tsx`/`Results.test.tsx` needed no changes. Setup's privacy disclosure (12.11's own requirement) gained a second paragraph in `<details>` and a second always-visible line, both **deliberately reworded to avoid overlapping the existing "Upload your class marksheet" validation message** — a real collision was hit and fixed before landing, where the new disclosure text's phrasing made `Setup.test.tsx`'s own `findByText` match two elements instead of one. **Verified against the real 16-student roster, not only a synthetic 2-student one**: a real single-digit misread and a real partial read both resolved to the correct unique student, and a genuinely bogus ID produced no suggestion — confirming no false positive lurks among 16 real IDs. 12 new `rosterMatch.test.ts` cases, 7 new `Review.test.tsx` cases, 4 new `Results.test.tsx` cases, 1 new `Setup.test.tsx` case for the disclosure — 24 in total, matching the suite delta exactly. Frontend suite: 188 → 212. **Phase D done 2026-09-07**: `examSheet.ts` gained `missingStudents` (12.12 — roster students with zero matching records, distinct from "matched but blank"); `Results.tsx`'s confirm panel is now **always** shown on a workbook export rather than skipped when nothing needed deciding — it BLOCKS outright (naming every conflicting record, only Cancel offered, the plain download left as the escape hatch) when `buildExamSheet` reports a duplicate, and otherwise states the sheet name and lists who hasn't been scanned yet, capped at 10 names before summarising the rest. `workbookExport.ts` gained `writeTotalsColumn` (12.13) behind a checkbox defaulted off; re-exporting the same quiz matches the existing column by **exact** header text (not canonically) and updates it in place, and a script matching nobody is never appended as a new class-list row. `db.ts` gained a fourth IndexedDB store (12.14, version bump to 4) — `RosterUpload` persisted alongside `config` at the same moment, restored on mount, and threaded through **both** the saved-config quick-start button and "View results" (the latter previously hardcoded `null`, now consistent with the former); switching to plain mode explicitly *clears* the store rather than merely skipping the save, so a previous quiz's workbook can't silently resurface on a refresh — this needed its own `clearRosterUpload()`, not just an absent `saveRosterUpload()` call. **A real correctness bug was caught and fixed before any of Phase D could be trusted**: `RosterStudent` had no field for which sheet row a student actually occupies, so the natural-looking `headerRow + 1 + i` arithmetic would have silently written a total next to the wrong name the instant a roster had one blank-ID row skipped during parsing — fixed by adding `RosterStudent.row`, guarded by a permanent test at both the parsing layer and the point it would cause real damage (a constructed roster with a genuine gap, checked at the actual cell). **Verified against the real 16-student roster end to end**: 14 of 16 scanned with one deliberate duplicate correctly listed the other 2 as missing and the one duplicate by name, and the totals column landed on the exact right row for all 16 real students, including the duplicate's row taking the more recently confirmed total and the genuinely-unscanned student's cell staying blank. 22 new tests across `roster.test.ts` (+1, the row regression), `examSheet.test.ts` (+3), `workbookExport.test.ts` (+6), `Results.test.tsx` (+5), `Setup.test.tsx` (+3) and `db.test.ts` (+4) — matching the suite delta exactly, cross-checked three ways (direct `it()` counts, `git diff` against the pre-step-12 commit for untouched-until-now files, and the full-suite run) after an arithmetic slip in an earlier phase's own write-up made that cross-check worth doing properly. Frontend suite: 212 → 234. **All four phases of step 12 are done.** **Five more fixes came from actually using it on a phone (2026-09-07)**, after every phase above was already marked done: the mode toggle's two buttons could overflow a narrow screen (`.btn`'s `white-space: nowrap` plus a `.row` with no wrap — fixed with a scoped `flexWrap: wrap` on that one row, not the shared class); the file input kept showing "No file chosen" after a successful upload, because clearing it (so re-picking the same filename still fires `onChange`) also clears the browser's own displayed name — fixed with a `selectedFileName` state that shows the real answer regardless of what the native input says; and column headers ("Q1", "Total") now carry their max mark ("Q1 (5)", "Total (20)") on the Results table, both export paths, and the opt-in totals column itself ("Quiz 1 (20)"), the last one now matched on re-export by the full annotated string so a quiz whose max has genuinely changed gets a fresh column rather than a silently different number under the old one. The header change wasn't free: `hasExamSignature` matched `Total` by exact canonical key, and `"Total (20)"` canonicalizes to `"TOTAL20"` — shipping it unchanged would have stopped a workbook this app itself wrote from being recognized as exam-shaped on its own next re-upload, reopening the exact misdetection plan.md §17's exclusion rule exists to prevent (the same class of bug as 12.3's own dragged-tab case, found this time by asking "what does re-uploading my own output do" before shipping rather than after). Loosened to `/^TOTAL\d*$/`, mirroring the existing `/^Q\d+$/` tolerance, and guarded by two new `roster.test.ts` cases (the new format still matches; a real "Total Marks Trend" column still correctly doesn't) plus a real re-upload of the app's own output against the actual 16-student file. 4 new tests (2 `roster.test.ts`, 1 `Setup.test.tsx` for the filename display, 1 `workbookExport.test.ts` for the different-max case). Frontend suite: 234 → 238. What remains is the step's own cross-cutting item, not any phase's or any fix's: real-device verification of the file picker and download, which needs the user's own participation. |
 
 ---
 

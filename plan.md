@@ -15,7 +15,10 @@ number, and marks per question, lets the faculty confirm or correct them
 on the spot, and exports every record as one Excel file.
 
 Primary user: a single instructor running one quiz session for one class
-(pilot: CSE211L). No file uploads, no auth, no server-side database.
+(pilot: CSE211L). No auth, no server-side database. **No file uploads**
+described the MVP pilot; section 17 (2026-09-07) adds one, optional, kind —
+the instructor's own class-list workbook — on the instructor's own request,
+detailed there rather than here.
 
 ## 2. Identity fields — why both
 
@@ -27,8 +30,16 @@ students actually know.
 Capturing both is also the app's strongest correctness guard. With two
 independent identifiers, a misread in either becomes visible: if two
 scripts resolve to the same serial but different IDs, one was read wrong.
-That conflict check replaces what a class roster would have provided,
-without requiring any upload.
+That conflict check is what replaced a class roster for the pilot, without
+requiring any upload.
+
+**Update (section 17, 2026-09-07):** an upload is no longer categorically
+ruled out. Section 17 adds an *optional* roster upload — the instructor's
+own semester marksheet, read for its `STUDENT ID`/`STUDENT NAME` columns —
+which the cross-check above still runs alongside, unweakened. The
+duplicate-serial/duplicate-ID check here is still the app's only defense
+when no roster is supplied; the roster is an additional, opt-in signal on
+top of it, not a replacement.
 
 Either field alone identifies the record. A script with only one filled in
 still works — the app loses the cross-check for that row and flags it
@@ -674,7 +685,11 @@ Deferred:
   stores none, which is weaker than "never leaves the device" and must be
   stated to users rather than glossed (section 12).
 - Roster import for range validation and coverage checking. Skipped
-  deliberately to avoid file-upload complexity.
+  deliberately to avoid file-upload complexity. **Picked up 2026-09-07**:
+  see section 17. What changed the calculus is that the roster already
+  exists, in a file the instructor keeps all semester — so the complexity
+  being avoided turned out to be a file picker, not a roster management
+  system. Specced in step.md step 12, not yet built.
 - Local digit classifier for marks too (TFLite/ONNX) — only if Gemini
   accuracy or quota becomes a real constraint. **Update:** both conditions
   were hit for real during steps 2–3 (Tesseract measured at 58.9%
@@ -760,7 +775,13 @@ deployment work.
 - Pre-printing serials on sheets was considered and rejected —
   distributing the right numbered sheet to each student costs more time
   than it saves.
-- No file uploads. Config in at the start, file out at the end.
+- No file uploads for the pilot MVP: config in at the start, file out at
+  the end. **Revisited 2026-09-07 (section 17)**: an optional roster
+  upload was added at the instructor's own request, once it became clear
+  the "roster" already exists as a workbook they keep all semester rather
+  than something the app would need to help them build. The upload is a
+  class list only — no marks, no config — and is optional; the plain
+  config-in/file-out flow is unchanged for anyone who doesn't use it.
 - The student ID is read locally and excluded from anything sent to
   Gemini.
 - Excel export uses ExcelJS rather than SheetJS. SheetJS Community Edition
@@ -770,7 +791,13 @@ deployment work.
   npm normally, and is more than enough to write a plain grid of numbers —
   though its own last stable release was October 2023, so neither option is
   under active npm maintenance. Worth revisiting only if the export ever
-  needs styling or streaming.
+  needs styling or streaming. **Section 17 needed more than "a plain grid
+  of numbers"** — loading an arbitrary existing workbook, appending a sheet,
+  and writing it back without disturbing anything else in it — and was
+  verified capable of exactly that before being relied on: formulas, fonts,
+  column widths, hidden sheets, defined names, autofilters, frozen panes,
+  data validation, conditional formatting and images all survive a real
+  round trip. Charts and pivot tables are the one confirmed gap.
 - The backend runs on the instructor's laptop for the pilot rather than on a
   hosting free tier. Railway no longer offers one, and Render's spins a
   service down after fifteen minutes idle with a cold start of up to a
@@ -1245,3 +1272,278 @@ The concrete build order (Recognizer extraction → train the CNN →
 segmentation/decoding → real-sample collection and comparison run) is
 `step.md` steps 2r.0, 2r, 3r, and 3r.6 — slotted in after step 3, before
 step 4, without renumbering anything already built.
+
+
+## 17. Class-list workbook round trip (optional roster upload)
+
+Adds an optional roster upload — the instructor's own semester marksheet
+— read at Setup, matched against during scanning, and written back into
+with each exam's results. Nothing about the existing config-in/file-out
+path changes for an instructor who doesn't use it; this sits beside it as
+a second mode, chosen at Setup, the same relationship section 16's CNN
+path has to Gemini+Tesseract.
+
+Specced 2026-09-07 from a feature note the user brought into the repo
+(`File Upload.md`, written in a separate claude.ai conversation) plus a
+real semester marksheet, `Course CSE211L  Section 1 Marksheet.xlsx`
+(gitignored, never committed — see step.md step 12's own note on this).
+The note is the source document, not the spec: several of its choices are
+deviated from below, each with the reasoning that changed it. The concrete
+build order is step.md step 12, four independently-shippable phases;
+specced, not yet built.
+
+### Why now, having been deferred at section 13
+
+Section 13 skipped roster import "deliberately to avoid file-upload
+complexity." That reasoning assumed the app would need to help build or
+maintain a roster. It doesn't: the instructor already keeps one, as a
+workbook, all semester, and already writes each exam's totals into it by
+hand. The complexity being avoided was a roster *management* system; what
+this section adds is a file picker and a sheet writer, which is a smaller
+thing than section 13 was declining.
+
+### What this changes and what it doesn't
+
+Still true, unweakened: the ID/serial cross-check from section 2 is the
+app's only defense when no roster is supplied, and remains exactly as it
+was. Still true: the student ID never reaches Gemini or any third party,
+on any recognizer path (section 12). Still true: no server-side database,
+no accounts, no multi-quiz history.
+
+New: a roster, optionally, provides a third check — is this ID one of my
+students at all — which the duplicate-serial/duplicate-ID check alone
+cannot provide, since it only catches misreads *within* one session's
+scans, never a read that happens to be a plausible ID nobody in the class
+actually has.
+
+### The file format contract
+
+Deliberately loose on structure and strict on identification, because the
+one thing known in advance is that every instructor's workbook looks
+different (their own column order, extra sheets, accumulated quiz columns)
+and the one thing that can't vary is which sheet is the class list.
+
+**Roster sheet — identified by content, never by name or position.**
+A sheet qualifies if some row within its first ~20 rows contains, among
+its header cells, both `STUDENT ID` and `STUDENT NAME` — matched on a
+canonicalised key (uppercased, non-alphanumerics stripped), so `Student
+ID`, `STUDENT  ID`, `student_id` and `StudentID` all match. Position is
+consulted only as a *preference* among otherwise-valid candidates — see
+"Identifying the class-list sheet" below — never as the sole test, because
+a valid-shaped sheet can end up first by accident (a dragged tab) or by
+design (a scanner-written exam sheet with names in it, per the decision
+below) without being the class list.
+
+**Exam sheet — one per exam, named after the exam.** Columns: `SL`,
+`STUDENT ID`, `STUDENT NAME`, `Q1..Qn`, `Total`, `Serial`. Question and
+total headers carry the max mark alongside them — `Q1 (5)`, `Total (20)`
+— added 2026-09-07 from live phone use, so the max is visible without
+opening Setup. That annotation had to be checked against the exclusion
+rule two paragraphs below before it shipped: canonicalizing `"Total (20)"`
+produces `"TOTAL20"`, not `"TOTAL"`, so the exam-signature check had to be
+loosened from an exact match to tolerate trailing digits — otherwise a
+workbook this app wrote would stop being recognized as exam-shaped on its
+own next re-upload. One row per roster student, in roster order; a
+student with no matching scan gets blank mark cells, never `0` (section
+10's flag-never-guess rule, carried over unchanged). A scanned script
+matching no roster student is appended below the roster block rather than
+dropped. Existing exam sheets already in the workbook are never modified
+when a new one is written.
+
+**Sheet-name sanitisation — to the library's actual enforced rule set,
+not a guessed one.** ExcelJS itself throws on `* ? : \ / [ ]`, on a
+leading or trailing `'`, on an empty name, and on a duplicate compared
+**case-insensitively** — verified directly rather than assumed, and it is
+stricter than `File Upload.md`'s own sanitiser, which misses the
+apostrophe rule and compares case-sensitively. Truncation past 31
+characters is a warning, not a throw. Sanitise before calling
+`addWorksheet`, and show the instructor the final name when it differs
+from what they typed.
+
+### Identifying the class-list sheet: exclude, then prefer, then confirm
+
+Three layers, not one, because no single rule survives every real case —
+and the order between the first two is load-bearing, not incidental. An
+earlier draft of this section put position first ("prefer the first
+visible sheet if it independently passes the header test") and the
+exam-sheet exclusion second, treating them as independent signals. That
+order was checked directly and found unsafe: since exam sheets carry
+`STUDENT NAME` (see below), an exam sheet is itself a valid roster shape,
+so a dragged tab would independently pass the header test and win *before*
+the exclusion ever ran — reproducing, by construction, the exact silent
+misdetection this design exists to prevent. The exclusion must therefore
+run first, unconditionally, and position is only ever a tiebreaker among
+whatever survives it — never a way to bypass it.
+
+1. **Exclude anything shaped like an exam sheet.** Among sheets that pass
+   the header test (`STUDENT ID` + `STUDENT NAME`), drop any that also
+   carries the full exam-sheet signature — `Total` **and** at least one
+   `Q<n>` column **and** `Serial`, together. An exam sheet this app writes
+   always carries all three; a class list that has accumulated its own
+   summary columns over a semester (`SL | STUDENT ID | STUDENT NAME | Q1 |
+   Q2 | Mid | Total`, the instructor's actual stated workflow) does not
+   have `Serial` and so survives this filter. This step runs first and
+   unconditionally — nothing below ever overrides it.
+2. **Among the survivors, prefer the instructor's own convention** — the
+   first visible sheet in the workbook, if it is one of them. This is
+   where "always keep the class list first" pays off: with exactly one
+   survivor it is redundant (that survivor is the answer regardless of
+   position), but with more than one — two roster-shaped sheets, e.g. two
+   sections in one workbook — position breaks the tie instead of forcing a
+   guess. Verified directly that this is implementable rather than
+   aspirational: rewriting a workbook's `<sheets>` order inside its own XML
+   and reloading through ExcelJS reports the new order faithfully, and
+   each sheet's hidden/visible state is exposed. With zero survivors, or
+   more than one and none of them first, the pick is provisional and 3 is
+   what actually makes it safe rather than a guess dressed as an answer.
+3. **Always confirm.** Whichever candidate steps 1–2 land on is shown —
+   "Class list: `data` — 16 students · Change" — with every other
+   candidate one tap away. This is the layer that actually guarantees
+   correctness; 1 and 2 only reduce how often it has to be exercised.
+
+**Why not fewer layers.** Exclusion alone leaves genuine ties unresolved
+(two roster-shaped sheets) with no principled way to pick one. Confirm
+alone would work but makes every single upload a manual pick rather than
+a formality in the ordinary case. All three together mean the ordinary
+case takes one glance and the adversarial cases — a dragged tab, an
+accumulated summary column, two candidate sheets — are still caught rather
+than silently resolved to the wrong answer.
+
+**Deliberately no marker written into the workbook** to remember the
+answer between uploads. Four candidate mechanisms — a defined name, a
+hidden sheet, a print-footer string, and workbook properties — were each
+verified to survive both an ExcelJS round trip and a real LibreOffice
+re-save, so a persistent, invisible bookmark was genuinely available and
+was declined anyway, at the instructor's own request: nothing about this
+feature should leave bookkeeping in a file that isn't the app's to keep.
+The cost is one confirmation per upload; layer 1 keeps that confirmation
+a formality in the ordinary case.
+
+### Two decisions that reverse `File Upload.md`'s own reasoning
+
+**Exam sheets carry `STUDENT NAME`.** The note bans names from exam sheets
+specifically so the sheet's *absence* of a name column can distinguish it
+from the roster. That reasoning is superseded by the three-layer rule
+above, which doesn't need it — and dropping it would have thrown away the
+one thing that makes a misread ID visible at a glance against the name on
+the script the instructor is holding.
+
+**The exam sheet carries the full per-question breakdown, not the note's
+single `Marks` column.** A single total discards exactly the information
+this app's whole pipeline exists to extract accurately. `SL`, `STUDENT
+ID`, `STUDENT NAME` are read straight through from the roster and written
+back verbatim — never renormalised — so the file keeps whatever formatting
+convention the instructor already has (e.g. IDs stored as text, preserving
+leading zeros the app itself would otherwise have to reconstruct).
+
+### Matching during scanning
+
+Matching is on student ID only. `SL` is read through and carried onto the
+exam sheet but does not participate in any check — it was considered as a
+second matching key (given section 2's own framing of serial as "fixed per
+course from the attendance sheet"), and rejected for this pass on the
+grounds that whether a given roster's `SL` actually corresponds to what
+students write in the physical serial box cannot be assumed workbook to
+workbook.
+
+An ID read from a script that matches no roster student is flagged during
+review. When exactly one roster ID is a single edit (one digit) away from
+the read value, or is the unique completion of a partially-read ID (the
+`?`-marked positions both recognizer paths already produce per section
+10), the instructor is shown that candidate as a suggestion. It is never
+applied automatically — accepting it costs one tap, the same as any other
+correction, honoring the flag-never-guess rule exactly as written for
+recognition confidence. This is not a minor convenience: whole-ID exact
+match on the CNN path was measured at 55.2% on the real-class batch
+(section 16), so a class list turns a large share of what would otherwise
+be silent misreads into a one-tap fix at the moment the instructor is
+still holding the script.
+
+### Duplicates are stricter here than the plain path
+
+Two confirmed scans matching the same roster student **block the
+round-trip export**, naming both conflicting records. This is a stricter
+rule than the plain-download path's duplicate handling, deliberately: the
+Results table is already editable, so resolving the conflict there before
+export is neither slow nor a dead end, and writing one student's marks
+into another's row in the instructor's own semester-tracking file is a
+strictly worse failure than the same mistake landing in a standalone
+`.xlsx`, since it can silently follow that student across the rest of the
+term. The plain download remains available, unblocked, as an escape
+hatch if the conflict can't be resolved before class ends.
+
+### The opt-in totals column
+
+A checkbox at export, off by default: also add or update one column in
+the class-list sheet, headed with the exam's own sanitised name plus its
+max mark — `Quiz 1 (20)`, matching the annotated headers everywhere else —
+holding each student's total. Re-exporting the same exam updates that
+column in place rather than duplicating it, matched on the exact header
+text including the max: if the max has genuinely changed since the last
+export of a same-named quiz, that reads as a different column rather than
+silently overwriting one that used to display a different total, the same
+"a difference is a new thing" rule the sheet-name collision check already
+follows. A scanned script matching no roster student is never appended to
+the class list as a new row — only the exam sheet gets that row; the
+class list is reported as "N scripts matched no one on this list," never
+silently extended.
+
+This is the one operation in this whole section that writes into a sheet
+the instructor authored rather than one the app created, which is why it
+defaults off and why every other write (a new exam sheet) is unconditional
+by comparison — the two are not the same kind of write and are not
+governed by the same default.
+
+### What was verified before any of this was specced
+
+Against the real workbook, on ExcelJS 4.4.0 (already a dependency — no new
+one is added by this section):
+
+- **The real file's actual shape**: one sheet `data`; header on row 1
+  exactly `SL` / `STUDENT ID` / `STUDENT NAME`; 16 students; IDs stored as
+  **text**, all 7 digits; no merged cells, formulas, or styling;
+  LibreOffice-authored. Not relied on as a universal shape — 12.2's header
+  scan and ID normalisation exist precisely because another workbook,
+  or the same one re-saved from Excel, need not match it.
+- **A full round trip preserves far more than the minimum needed here**:
+  load → append a sheet → write → reload keeps every other sheet intact,
+  formulas as formulas, fonts, column widths, hidden sheets, pre-existing
+  defined names, autofilters, frozen panes, data validation, conditional
+  formatting, and images. Verified individually against both a synthetic
+  workbook constructed to carry all of them and the real file.
+- **Charts and pivot tables are the one confirmed gap** — ExcelJS has no
+  support for either, so a workbook containing one comes back without it.
+  This is a documented library limitation, not something exercised here
+  (no chart-bearing file was available to test against), and is stated to
+  the instructor in the export UI rather than discovered later.
+- **A blank mark round-trips as a genuinely empty cell**, not as `0` —
+  section 9/10's worst-possible-failure rule extends to this export path
+  unchanged.
+- **The sheet-name rule set and the duplicate-name check** are as
+  described above, both confirmed by triggering ExcelJS's own thrown
+  errors rather than inferred from documentation.
+
+### Open risks, named rather than assumed away
+
+**Mobile file-picker and save-back UX is unverified.** Selecting an
+`.xlsx` from a phone's file picker or cloud storage, and saving the
+updated copy back afterward, is plausible on both iOS and Android but has
+not been tried on a real device — the same category of thing CLAUDE.md
+already requires hand-verification for (camera, PWA install, export
+download), and step.md step 12's Done-when bar requires it explicitly.
+
+**A workbook holding student names is new privacy surface for this app.**
+Names are held in IndexedDB for the session (a new store, cleared by
+`resetAll()`), shown in Review and Results, and never sent to the backend
+— `/api/harvest` and `/api/scan` continue to receive only what they
+always did. Setup's privacy disclosure needs the same care section 11.5
+already had to apply once, correcting an earlier claim that overstated
+what stayed local — see step.md's own account of that mistake, and don't
+repeat its shape here.
+
+**The class-list identification rule is a heuristic with a confirm step,
+not a proof.** Layer 3 is what makes it safe; if a future change ever
+removed the confirm step to save a tap, the two adversarial cases already
+demonstrated (a dragged exam-sheet tab; a roster that has accumulated
+exam-shaped columns) would go back to being silent failures rather than
+one-tap corrections.

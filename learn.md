@@ -5476,3 +5476,732 @@ individually correct — which is precisely the kind of defect reading cannot
 find, because no single file is wrong.
 
 Reading finds broken parts. Using finds broken systems.
+
+---
+
+## Step 12 — Class-list workbook round trip (all four phases done)
+
+Everything above this point is the app reading a script and producing
+marks. This step is the first time the app reads something *from* the
+instructor rather than just a photo — an optional upload of their own
+semester marksheet, so results land in the file that already has the class
+list and every earlier quiz in it, instead of a new standalone `.xlsx`
+each time.
+
+It started from a feature note (`File Upload.md`) written in a separate
+claude.ai conversation and brought into the repo, plus a real file:
+`Course CSE211L  Section 1 Marksheet.xlsx`, 16 students, gitignored,
+never committed. The note got most of the shape right — content-based
+sheet detection instead of trusting a name or tab position, never silently
+overwriting, sanitising a sheet name before writing it — but several of
+its specifics were wrong for this codebase, and two of its own design
+choices turned out to be unsafe once combined with a decision made *after*
+the note was written. Both are worth reading as a pair, because the second
+one is a genuinely instructive bug that got caught before any code existed
+for it.
+
+### What "the roster" actually looks like
+
+Before designing anything, the real file got opened with the exact library
+this app already ships (ExcelJS 4.4.0), not assumed from the note's own
+snippets:
+
+```javascript
+const wb = new ExcelJS.Workbook();
+await wb.xlsx.load(fs.readFileSync('Course CSE211L  Section 1 Marksheet.xlsx'));
+// one sheet, "data"; header on row 1: SL | STUDENT ID | STUDENT NAME
+// 16 students, IDs stored as TEXT ("1722112"), no formulas, no styling
+```
+
+Two things from this shaped everything downstream. First, the header sits
+on row 1 in this file, but nothing should assume that — a title row above
+the real header is a completely normal thing for a workbook to have, so
+the header is found by *scanning*, not by reading row 1 directly:
+
+```typescript
+// roster.ts
+export function findRosterHeaderRow(ws: Worksheet, maxRows = HEADER_SCAN_ROWS): HeaderMatch | null {
+  const limit = Math.min(maxRows, ws.rowCount);
+  for (let r = 1; r <= limit; r++) {
+    const columns = new Map<string, number>();
+    ws.getRow(r).eachCell((cell, colNumber) => {
+      const key = canonicalKey(cell.value);
+      if (key) columns.set(key, colNumber);
+    });
+    if (columns.has('STUDENTID') && columns.has('STUDENTNAME')) {
+      return { row: r, columns };
+    }
+  }
+  return null;
+}
+```
+
+Second, IDs are stored as text in *this* file, but a quick test proved
+Excel doesn't guarantee that — typing `212345` into a numerically-formatted
+column stores the number `212345`, silently dropping a leading zero a
+student actually has. `roster.ts` recovers it for *comparison only*,
+never for what gets written back:
+
+```typescript
+export function normalizeIdForMatch(raw: unknown, idDigits: number): string | null {
+  const text = cellText(raw).trim();
+  if (text === '') return null;
+  if (/^\d+$/.test(text) && text.length < idDigits) {
+    return text.padStart(idDigits, '0');
+  }
+  return text;
+}
+```
+
+`212345` (6 digits, idDigits=7) normalizes to `0212345` for matching, but
+the roster's own `studentId` field stays `212345` — whatever the
+instructor's file actually contains is what gets written back, verbatim,
+everywhere. Normalizing a value you're about to store instead of one
+you're about to compare is the same category of mistake as storing a
+computed sum instead of deriving it (step 9's own rule) — the two
+representations drift the moment either side is edited independently.
+
+### The bug caught before any code existed for it
+
+The hardest design question was: given a workbook that could look like
+almost anything, which sheet is the class list? Position can't be trusted
+— a dragged tab shouldn't change the answer. Content can't be trusted
+alone either, because the exam sheets *this app itself writes* also carry
+`STUDENT NAME` (a deliberate choice — see Phase B below), so a written
+exam sheet is itself a valid-looking roster.
+
+The first draft of the rule read like this: *prefer the first visible
+sheet, if it independently has a `STUDENT ID` + `STUDENT NAME` header;
+otherwise fall back to content, excluding anything that also has the full
+exam-sheet shape (`Total` + a `Q<n>` column + `Serial`, together)*. Written
+down, in that order, it reads reasonably — try the instructor's own
+convention first, fall back to a smarter check second.
+
+It's wrong, and the way to see why is to actually build the adversarial
+case rather than reason about it in the abstract: take a workbook with the
+real roster plus one exam sheet already written into it (with a name on
+it, per the Phase B decision below), and drag that exam sheet's tab to the
+front.
+
+```javascript
+// reproduced directly, before writing roster.ts for real
+const wb = rosterWorkbook();
+addExamSheet(wb, 'Quiz 1');  // has STUDENT ID + STUDENT NAME + Total + Q1 + Serial
+// ...rewrite the workbook's own <sheets> XML order so "Quiz 1" comes first...
+console.log(back.worksheets[0].name); // "Quiz 1" — confirmed, the reorder worked
+```
+
+Under the first draft's rule, "prefer the first visible sheet if it
+independently passes the header test" runs *before* the exam-sheet
+exclusion ever gets a chance to fire — "Quiz 1" has `STUDENT ID` +
+`STUDENT NAME`, so it passes the header test, so it wins the position
+check, full stop. The exclusion is never consulted, because the first
+check already returned an answer. That's the exact bug this whole design
+exists to prevent: a written exam sheet silently mistaken for the class
+list.
+
+The fix inverts which check is unconditional:
+
+```typescript
+// roster.ts — analyzeWorkbook, the corrected order
+const rosterShaped = allCandidates.filter((c) => !c.looksLikeExamSheet); // EXCLUDE FIRST, always
+
+if (rosterShaped.length === 1) {
+  return { candidates: rosterShaped, ambiguous: false, chosenSheetName: rosterShaped[0].sheetName };
+}
+// position only breaks a tie AMONG SURVIVORS, never bypasses the exclusion above
+const firstVisibleName = workbook.worksheets.find((w) => (w.state ?? 'visible') === 'visible')?.name;
+const preferred = rosterShaped.find((c) => c.sheetName === firstVisibleName);
+```
+
+Exclusion runs first, unconditionally, on every candidate. Position is
+only ever a tiebreaker among whatever survives it — it can never resurrect
+something the exclusion already threw out. Re-running the same dragged-tab
+scenario against this version resolves to `data`, correctly, regardless of
+where "Quiz 1" sits in the tab order. That test is now permanent
+(`roster.test.ts`'s "still excludes the exam sheet after its tab is
+dragged to the front"), specifically so nobody "cleans up" the ordering
+back to the more intuitive-looking first draft later.
+
+The general lesson, and it's the same one step 3r.6's confidence floors
+and step 1's orientation check both already taught in their own ways:
+**an order-dependent rule is a hidden design decision, and the only way to
+know if you picked the right order is to build the case where it
+matters.** Prose describing "exclude, then prefer" and prose describing
+"prefer, then exclude, with an exception" read almost identically. Only
+one of them survives contact with a dragged tab.
+
+There's still a third layer on top of both, and it's not decoration: even
+the *corrected* rule is a heuristic, not a proof, so every pick — however
+confident — is shown to the instructor before it's trusted: "Class list:
+`data` — 16 students · Change." Deliberately, no marker is written into
+the workbook to skip that confirmation on a later upload; four mechanisms
+that would have survived a re-save (a defined name, a hidden sheet, a
+print-footer string, workbook properties) were all verified working and
+declined anyway, because the goal was "confirmed every time," not "right
+often enough to stop checking."
+
+### Phase A — reading the roster in
+
+`Setup.tsx` gained a mode toggle — Plain download (unchanged) or Use my
+class marksheet — and everything below it only exists in the second mode.
+Getting ExcelJS there without slowing down the screen every instructor
+sees first (unlike Results, which is already lazy-loaded as a whole
+screen) meant a dynamic import triggered by the file input itself, not by
+the component mounting:
+
+```typescript
+async function handleWorkbookFile(file: File) {
+  const buffer = await file.arrayBuffer();
+  const ExcelJS = (await import('exceljs')).default;   // only loaded once a file is actually chosen
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const analysis = analyzeWorkbook(workbook);
+  // ...
+}
+```
+
+Checked at the build level rather than trusted: `vite build` puts
+`exceljs.min-*.js` in its own 929 KB chunk, shared with Results' existing
+lazy-load, and it is entirely absent from the 225 KB main bundle Setup
+itself ships in. A claim about what does or doesn't load is only worth as
+much as the build artifact that backs it.
+
+Re-parsing is reactive to `idDigits`, not one-shot at upload — since
+`normalizeIdForMatch` depends on it, changing the digit count after
+uploading re-derives the match keys against the *already-loaded* workbook
+rather than requiring a second upload:
+
+```typescript
+const parsedRoster = useMemo(() => {
+  if (!workbookState || !effectiveSheetName) return null;
+  return parseRosterSheet(workbookState.workbook, effectiveSheetName, idDigits);
+}, [workbookState, effectiveSheetName, idDigits]);
+```
+
+Before trusting any of this against a synthetic test shape, it ran once
+against the real file directly, through the actual shipped functions:
+
+```
+candidates: [{"sheetName":"data", ..., "studentCount":16}]
+chosenSheetName: data | ambiguous: false
+student count: 16
+duplicateIds: []
+first 3: Monem Tazwar, Salman Noor, Sadikun Nahin Prova
+```
+
+16 students, correctly and unambiguously identified, names and IDs intact.
+The file was never committed and never became a test fixture — the 30
+cases in `roster.test.ts` build workbooks in memory with ExcelJS the same
+way this verification did, so the suite proves the *logic* without ever
+needing a real person's data in git history.
+
+### Phase B — writing the sheet back out
+
+The exam sheet itself is `examSheet.ts`, and it's deliberately pure — no
+ExcelJS at all, just roster + records + config in, rows out. Matching is
+on student ID only, using the *same* `normalizeIdForMatch` roster parsing
+already uses, so a record and a roster row agree on what counts as "the
+same ID" without the rule being written twice:
+
+```typescript
+const key = record.studentId ? normalizeIdForMatch(record.studentId, config.idDigits) : null;
+if (key && rosterKeys.has(key)) {
+  // matched — this record belongs to a roster row
+} else {
+  // no studentId at all, or an ID matching nobody — surfaced, never dropped
+}
+```
+
+A roster student nobody scanned gets a row with genuinely blank cells,
+never `0` — the exact same worst-case-failure rule step 9 already
+enforced for the plain export, now extended to a second writer rather than
+reinvented for it. A script that *was* scanned but matches nobody on the
+roster is appended below the roster block instead of silently vanishing.
+And two records matching one roster student are detected and reported
+(`.duplicates`) even though nothing acts on that report yet — the row
+still needs *something* in it today (the most recently confirmed record
+wins), and step 12.12's own future job is to block the export over this
+rather than silently pick one. Recording the fact now, even unused, means
+that later step doesn't need to rebuild the matching pass to get it.
+
+The ExcelJS-touching half, `workbookExport.ts`, exists mainly because
+Excel's own sheet-naming rules turned out to be stricter — and different
+— from what the source note assumed. Rather than write a sanitiser from
+documentation, the actual library was made to throw:
+
+```javascript
+wb.addWorksheet("Quiz:1")   // throws: cannot include : \ / ? * [ ]
+wb.addWorksheet("'Quiz'")   // throws: first/last char can't be a single quote
+wb.addWorksheet("DATA")     // throws: already exists — checked CASE-INSENSITIVELY
+```
+
+The note's own sanitiser handled the character list but missed the
+apostrophe rule and compared collisions case-sensitively — both would have
+let a name through that ExcelJS itself then rejects, turning a full export
+attempt into an unhandled exception on the one screen where that matters
+most. `findSheetCollision` compares names the same way ExcelJS does:
+
+```typescript
+function sheetNameExists(workbook: Workbook, name: string): boolean {
+  return workbook.worksheets.some((ws) => ws.name.toUpperCase() === name.toUpperCase());
+}
+```
+
+One collision case gets a stricter rule than the rest: if the *class-list
+sheet itself* is what collides, Overwrite is never offered, full stop —
+only Rename or Cancel. Losing 16 students' names to a mis-tap because a
+quiz happened to be named the same as the roster sheet has to not be
+reachable, not just unlikely.
+
+**Idempotency — exporting the same quiz twice producing one sheet, not
+two — needed no special-case code at all**, once one thing was gotten
+right: every export reloads a *fresh* `ExcelJS.Workbook` from
+`rosterUpload.workbookBytes`, the original upload, untouched, rather than
+reusing a workbook instance kept around in component state between
+clicks:
+
+```typescript
+async function handleWorkbookExportClick() {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(rosterUpload.workbookBytes);  // fresh, every single time
+  // ...
+}
+```
+
+Two exports in one session are two independent builds from the same
+starting point, each producing its own downloaded file with exactly one
+`Quiz 1` sheet in it. The "idempotent" property isn't a rule enforced
+somewhere — it falls out of never mutating the one piece of state that
+would otherwise accumulate.
+
+### Proving it outside the test suite
+
+Both roster.test.ts and workbookExport.test.ts build workbooks in memory
+and pass comfortably — 51 new cases between them. But a synthetic
+workbook only ever tests the shapes someone thought to construct. Before
+calling Phase B done, the actual production code ran once against the real
+file, then that *output* was piped through a real `soffice --headless
+--convert-to xlsx` — not a library simulating LibreOffice, the actual
+program — and reloaded to check what survived:
+
+```
+$ soffice --headless --convert-to xlsx --outdir out/ phase-b-export.xlsx
+convert phase-b-export.xlsx -> out/phase-b-export.xlsx using filter: Calc Office Open XML
+```
+
+```typescript
+expect(wb.worksheets.map((w) => w.name)).toEqual(['data', 'Quiz 1']);
+expect(wb.getWorksheet('data')!.rowCount).toBe(17); // untouched: header + 16 real students
+expect(qs.getRow(3).getCell(4).value).toBeNull();   // unscanned student — still genuinely blank
+```
+
+Both sheets present, the class list's 16 rows exactly as they were, and an
+unscanned student's marks still `null` rather than `0` after a real
+external program opened and re-saved the file. This is the same
+discipline the harvest-mtime fix used back in step 11 ("proving the leak
+instead of believing the write-up") applied to a different question: a
+library round trip proves the library behaves; only a real application
+opening the real output proves the *file* is actually fine. The
+verification script itself was never committed — the point was the
+evidence, not a permanent fixture built on a real person's data.
+
+### Phase C — the ID field asking a different question than "is it legible"
+
+Phases A and B answer questions about a *file*: which sheet is the class
+list, what should the exam sheet contain. Phase C answers a question about
+a *value* being typed or corrected right now: does this student ID belong
+to anyone on the list, and — the harder part — if it doesn't, is there
+exactly one person it's plausibly a misread of?
+
+That "exactly one" is doing all the work, and it's worth being precise
+about why. A recognizer's confidence already tells the instructor *this
+digit might be wrong*; a class list can additionally tell them *and here's
+what it probably should have been* — but only when there is one candidate,
+never the closest of several. Suggesting the nearer of two equally-plausible
+students would be swapping a visible uncertainty (a flagged digit) for an
+invisible one (a suggestion that looks like a fact). So `rosterMatch.ts`
+returns a suggestion only when filtering the roster down leaves exactly one
+name, for two different filters that turned out to be the same idea in two
+guises:
+
+```typescript
+// one full ID, one digit different from a real student's — Hamming
+// distance, not edit distance, because a scanned ID is always a FIXED
+// width (the recognizer never inserts or drops a position)
+function hammingDistanceIsOne(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let differences = 0;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) differences += 1;
+    if (differences > 1) return false;
+  }
+  return differences === 1;
+}
+
+// a PARTIAL read — "1722112" scanned as "172211?" — where '?' is a
+// wildcard rather than a wrong digit; every real recognizer path already
+// produces exactly this shape for a position it couldn't read at all
+function matchesWildcardPattern(pattern: string, key: string): boolean {
+  if (pattern.length !== key.length) return false;
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern[i] !== '?' && pattern[i] !== key[i]) return false;
+  }
+  return true;
+}
+```
+
+Both filters, then the same rule on the result: `candidates.length === 1
+? candidates[0] : null`. A fully-wrong ID and a partially-unread one look
+like different problems from the recognizer's side, but from the roster's
+side they're the same question — "how many students are consistent with
+what I do know" — asked with two different shapes of "what I do know."
+
+Two-student test rosters can't actually prove the "unique" part means
+anything, though — with only two names, almost anything looks unique by
+default. Before trusting this, it ran against the real 16-student roster
+directly:
+
+```
+misread candidate: {"status":"not-on-list","suggestion":{"studentId":"1722112","studentName":"Monem Tazwar"}}
+bogus candidate:   {"status":"not-on-list","suggestion":null}
+partial candidate: {"status":"not-on-list","suggestion":{"studentId":"1722112","studentName":"Monem Tazwar"}}
+```
+
+A real single-digit misread and a real partial read both resolved to the
+correct, unique student; a genuinely made-up ID got no suggestion at all,
+confirming that none of the other 15 real IDs happened to sit one digit
+away and produce a false positive. The *ambiguous* case — two roster
+students each one digit from the same wrong reading, or each consistent
+with the same partial one — is still only reachable by construction (a
+16-name class is unlikely to contain it by chance), so it's covered by a
+deliberately-built test rather than left to hope:
+
+```typescript
+it('offers no suggestion when two roster students are each one digit away', () => {
+  const twoClose = /* 1111111 and 1111112 */;
+  const result = matchAgainstRoster('1111110', 7, twoClose); // one digit from BOTH
+  expect(result).toEqual({ status: 'not-on-list', suggestion: null });
+});
+```
+
+Wiring this in touched three screens without touching their tests. Every
+new prop — `roster` on `Scan`/`Review`, the already-existing `rosterUpload`
+on `Results` — is optional and defaults to `null`, so the 36 pre-existing
+render calls across `Scan`/`Review`/`Results` tests needed no edits at all;
+plain mode is what happens when nothing was ever passed, not a separate
+code path that has to be kept in sync with the roster-aware one. The
+suggestion itself is applied through the exact same `editIdentity` helper
+every manual correction already goes through:
+
+```typescript
+<button onClick={() => editIdentity(setStudentId, rosterMatch.suggestion!.studentId)}>
+  Use this
+</button>
+```
+
+which matters for a reason that isn't about the ID field at all: `editIdentity`
+also clears a pending duplicate-conflict banner, because a corrected ID can
+change which existing record it conflicts with. Accepting a roster suggestion
+is, mechanically, exactly the same action as retyping the field by hand — so
+it gets that same correctness for free, rather than needing its own version
+of the same fix.
+
+### A privacy sentence colliding with a validation sentence
+
+Extending Setup's disclosure for the new roster feature surfaced a small,
+very literal bug: the new paragraph's wording — "upload your class
+marksheet" — overlapped the *existing* blocking-error message ("Upload
+your class marksheet, or switch to a plain download."). `Setup.test.tsx`
+finds text by regex, and a regex that used to match one element now matched
+two, which `findByText` treats as a failure rather than picking one:
+
+```
+TestingLibraryElementError: Found multiple elements with the text: /upload your class marksheet/i
+```
+
+Nothing about the *logic* was wrong — both sentences were individually
+correct. Two people (or two features, both correct on their own) had
+written adjacent sentences that happened to share five words, and only the
+test noticed, on the first run, before either one shipped. The fix was
+just rewording the newer sentence ("using your own class-list workbook"
+instead), but the reason it's worth writing down is the general shape:
+prose written for a human to read and text matched by a test are the same
+string, and a codebase with enough of both eventually needs one sentence
+to avoid echoing another on purpose, not by luck.
+
+### Phase D — the bug that only showed up once something actually wrote back
+
+Phase D is reconciliation: tell the instructor who's missing before they
+export, refuse to export at all over a duplicate, and — the one genuinely
+new capability — let a quiz's totals land as a column in the class list
+itself, not just in its own sheet. That last piece is what turned a latent
+design gap into a real bug, caught before it ever shipped.
+
+`RosterStudent` — the shape `roster.ts` hands back for every student on the
+list — carried `sl`, `studentId`, `studentIdKey`, `studentName`. Nothing
+about *which row of the actual spreadsheet* that student sits on. Nothing
+needed it before Phase D: Phases A through C only ever read the roster,
+never wrote back into it. The natural-looking way to write a totals column
+would be `headerRow + 1 + i` for the i-th student — and that's exactly
+right, provided every row between the header and that student has a
+student on it.
+
+It doesn't hold the moment there's a gap. `collectStudentRows` (the same
+function that turns worksheet rows into `RosterStudent`s) already skips any
+row with a blank `STUDENT ID` cell — a row a teaching assistant might
+leave for a withdrawn student, say. Skip one row, and every student below
+it is one row higher in the array than they are in the actual file. Write
+a totals column by position and the third student's total lands next to
+the fourth student's name.
+
+Caught by asking the same question this project keeps coming back to:
+*what does this look like as an actual test, not a description?*
+
+```typescript
+it("carries each student's REAL sheet row, surviving a skipped blank row in between", async () => {
+  const wb = rosterWorkbook([
+    ['SL', 'STUDENT ID', 'STUDENT NAME'],
+    [1, '1722112', 'A'],       // row 2
+    [2, '', 'skip me'],        // row 3 — blank, skipped
+    [3, '2130643', 'B'],       // row 4, NOT row 3
+  ]);
+  const result = parseRosterSheet(await roundTrip(wb), 'data', 7);
+  expect(result.students.map((s) => s.row)).toEqual([2, 4]);
+});
+```
+
+The fix is a field, `RosterStudent.row`, set once during parsing from the
+row `collectStudentRows` was already iterating, and used everywhere a
+totals write needs to target a real cell:
+
+```typescript
+// workbookExport.ts — writeTotalsColumn
+result.rosterRows.forEach((row, i) => {
+  ws.getRow(roster.students[i].row).getCell(col).value = row.total;
+});
+```
+
+`i` still indexes into the array — `result.rosterRows[i]` really does
+correspond to `roster.students[i]`, because `buildExamSheet` builds both by
+mapping the same array in the same order. What changed is that the *sheet
+row* comes from the student's own recorded position, never from doing
+arithmetic on `i`. Adding this one field cost nothing else — every
+existing test comparing a `RosterStudent` literal needed one extra
+property, mechanically, and nothing about the matching or exam-sheet logic
+changed at all.
+
+The test above guards the parsing layer. A second one guards the point
+where the bug would have actually done damage — writing to the wrong cell
+in a real worksheet:
+
+```typescript
+it('writes to each student\'s real sheet row, surviving a gap earlier in the roster', async () => {
+  // ...a workbook with the same gap, header row 1, Monem row 2, a real
+  // blank row 3, Salman row 4...
+  writeTotalsColumn(wb, gappyRoster, 'Quiz 1', 20, result);
+  expect(ws.getCell('D2').value).toBe(9.5);   // Monem's own row
+  expect(ws.getCell('D4').value).toBeNull();  // Salman's own row — not D3
+});
+```
+
+Two tests, two different failure modes of the same root cause: one proves
+the *data* survives the gap, the other proves the *write* does too. Either
+alone would have missed a bug the other one catches — a `row` field that
+parses correctly but gets ignored by the writer is just as broken as one
+that never existed.
+
+### Always confirming, never guessing which case applies
+
+Before Phase D, clicking "Export into class marksheet" would sometimes
+show a confirm banner (a renamed or colliding sheet) and sometimes just
+download straight away — matching this project's general instinct that a
+routine action shouldn't need a tap when nothing needs deciding. Phase D's
+own requirement — "list who is missing before the download" — means
+there's now *always* at least one fact worth showing, so the shortcut had
+to go rather than live alongside a second, inconsistent path:
+
+```typescript
+// no more "if nothing to confirm, write immediately" branch —
+// handleWorkbookExportClick always ends by setting pendingWorkbookExport
+setPendingWorkbookExport({ workbook, sanitizedName, nameChanged, collision, result });
+```
+
+The panel itself reads as three priority-ordered cases, and the ordering
+is deliberate: a duplicate always wins, because writing one student's
+marks into another's row is worse than any naming question. Only once
+there are zero duplicates does the panel move on to a collision, or —
+failing that — a plain confirmation:
+
+```typescript
+if (result.duplicates.length > 0) {
+  // banner-danger. Names every conflict. Only "Cancel" — no Overwrite,
+  // no Continue. The plain "Download Excel" button stays enabled the
+  // whole time, exactly as the escape hatch plan.md §17 describes.
+}
+```
+
+The blocking case has no path forward inside this component at all — the
+only way through is to go fix the duplicate in the Results table above
+(already editable) and try again. That's a deliberate refusal to offer a
+"proceed anyway," the same shape as `crossCheck`'s own block/warn split
+from step 7: some conflicts get a choice, and some don't.
+
+### A store that has to remember to forget itself
+
+Persistence (12.14) sounds like it only needs a `save` and a `load`. It
+actually needs a third operation, and finding that out came from asking
+what happens to last quiz's roster when *this* quiz doesn't have one.
+
+Setup already saves the roster upload the moment a workbook-mode quiz
+starts, mirroring how `config` is already saved:
+
+```typescript
+if (rosterUpload) {
+  await saveRosterUpload(rosterUpload);
+} else {
+  await clearRosterUpload();
+}
+```
+
+The `else` branch is the part that isn't obvious from the words "save the
+roster when there is one." Picture the actual sequence: Quiz 1 uses a
+class-marksheet upload, which gets persisted. Quiz 2, same session, same
+browser, instructor picks Plain download instead — nothing in that flow
+naturally *removes* Quiz 1's roster from IndexedDB, because nothing ever
+called anything that would. It just sits there. Then the browser reloads
+mid-way through Quiz 2 (a real phone, a real class — this happens), and
+the saved-config quick-start path faithfully restores whatever's in that
+store: Quiz 1's workbook, attached to a session the instructor explicitly
+chose not to use one for.
+
+`clearRosterUpload()` exists because "skip saving" and "actively remove
+what was there before" are different operations, and only one of them
+prevents this. The same asymmetry already existed one layer up —
+`resetAll()` clears the roster store for the *same* reason `meta`'s source
+id survives it, just pointed the opposite way: a class list belongs to one
+session, so both "start a genuinely new class" (`resetAll`) and "this
+particular quiz doesn't use one" (`clearRosterUpload`) have to actively
+say so, not merely fail to say otherwise.
+
+The other place restoration had to be threaded through consistently was
+easy to miss for the opposite reason — it looked done already. `onStart`
+had carried the roster since Phase A. `onViewResults` (the "View" button
+on the saved-session notice, for jumping straight to Results without
+scanning anything more) had always hardcoded `null`, because when it was
+written there was nothing to restore. Once 12.14 added persistence, that
+hardcoded `null` became a second entry point into the same session quietly
+disagreeing with the first about whether a roster exists:
+
+```typescript
+// App.tsx — before: two entry points into one session, two different answers
+onViewResults={(saved) => { setConfig(saved); setRosterUpload(null); ... }}
+// after: the same question, answered the same way, from the same source
+onViewResults={(saved, upload) => { setConfig(saved); setRosterUpload(upload); ... }}
+```
+
+Neither change is complicated. Both are the kind of gap that a feature
+built in one pass, by one line of reasoning, tends to leave: the thing
+that's obviously needed gets built, and the thing that's needed to *undo*
+it, or to reach it a second way, waits for someone to ask "what happens to
+the old one" or "what about the other button that does something similar."
+
+### A writer has to survive its own reader
+
+All four phases were marked done, then a person actually used the thing on
+a phone and found five more things — three small (a button overflowing a
+narrow screen, a file input lying about what was selected, column headers
+with no max mark shown), and one that's worth its own telling, because it
+almost undid a piece of correctness this whole feature was built around.
+
+The request was simple: show a column's max mark next to its header, the
+same way Review already does — `"Total"` becomes `"Total (20)"`. Applying
+it to the on-screen table and the plain export is genuinely just that
+simple. Applying it to the *exam sheet* — the one this app writes into the
+instructor's own workbook, then may need to recognize again on a future
+upload — is not, and the reason why is a pattern worth naming: **a piece
+of code that both writes a label and later reads that same label back has
+to survive its own writing, not just its reading.**
+
+`hasExamSignature` is what decides whether a sheet looks like something
+this app already produced — the same check that stops a dragged exam-sheet
+tab from being mistaken for the class list, discussed above. It looks for
+an exact `TOTAL` key among a sheet's canonicalized headers:
+
+```typescript
+if (!columns.has('TOTAL') || !columns.has('SERIAL')) return false;
+```
+
+Canonicalizing strips everything but letters and digits and uppercases the
+rest. `"Total"` becomes `"TOTAL"` — an exact match. `"Total (20)"` becomes
+`"TOTAL20"` — not a match, not even close as far as `===` is concerned.
+Ship the header change without touching this check, and the very next
+time a workbook this app wrote gets re-uploaded — which is the *normal*
+way this feature gets used across a semester, not an edge case — its own
+exam sheet would stop registering as exam-shaped. Since exam sheets carry
+`STUDENT NAME` by design (step 3r.6's own decision), an unrecognized one
+looks exactly like a second, spurious class list: the exact ambiguity the
+whole `analyzeWorkbook`/`hasExamSignature` mechanism exists to prevent,
+reopened by a change that had nothing to do with roster detection at all.
+
+The two changes don't look related. One is "add text to a header for
+readability." The other is "how do I recognize a sheet I wrote." They only
+touch because the first one changes what the second one is looking *at*.
+Nothing about reading the header-annotation request in isolation would
+surface that connection — it only shows up if you ask, specifically,
+*what happens when this app re-reads what it just wrote*. That's a
+different question from "does this look right on screen," and it's the
+one that matters here because the exam sheet is the one output in this
+whole feature designed to be consumed by this app itself, later.
+
+The fix is the same shape as the one place this codebase had already hit
+this exact problem — the `Q<n>` column pattern already tolerates trailing
+noise for an identical reason:
+
+```typescript
+// was: columns.has('TOTAL')
+// now: tolerates "TOTAL" followed by nothing, or by digits from a
+// stripped "(20)" — same reasoning /^Q\d+$/ already uses for "Q1 (5)"
+const hasTotal = [...columns.keys()].some((key) => /^TOTAL\d*$/.test(key));
+```
+
+Verified two ways, matching this project's own standard for anything
+touching detection: a fabricated adversarial case (`"Total Marks Trend"`
+canonicalizes to `"TOTALMARKSTREND"`, still correctly fails the pattern),
+and the real thing — writing an exam sheet into the actual 16-student
+file, then feeding that exact output back through `analyzeWorkbook` and
+confirming `data` still comes back as the class list, not the sheet just
+written into it.
+
+### What this leaves behind
+
+- Frontend suite: 119 → 238 — 234 across all four phases, plus 4 more from
+  the live-phone round above (two for `hasExamSignature`'s widened match,
+  one for the file-input display fix, one for a same-name-different-max
+  totals column). Four new pure-logic files (`roster.ts`, `examSheet.ts`,
+  `workbookExport.ts`, `rosterMatch.ts`, each fully covered on its own),
+  plus additions to `db.test.ts` for persistence and to
+  `Setup`/`Review`/`Results`' existing component suites for everything
+  each phase wired into the screens themselves. Every adversarial case
+  discussed across all four phases and the live-testing round — the
+  dragged tab, an accumulated `Q1`/`Q2`/`Mid`/`Total` roster, a real
+  collision, an ambiguous one-digit-away suggestion, a roster with a
+  genuine gap, a workbook re-reading its own annotated headers — is a
+  permanent test, not a comment.
+- `RosterUpload`/`roster` now threads `Setup.tsx` → `App.tsx` → both
+  `Results.tsx` and `Scan.tsx` → `Review.tsx`, survives a page reload via
+  IndexedDB, and reaches Results through *either* entry point
+  (`onStart`/`onViewResults`) consistently. Plain mode is provably
+  unchanged throughout: Phase B's `handleExport` extraction passed its
+  existing test unmodified, every new prop across every phase is optional
+  with a `null` default, and starting a new quiz in plain mode explicitly
+  clears what a previous one may have left in storage rather than leaving
+  it to resurface later.
+- All four phases have now been checked against the real 16-student
+  roster directly, not only synthetic shapes — including, for Phase D
+  specifically, a real duplicate and real gaps in coverage, with the
+  totals column landing on the exact right row for every one of the 16
+  real students. What's left is the one item that has been open since
+  Phase A and can't be closed from here: the phone's own file picker and
+  download, tried by a person, on a real device — same category as
+  camera/PWA verification everywhere else in this project.

@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Review from './Review';
 import type { ScanResult } from './api';
 import { getAllRecords, saveRecord } from './db';
+import type { ParsedRoster } from './roster';
 import type { QuizConfig } from './types';
 
 const config: QuizConfig = {
@@ -326,5 +327,86 @@ describe('Review — serial validation (issues.md N21)', () => {
     fireEvent.change(screen.getByDisplayValue('07'), { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
     await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+  });
+});
+
+// Step.md 12.10/12.11 (plan.md §17) — not-on-list flagging with a
+// tap-to-accept candidate, and the resolved name shown next to a match.
+const roster: ParsedRoster = {
+  sheetName: 'data',
+  headerRow: 1,
+  students: [
+    { sl: 1, row: 1 + 1, studentId: '1912345', studentIdKey: '1912345', studentName: 'Monem Tazwar' },
+    { sl: 2, row: 2 + 1, studentId: '2130643', studentIdKey: '2130643', studentName: 'Salman Noor' },
+  ],
+  duplicateIds: [],
+};
+
+describe('Review — roster awareness (12.10/12.11)', () => {
+  it('shows nothing extra when no roster is attached', () => {
+    render(<Review result={okResult} config={config} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.queryByText(/not on your class list/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Monem Tazwar')).not.toBeInTheDocument();
+  });
+
+  it('shows the matched student\'s name next to a recognized ID already on the roster', () => {
+    render(<Review result={okResult} config={config} roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByText('Monem Tazwar')).toBeInTheDocument();
+    expect(screen.queryByText(/not on your class list/i)).not.toBeInTheDocument();
+  });
+
+  it('flags an ID matching nobody on the roster, with no suggestion when none is unique', () => {
+    const result: ScanResult = { ...okResult, student_id: '9999999' };
+    render(<Review result={result} config={config} roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByText(/not on your class list/i)).toBeInTheDocument();
+    expect(screen.queryByText(/did you mean/i)).not.toBeInTheDocument();
+  });
+
+  it('offers a tap-to-accept suggestion for a single-digit misread, and never applies it automatically', () => {
+    // 1912345 misread as 1912395 (one substituted digit)
+    const result: ScanResult = { ...okResult, student_id: '1912395' };
+    render(<Review result={result} config={config} roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
+
+    expect(screen.getByText(/not on your class list/i)).toBeInTheDocument();
+    expect(screen.getByText(/did you mean/i)).toBeInTheDocument();
+    // Not applied on its own — the field still holds the misread value.
+    expect(screen.getByDisplayValue('1912395')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /use this/i }));
+    expect(screen.getByDisplayValue('1912345')).toBeInTheDocument();
+    expect(screen.getByText('Monem Tazwar')).toBeInTheDocument();
+    expect(screen.queryByText(/not on your class list/i)).not.toBeInTheDocument();
+  });
+
+  it('offers a suggestion for a partial read consistent with exactly one roster student', () => {
+    // low-confidence recognizer output: one digit unread
+    const result: ScanResult = {
+      ...okResult,
+      student_id: '191234?',
+      low_confidence_fields: ['student_id'],
+    };
+    render(<Review result={result} config={config} roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
+
+    expect(screen.getByText(/did you mean/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /use this/i }));
+    expect(screen.getByDisplayValue('1912345')).toBeInTheDocument();
+  });
+
+  it('never treats a partial read as an exact match even if it looks close', () => {
+    const result: ScanResult = { ...okResult, student_id: '191234?' };
+    render(<Review result={result} config={config} roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    // Flagged, not silently accepted as Monem Tazwar.
+    expect(screen.queryByText('Monem Tazwar')).not.toBeInTheDocument();
+    expect(screen.getByText(/not on your class list/i)).toBeInTheDocument();
+  });
+
+  it('updates the roster flag live as the ID field is corrected by hand', () => {
+    const result: ScanResult = { ...okResult, student_id: '9999999' };
+    render(<Review result={result} config={config} roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByText(/not on your class list/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByDisplayValue('9999999'), { target: { value: '2130643' } });
+    expect(screen.queryByText(/not on your class list/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Salman Noor')).toBeInTheDocument();
   });
 });
