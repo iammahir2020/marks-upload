@@ -30,6 +30,15 @@ import {
 interface ReviewProps {
   result: ScanResult;
   config: QuizConfig;
+  // Step.md step 13 — every saved record belongs to one Assessment.
+  assessmentId: string;
+  // Step.md 13.13 — Review renders as a fixed overlay (see Scan.tsx's own
+  // comment on why) covering Scan's header entirely, which means the
+  // section context that header shows is invisible at the exact moment
+  // the instructor is deciding whether to Confirm a save — the highest-
+  // value place for it to be visible, not the lowest. Optional/defaulted
+  // so every existing caller and test render is unaffected.
+  sectionLabel?: string;
   // Step.md 12.10/12.11 — optional and defaulted to null so every existing
   // caller (Scan.tsx in plain mode, all 15 pre-existing test renders)
   // keeps working unchanged; the not-on-list/name UI below simply doesn't
@@ -49,7 +58,16 @@ function marksFromResult(config: QuizConfig, result: ScanResult): Record<number,
   return map;
 }
 
-export default function Review({ result, config, roster = null, imagePreviewUrl, onRetake, onSaved }: ReviewProps) {
+export default function Review({
+  result,
+  config,
+  assessmentId,
+  sectionLabel,
+  roster = null,
+  imagePreviewUrl,
+  onRetake,
+  onSaved,
+}: ReviewProps) {
   const [studentId, setStudentId] = useState(result.student_id ?? '');
   const [serial, setSerial] = useState(result.serial ?? '');
   const [marks, setMarks] = useState<Record<number, string>>(() => marksFromResult(config, result));
@@ -61,6 +79,13 @@ export default function Review({ result, config, roster = null, imagePreviewUrl,
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const lowConfidence = useMemo(() => new Set(result.low_confidence_fields), [result]);
+  // issues.md N31/N33 — a strict subset of lowConfidence: ink was present
+  // but nothing legal matched it, as opposed to the cell being genuinely
+  // blank. Drives a specific explanatory message below instead of the
+  // unexplained blank that used to push the instructor into typing a
+  // workaround value (which N31 fixes on the harvesting side; this is
+  // the other half — telling them why, so they don't need to guess).
+  const unmatched = useMemo(() => new Set(result.unmatched_fields), [result]);
 
   // Step.md 12.10 — recomputed on every render from the live field value,
   // the same "derive, don't store" discipline the sum check already
@@ -104,6 +129,7 @@ export default function Review({ result, config, roster = null, imagePreviewUrl,
   ) {
     const record: StudentRecord = {
       id: overwriteId ?? crypto.randomUUID(),
+      assessmentId,
       studentId: candidate.studentId,
       serial: candidate.serial,
       questions: questionValues,
@@ -129,12 +155,16 @@ export default function Review({ result, config, roster = null, imagePreviewUrl,
           (qc) => result.questions.find((q) => q.q === qc.q)?.value ?? null,
         ),
         total: result.total?.value ?? null,
+        // issues.md N31 — the backend refuses to harvest any of these
+        // regardless of what commitSave's confirmed values below say.
+        unmatchedFields: result.unmatched_fields,
       };
       const confirmed: HarvestFields = {
         studentId: candidate.studentId,
         serial: candidate.serial,
         questions: questionValues.map((qv) => qv.value),
         total,
+        unmatchedFields: [], // meaningless on this side — see api.ts's comment
       };
       fetch(imagePreviewUrl)
         .then((r) => r.blob())
@@ -182,10 +212,12 @@ export default function Review({ result, config, roster = null, imagePreviewUrl,
     }
 
     // Lookup on save via the by-serial/by-studentId indexes (plan.md §10),
-    // not a walk over every record in the session.
+    // not a walk over every record in the session. Scoped to THIS
+    // assessment (step.md 13.15) — a shared serial or ID across two
+    // different courses is normal and must not raise a conflict.
     const [bySerial, byId] = await Promise.all([
-      candidate.serial ? findRecordsBySerial(candidate.serial) : Promise.resolve([]),
-      candidate.studentId ? findRecordsByStudentId(candidate.studentId) : Promise.resolve([]),
+      candidate.serial ? findRecordsBySerial(candidate.serial, assessmentId) : Promise.resolve([]),
+      candidate.studentId ? findRecordsByStudentId(candidate.studentId, assessmentId) : Promise.resolve([]),
     ]);
     const existingById = new Map<string, StudentRecord>();
     [...bySerial, ...byId].forEach((r) => existingById.set(r.id, r));
@@ -228,6 +260,9 @@ export default function Review({ result, config, roster = null, imagePreviewUrl,
 
   return (
     <div className="stack">
+      {/* Step.md 13.13 — the one place in the whole confirm loop where the
+          section context would otherwise be invisible. */}
+      {sectionLabel && <span className="eyebrow">{sectionLabel}</span>}
       {showFailureBanner && (
         <div className="banner banner-danger" role="alert">
           <strong>Scan failed: {result.failure_reason}</strong>
@@ -333,6 +368,13 @@ export default function Review({ result, config, roster = null, imagePreviewUrl,
                     {markErrors[qc.q]}
                   </span>
                 )}
+                {/* issues.md N33 — only shown while the field is still
+                    blank; the instant the instructor types anything,
+                    markErrors (or a plain confirmed value) takes over,
+                    same as every other flagged field on this screen. */}
+                {!markErrors[qc.q] && !marks[qc.q] && unmatched.has(`q${qc.q}`) && (
+                  <span className="warning-text">Couldn't match this to a legal value — check the script.</span>
+                )}
               </div>
             ))}
             <div className="field" style={{ width: '4.5rem' }}>
@@ -350,6 +392,9 @@ export default function Review({ result, config, roster = null, imagePreviewUrl,
                 <span role="alert" className="error-text">
                   {totalError}
                 </span>
+              )}
+              {!totalError && !totalStr && unmatched.has('total') && (
+                <span className="warning-text">Couldn't match this to a legal value — check the script.</span>
               )}
             </div>
           </div>

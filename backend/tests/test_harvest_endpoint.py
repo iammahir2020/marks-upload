@@ -81,6 +81,42 @@ def test_harvest_endpoint_saves_confirmed_and_corrected_crops(tmp_path, monkeypa
     assert any(f.startswith("fac-test1/marks_total/confirmed/11_") for f in relative)
 
 
+def test_harvest_endpoint_refuses_a_field_the_original_scan_marked_unmatched(tmp_path, monkeypatch):
+    """issues.md N31, end to end through the real endpoint (not just
+    harvest() directly): q1's crop must not be written at all, even
+    though the instructor's confirmed value (3.0) is perfectly legal and
+    everything else in the same request harvests normally."""
+    monkeypatch.setattr(config_module, "HARVEST_DIR", tmp_path)
+    image_path = TESTSET / "images" / "filled_file.jpeg"
+    if not image_path.exists():
+        pytest.skip("filled_file.jpeg not present")
+
+    original = {
+        "studentId": "2632711",
+        "serial": "07",
+        "questions": [None, 2.5, 1.0, 0.0, 4.5],  # q1 had ink but no legal match
+        "total": 11.0,
+        "unmatchedFields": ["q1"],
+    }
+    confirmed = {
+        "studentId": "2632711",
+        "serial": "07",
+        "questions": [3.0, 2.5, 1.0, 0.0, 4.5],  # the workaround value
+        "total": 11.0,
+    }
+
+    resp = _post_harvest(image_path, original, confirmed, source="fac-test1")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"harvested": True}
+
+    relative = {str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*.png")}
+    assert not any("marks_q1" in f for f in relative)
+    # everything else in the request still harvests normally
+    assert any(f.startswith("fac-test1/marks_q2/confirmed/2.5_") for f in relative)
+    assert any(f.startswith("fac-test1/marks_total/confirmed/11_") for f in relative)
+
+
 def test_harvest_endpoint_returns_false_on_detection_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(config_module, "HARVEST_DIR", tmp_path)
     image_path = TESTSET / "images" / "empty_file.jpeg"

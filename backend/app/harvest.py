@@ -164,6 +164,7 @@ def harvest(
     confirmed_total: float | None,
     store: Store,
     source: str | None = None,
+    unmatched_fields: frozenset[str] = frozenset(),
 ) -> None:
     """Writes each relevant cell crop to `store` under
     <source>/<field>/{confirmed,corrected}/<value>_<uuid>.png. Only fields
@@ -176,7 +177,20 @@ def harvest(
     fine-tuning honestly, which is impossible once several faculty pool
     into one bucket with no way to tell them apart. Per-scan would be
     actively harmful: it would regroup one student's digits and undo
-    11.0.2 outright."""
+    11.0.2 outright.
+
+    `unmatched_fields` is issues.md N31's fix: field names ("q1", "total")
+    where the ORIGINAL scan found glyphs in the cell but no legal value
+    matched them — as opposed to a genuinely blank cell, where there is
+    nothing to mislabel. A crop in this set is refused unconditionally,
+    regardless of what the instructor typed to get past Confirm's legal-
+    value check: we know the ink corresponds to no legal label, so no
+    label we could attach to it is trustworthy. Real case this closes: a
+    handwritten 7 on a 5-mark question forced a workaround entry of "5" to
+    pass validation, and the crop of the 7 was then harvested labelled
+    "5" — silent, self-selecting for the hardest crops (the model reads
+    them worst), and exactly the class of corpus damage that forced the
+    first corpus to be thrown away."""
     src = _sanitize_source(source)
 
     # Collected first, written later and in a random order — see
@@ -217,11 +231,14 @@ def harvest(
         confirmed_value = confirmed_questions[i] if i < len(confirmed_questions) else None
         if confirmed_value is None:
             continue
+        # N31 — refuse regardless of what was typed to work around it.
+        if f"q{i + 1}" in unmatched_fields:
+            continue
         original_value = original_questions[i] if i < len(original_questions) else None
         tag = "confirmed" if confirmed_value == original_value else "corrected"
         add(f"marks_q{i + 1}", tag, _fmt(confirmed_value), cells_dir / f"marks_r1_c{i}.png")
 
-    if confirmed_total is not None:
+    if confirmed_total is not None and "total" not in unmatched_fields:
         tag = "confirmed" if confirmed_total == original_total else "corrected"
         add("marks_total", tag, _fmt(confirmed_total), cells_dir / f"marks_r1_c{question_count}.png")
 

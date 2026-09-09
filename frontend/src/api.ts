@@ -16,6 +16,12 @@ export interface ScanResult {
   questions: QuestionMark[];
   total: QuestionMark | null;
   low_confidence_fields: string[];
+  // issues.md N31/N33 — a strict subset of low_confidence_fields: which of
+  // those (marks/total, never "serial") had ink present but no legal value
+  // matched it, as opposed to a genuinely blank cell. Only ever populated
+  // on the `cnn` path (empty on `remote`/`both`) — see backend/app/marks.py's
+  // MarksResult for the full reasoning.
+  unmatched_fields: string[];
 }
 
 const DEFAULT_API_PORT = 8000;
@@ -129,6 +135,10 @@ export interface HarvestFields {
   serial: string | null;
   questions: (number | null)[];
   total: number | null;
+  // issues.md N31 — only meaningful on `original`; `confirmed` always
+  // sends [] since the backend only reads this off the original side
+  // (main.py's harvest_endpoint ignores confirmed.unmatchedFields).
+  unmatchedFields: string[];
 }
 
 // Step 3r.6c: called from the review screen on Confirm, alongside (never

@@ -51,6 +51,10 @@ class ScanResult(BaseModel):
     questions: list[QuestionMark] = []
     total: QuestionMark | None = None
     low_confidence_fields: list[str] = []
+    # issues.md N31/N33 — see marks.MarksResult's own comment. A strict
+    # subset of low_confidence_fields; empty on the remote/both paths,
+    # which never populate it.
+    unmatched_fields: list[str] = []
 
 
 class QuestionConfig(BaseModel):
@@ -126,3 +130,8 @@ class HarvestFields(BaseModel):
     serial: str | None = Field(default=None, max_length=MAX_HARVEST_FIELD_LENGTH)
     questions: list[float | None] = Field(default=[], max_length=MAX_QUESTIONS)
     total: float | None = None
+    # issues.md N31 — only meaningful on `original`; the frontend sends []
+    # on `confirmed` and harvest_endpoint only ever reads it off the
+    # original side (see below). Names from the same "q1".."qN"/"total"
+    # vocabulary as ScanResult.unmatched_fields — capped at +1 for `total`.
+    unmatchedFields: list[str] = Field(default=[], max_length=MAX_QUESTIONS + 1)

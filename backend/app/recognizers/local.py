@@ -103,23 +103,34 @@ class CNNRecognizer:
         )
 
         low_confidence_fields: list[str] = []
+        unmatched_fields: list[str] = []
 
         serial = self._decode_serial_cell(cells_dir / "serial.png")
-        if serial is None:
+        # issues.md N32 — decode_serial now returns a partial string like
+        # "0?" instead of blanking the whole field, so "flagged" is no
+        # longer just "is None": it's "contains any '?' at all", mirroring
+        # read_id's own `uncertain` tracking for the student ID above.
+        if serial is None or "?" in serial:
             low_confidence_fields.append("serial")
 
         questions: list[float | None] = []
         for i, max_mark in enumerate(question_maxes):
-            value = self._decode_value_cell(cells_dir / f"marks_r1_c{i}.png", legal_values(max_mark))
+            value, had_ink = self._decode_value_cell(
+                cells_dir / f"marks_r1_c{i}.png", legal_values(max_mark)
+            )
             questions.append(value)
             if value is None:
                 low_confidence_fields.append(f"q{i + 1}")
+                if had_ink:
+                    unmatched_fields.append(f"q{i + 1}")
 
         total_max = sum(question_maxes)
         total_path = cells_dir / f"marks_r1_c{len(question_maxes)}.png"
-        total = self._decode_value_cell(total_path, legal_values(total_max))
+        total, total_had_ink = self._decode_value_cell(total_path, legal_values(total_max))
         if total is None:
             low_confidence_fields.append("total")
+            if total_had_ink:
+                unmatched_fields.append("total")
 
         return MarksResult(
             status="ok",
@@ -127,6 +138,7 @@ class CNNRecognizer:
             questions=questions,
             total=total,
             low_confidence_fields=low_confidence_fields,
+            unmatched_fields=unmatched_fields,
         )
 
     def _decode_serial_cell(self, path: Path) -> str | None:
@@ -141,14 +153,22 @@ class CNNRecognizer:
         serial, _confidence = decode_serial(probs, SERIAL_CONFIDENCE_FLOOR, SERIAL_MARGIN_FLOOR)
         return serial
 
-    def _decode_value_cell(self, path: Path, legal_vals: set[float]) -> float | None:
+    def _decode_value_cell(self, path: Path, legal_vals: set[float]) -> tuple[float | None, bool]:
+        """Returns (value, had_ink) — issues.md N31/N33. `had_ink` is True
+        exactly when the cell had glyphs but none scored a legal value, as
+        opposed to a genuinely blank cell (no glyphs at all): the two used
+        to collapse into an identical `None`, which is what let harvest()
+        (N31) attach an instructor's workaround value to a crop whose ink
+        it does not match, and what left the instructor (N33) staring at
+        an unexplained blank with no way to tell "nothing written" from
+        "written, but no legal value matches — check the script"."""
         crop = read_cell(path)
         if crop is None:
-            return None
+            return None, False
         glyphs = segment_cell(crop)
         if not glyphs:
-            return None
+            return None, False  # blank cell — not the N31/N33 case
         digit_glyphs, decimal_index = _digit_glyphs_and_decimal_index(glyphs)
         probs = [glyph_probs(self._session, glyph_to_canvas(g.image)) for g in digit_glyphs]
         value, _score = decode_value(probs, decimal_index, legal_vals, DECODE_FLOOR)
-        return value
+        return value, value is None

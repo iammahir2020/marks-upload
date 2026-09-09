@@ -5,21 +5,28 @@
 // whole exercise (9.4).
 //
 // Step.md step 12.5-12.8 (plan.md §17, Phase B) added a second export
-// path here: when `rosterUpload` is present (a class-list workbook was
-// confirmed at Setup), the instructor can also write this quiz's results
-// as a new sheet into their own file, alongside the plain download —
-// which stays exactly as it was, unconditionally, as the escape hatch
-// plan.md §17 names it. ExcelJS is already a static import below because
-// Results itself is lazy-loaded as a whole screen (App.tsx) — no separate
-// dynamic import is needed here the way Setup.tsx's upload UI requires.
+// path here: when the section has a class-list workbook attached, the
+// instructor can also write this quiz's results as a new sheet into their
+// own file, alongside the plain download — which stays exactly as it was,
+// unconditionally, as the escape hatch plan.md §17 names it. ExcelJS is
+// already a static import below because Results itself is lazy-loaded as
+// a whole screen (App.tsx) — no separate dynamic import is needed here
+// the way SectionForm's upload UI requires.
+//
+// Step.md step 13 moved the roster/workbook from a standalone
+// `RosterUpload` (handed down from Setup.tsx) onto the Section itself —
+// `section.roster`/`section.workbook` are this screen's read of it now,
+// and 13.20 stamps `assessment.exportedAt` on every successful export
+// path, which is what step 13.19's semester-purge guard (Phase D, not yet
+// built) will read to refuse deleting unexported work.
 import { useEffect, useMemo, useState } from 'react';
 import ExcelJS from 'exceljs';
-import { getAllRecords, resetAll, saveRecord } from './db';
+import { getRecordsByAssessment, saveAssessment, saveRecord, saveSection } from './db';
 import { buildExamSheet, type ExamSheetResult } from './examSheet';
 import { sortRecords, unverifiedReason } from './results';
-import type { ParsedRoster, RosterUpload } from './roster';
+import type { ParsedRoster } from './roster';
 import { matchAgainstRoster } from './rosterMatch';
-import type { QuestionValue, QuizConfig, StudentRecord } from './types';
+import type { Assessment, QuestionValue, QuizConfig, Section, StudentRecord } from './types';
 import { parseMarkField, sumCheck } from './validateMarks';
 import {
   findSheetCollision,
@@ -62,8 +69,8 @@ function triggerDownload(buffer: BlobPart, filename: string) {
 
 // State for the confirm prompt between clicking "Export into class
 // marksheet" and the actual write. Holds a workbook already loaded fresh
-// from `rosterUpload.workbookBytes` — never the original bytes themselves
-// — so cancelling and re-triggering costs nothing and can't leave a
+// from `section.workbook.bytes` — never the raw bytes themselves — so
+// cancelling and re-triggering costs nothing and can't leave a
 // half-written workbook lying around in state. `result` is computed once
 // here and reused by finishWorkbookExport, rather than rebuilt — it's also
 // what the coverage summary and duplicate block below read from.
@@ -83,35 +90,79 @@ interface PendingWorkbookExport {
   result: ExamSheetResult;
 }
 
-// A quiz name is user text and becomes a filename. Stripping the characters
-// that are illegal or path-bearing on the platforms this lands on, so a quiz
-// called "CSE211L/Q1" downloads as a file rather than failing or being
-// interpreted as a path (issues.md N7).
-function exportFilename(quizName: string): string {
-  const base = quizName
+// Strips characters that are illegal or path-bearing on the platforms this
+// lands on, so a name containing "/" downloads as a file rather than
+// failing or being interpreted as a path (issues.md N7). Shared by every
+// part of the filename below, not just the quiz name — a course code is
+// also user text, typed into SectionForm.
+function sanitizeFilenamePart(raw: string): string {
+  return raw
     .trim()
     .replace(/[/\\?%*:|"<>]/g, '-')
     .replace(/\s+/g, ' ')
-    .slice(0, 80)
     .trim();
-  return `${base || 'quiz'}.xlsx`;
+}
+
+// Step.md 13.16 (Phase C) — the plain download used to be named from the
+// quiz alone ("Quiz 1.xlsx"), so a semester of exports across several
+// sections landed in one Drive folder as "Quiz 1.xlsx", "Quiz 1 (1).xlsx",
+// "Quiz 1 (2).xlsx" with nothing to tell them apart. Section and date now
+// carry the identity: "CSE203-2_Quiz-1_2026-09-09.xlsx". Spaces become
+// hyphens within a part (so "Quiz 1" -> "Quiz-1") while underscores
+// separate the three parts, matching the exact shape named in plan.md §18.
+function exportFilename(section: Section, quizName: string): string {
+  const sectionPart = sanitizeFilenamePart(`${section.courseCode}-${section.label}`).replace(/\s+/g, '-');
+  const quizPart = sanitizeFilenamePart(quizName).replace(/\s+/g, '-').slice(0, 80);
+  const datePart = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  return `${sectionPart || 'section'}_${quizPart || 'quiz'}_${datePart}.xlsx`;
 }
 
 interface ResultsProps {
   config: QuizConfig;
-  // Optional and defaulted to null rather than required: every existing
-  // call site (App.tsx's saved-config quick-start, every test render)
-  // predates this and passes nothing — plain mode must stay exactly as it
-  // was, byte for byte, for anyone who never uploaded a workbook.
-  rosterUpload?: RosterUpload | null;
+  // Step.md step 13 — scopes the record read below to THIS quiz alone.
+  assessmentId: string;
+  // Step.md step 13 — the roster/workbook now live on the Section
+  // (§18), not a standalone `RosterUpload` handed down from Setup.tsx.
+  // `section.roster`/`section.workbook` are read directly below; both are
+  // undefined for a section nobody ever attached a class list to, which
+  // is what keeps the whole second export path optional exactly as it
+  // was under the old `rosterUpload` prop.
+  section: Section;
+  // Needed to stamp `exportedAt` (step.md 13.20) on a successful export —
+  // done proactively here rather than waiting for Phase D, since the
+  // eventual purge guard (13.19) is only correct against usage that was
+  // already being stamped before it ships.
+  assessment: Assessment;
+  onAssessmentExported: (assessment: Assessment) => void;
+  // Step.md 13.12 — the section's cached workbook copy changes on every
+  // successful export into it, so App.tsx's held `activeSection` has to
+  // be told, the same reason onAssessmentExported exists.
+  onSectionUpdated: (section: Section) => void;
+  // Step.md 13.11's "Re-pick" — reopens the section's own edit screen,
+  // which already has the upload UI (SectionForm), rather than
+  // duplicating a second file picker here.
+  onEditSection: () => void;
   onBack: () => void;
-  onReset: () => void;
+  // Step.md step 13 — there is no single held config to fall back to any
+  // more, so this replaces the old onReset: it always means "back to the
+  // library." Bulk deletion itself moved to Library.tsx's own "Reset
+  // everything," which isn't scoped to one quiz.
+  onLibrary: () => void;
 }
 
-export default function Results({ config, rosterUpload = null, onBack, onReset }: ResultsProps) {
+export default function Results({
+  config,
+  assessmentId,
+  section,
+  assessment,
+  onAssessmentExported,
+  onSectionUpdated,
+  onEditSection,
+  onBack,
+  onLibrary,
+}: ResultsProps) {
   const [records, setRecords] = useState<StudentRecord[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [confirmingReset, setConfirmingReset] = useState(false);
   const [pendingWorkbookExport, setPendingWorkbookExport] = useState<PendingWorkbookExport | null>(null);
   const [workbookExportError, setWorkbookExportError] = useState<string | null>(null);
   // Step.md 12.13 — off by default: this is the only export operation that
@@ -120,17 +171,22 @@ export default function Results({ config, rosterUpload = null, onBack, onReset }
   // the roster export itself was requested.
   const [includeTotalsColumn, setIncludeTotalsColumn] = useState(false);
 
-  async function handleReset() {
-    await resetAll();
-    onReset();
+  // Step.md 13.20 — stamps exportedAt (only if it isn't already), then
+  // tells App.tsx so its own held `activeAssessment` reference stays in
+  // step. A no-op past the first successful export of this assessment.
+  async function markExported() {
+    if (assessment.exportedAt) return;
+    const stamped: Assessment = { ...assessment, exportedAt: new Date().toISOString() };
+    await saveAssessment(stamped);
+    onAssessmentExported(stamped);
   }
 
   useEffect(() => {
-    getAllRecords().then((rs) => {
+    getRecordsByAssessment(assessmentId).then((rs) => {
       setRecords(rs);
       setLoaded(true);
     });
-  }, []);
+  }, [assessmentId]);
 
   const sorted = useMemo(() => sortRecords(records), [records]);
   const unverifiedCount = useMemo(
@@ -174,18 +230,22 @@ export default function Results({ config, rosterUpload = null, onBack, onReset }
     );
 
     const buffer = await wb.xlsx.writeBuffer();
-    triggerDownload(buffer, exportFilename(config.quizName));
+    triggerDownload(buffer, exportFilename(section, config.quizName));
+    await markExported();
   }
 
-  // Step.md 12.5-12.8 — the second export path, only reachable when a
-  // class-list workbook was confirmed at Setup. Always starts from
-  // `rosterUpload.workbookBytes`, the ORIGINAL upload, never a workbook
-  // instance kept around from an earlier export in this same session —
-  // that's what makes exporting the same quiz twice produce one sheet
-  // rather than two (plan.md §17): each run starts from the same pristine
-  // bytes and re-decides the same name/collision from scratch.
+  // Step.md 12.5-12.8 — the second export path, only reachable when the
+  // SECTION has a class-list workbook attached (step.md step 13 moved
+  // this off a per-quiz `RosterUpload`). Starts from `section.workbook
+  // .bytes` — as of 13.12, that is no longer always the original upload:
+  // a successful export re-caches the bytes this app just wrote, so a
+  // LATER quiz in the same section starts from a copy that already has
+  // every earlier quiz's sheet in it, rather than silently reverting to
+  // the pristine upload and losing them. Exporting the SAME quiz twice
+  // still produces one sheet, not two — buildExamSheet/writeExamSheet
+  // key on the quiz's own sheet name regardless of what else is present.
   async function handleWorkbookExportClick() {
-    if (!rosterUpload) return;
+    if (!section.workbook || !section.roster) return;
     setWorkbookExportError(null);
 
     const sanitized = sanitizeSheetName(config.quizName);
@@ -195,15 +255,15 @@ export default function Results({ config, rosterUpload = null, onBack, onReset }
       // already requires a non-empty name, so this is a narrow edge, but
       // an unwritable sheet name must never fail silently.
       setWorkbookExportError(
-        "This quiz's name can't become a valid sheet name — rename it in Setup and try again.",
+        "This quiz's name can't become a valid sheet name — rename it and try again.",
       );
       return;
     }
 
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(rosterUpload.workbookBytes);
-    const collision = findSheetCollision(workbook, sanitized.name, rosterUpload.roster.sheetName);
-    const result = buildExamSheet(rosterUpload.roster, records, config);
+    await workbook.xlsx.load(section.workbook.bytes);
+    const collision = findSheetCollision(workbook, sanitized.name, section.roster.sheetName);
+    const result = buildExamSheet(section.roster, records, config);
 
     setPendingWorkbookExport({
       workbook,
@@ -215,19 +275,39 @@ export default function Results({ config, rosterUpload = null, onBack, onReset }
   }
 
   async function finishWorkbookExport(pending: PendingWorkbookExport, finalName: string, overwrite: boolean) {
-    if (!rosterUpload) return;
+    if (!section.workbook || !section.roster) return;
     writeExamSheet(pending.workbook, finalName, overwrite, pending.result, config);
     // Step.md 12.13 — opt-in, off by default (see the checkbox below).
     // Writes into the roster sheet itself, not the exam sheet just added.
     if (includeTotalsColumn) {
-      writeTotalsColumn(pending.workbook, rosterUpload.roster, finalName, config.totalMax, pending.result);
+      writeTotalsColumn(pending.workbook, section.roster, finalName, config.totalMax, pending.result);
     }
     const buffer = await pending.workbook.xlsx.writeBuffer();
     // The updated copy of the instructor's own file — same filename, so it
     // reads as "the same file, now with this quiz added" rather than a
     // new, separately-named artifact to keep track of.
-    triggerDownload(buffer, rosterUpload.fileName);
+    triggerDownload(buffer, section.workbook.fileName);
+
+    // Step.md 13.12 — re-cache. What was just written becomes the
+    // section's new stored copy, so a later quiz in this section builds
+    // on top of it instead of the original upload. This is what makes
+    // 13.11's staleness-as-visible-not-impossible rule actually hold: an
+    // instructor who always uploads each download back to Drive keeps
+    // this cache and the real file aligned automatically.
+    const updatedSection: Section = {
+      ...section,
+      workbook: {
+        fileName: section.workbook.fileName,
+        bytes: buffer as ArrayBuffer,
+        capturedAt: new Date().toISOString(),
+        source: 'exported',
+      },
+    };
+    await saveSection(updatedSection);
+    onSectionUpdated(updatedSection);
+
     setPendingWorkbookExport(null);
+    await markExported();
   }
 
   if (!loaded) return null;
@@ -236,35 +316,23 @@ export default function Results({ config, rosterUpload = null, onBack, onReset }
     <div className="page page-wide">
       <div className="app-header">
         <div>
-          <span className="eyebrow">{config.quizName}</span>
+          {/* Step.md 13.13 (a head start on it) — same section-plus-quiz
+              eyebrow Scan.tsx now shows, so Results can't be mistaken for
+              a different quiz's table after switching sections. */}
+          <span className="eyebrow">
+            {section.courseCode}-{section.label} · {config.quizName}
+          </span>
           <h1>Results</h1>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-danger btn-sm" onClick={() => setConfirmingReset(true)}>
-            Reset everything
+          <button className="btn btn-quiet" onClick={onLibrary}>
+            All sections
           </button>
           <button className="btn btn-quiet" onClick={onBack}>
             &larr; Back to scanning
           </button>
         </div>
       </div>
-
-      {confirmingReset && (
-        <div className="banner banner-danger" role="alert">
-          <p>
-            This deletes every saved record and the quiz setup — there's no undo. Make sure
-            you've downloaded the Excel file first.
-          </p>
-          <div className="banner-actions">
-            <button className="btn btn-danger-solid btn-sm" onClick={handleReset}>
-              Yes, delete everything
-            </button>
-            <button className="btn btn-secondary btn-sm" onClick={() => setConfirmingReset(false)}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
 
       <div className="row-between">
         <span className="text-sm">
@@ -281,20 +349,21 @@ export default function Results({ config, rosterUpload = null, onBack, onReset }
         </button>
       </div>
 
-      {/* Step.md 12.5-12.8 — only rendered when Setup confirmed a class-list
-          workbook. The plain "Download Excel" button above stays exactly as
-          it was, unconditionally — plan.md §17's own "escape hatch" for
-          whenever this path can't be used or a conflict can't be resolved
-          before class ends. */}
-      {rosterUpload && (
+      {/* Step.md 12.5-12.8 — only rendered when the SECTION has a class-list
+          workbook attached (step 13 moved this off a per-quiz upload). The
+          plain "Download Excel" button above stays exactly as it was,
+          unconditionally — plan.md §17's own "escape hatch" for whenever
+          this path can't be used or a conflict can't be resolved before
+          class ends. */}
+      {section.roster && section.workbook && (
         <div className="card stack-sm" style={{ padding: 12 }}>
           <div className="row-between">
             <span>
-              Class list: <strong>{rosterUpload.roster.sheetName}</strong>
+              Class list: <strong>{section.roster.sheetName}</strong>
               {' — '}
-              {rosterUpload.roster.students.length}{' '}
-              {rosterUpload.roster.students.length === 1 ? 'student' : 'students'}, from{' '}
-              <strong>{rosterUpload.fileName}</strong>
+              {section.roster.students.length}{' '}
+              {section.roster.students.length === 1 ? 'student' : 'students'}, from{' '}
+              <strong>{section.workbook.fileName}</strong>
             </span>
             <button
               className="btn btn-primary btn-sm"
@@ -302,6 +371,22 @@ export default function Results({ config, rosterUpload = null, onBack, onReset }
               disabled={records.length === 0}
             >
               Export into class marksheet
+            </button>
+          </div>
+          {/* Step.md 13.11 — staleness made VISIBLE rather than assumed
+              away, replacing 12.1's old "fresh upload per quiz" rule (see
+              plan.md §18's amendment note on why). Says which copy this
+              export writes into and when it was captured, either from an
+              upload or (13.12) from this app's own last write into this
+              section. */}
+          <div className="row-between">
+            <span className="text-sm muted">
+              Working from {section.workbook.source === 'exported' ? 'the copy this app wrote' : 'the file you picked'}{' '}
+              on {new Date(section.workbook.capturedAt).toLocaleDateString()}.{' '}
+              Changed it since? Re-pick the file.
+            </span>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={onEditSection}>
+              Re-pick
             </button>
           </div>
           <span className="text-sm muted">
@@ -348,7 +433,7 @@ export default function Results({ config, rosterUpload = null, onBack, onReset }
                 <th className="col-id">Student ID</th>
                 {/* Step.md 12.11 — only when a class list is attached, so
                     the plain-mode table keeps its exact original columns. */}
-                {rosterUpload && <th className="col-id">Name</th>}
+                {section.roster && <th className="col-id">Name</th>}
                 {config.questions.map((qc) => (
                   <th key={qc.q} className="col-mark">
                     Q{qc.q} ({qc.max})
@@ -364,7 +449,7 @@ export default function Results({ config, rosterUpload = null, onBack, onReset }
                   key={record.id}
                   record={record}
                   config={config}
-                  roster={rosterUpload?.roster ?? null}
+                  roster={section.roster ?? null}
                   onUpdate={updateRecord}
                 />
               ))}
@@ -380,7 +465,7 @@ export default function Results({ config, rosterUpload = null, onBack, onReset }
           Without one, the original limitation still holds exactly as
           written. */}
       <p className="text-sm muted">
-        {rosterUpload
+        {section.roster
           ? 'Your class list is attached — the exported sheet lists every student on it, blank if they weren’t scanned, so a skipped student is visible without a separate attendance check.'
           : "This app has no class list, so it can't tell whether a serial is out of range or a student was skipped entirely — check the exported file against your attendance sheet for gaps."}
       </p>

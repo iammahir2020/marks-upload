@@ -52,6 +52,45 @@ def test_decoder_rejects_every_candidate_length_mismatch():
     assert value is None
 
 
+def test_a_leading_zero_still_decodes_a_single_digit_mark():
+    """A student writing '03' for a 3-mark answer, or '05' for a 5-mark
+    one, is a completely ordinary thing to do — and before this, it could
+    never decode: `_fmt(3)` is '3', one digit, so a 2-glyph '03' reading
+    failed the length check against every legal value and the cell was
+    flagged unmatched despite a perfectly legible read. `_digit_candidates`
+    fixes this by also trying each legal value with a leading zero
+    prepended."""
+    value, score = decode_value([one_hot(0), one_hot(3)], has_decimal_at=None, legal_values=legal_values(5.0))
+    assert value == 3.0
+    assert score > 0.9
+
+    value, score = decode_value([one_hot(0), one_hot(5)], has_decimal_at=None, legal_values=legal_values(5.0))
+    assert value == 5.0
+    assert score > 0.9
+
+
+def test_a_leading_zero_still_decodes_a_half_mark():
+    """The same padding, but for a half mark written as '01.5' — an
+    unlikely write in practice, but the fix is a general one (shift the
+    expected decimal position along with the padding) rather than special-
+    cased to whole numbers, so it's worth pinning directly."""
+    glyph_probs = [one_hot(0), one_hot(1), one_hot(5)]
+    value, score = decode_value(glyph_probs, has_decimal_at=2, legal_values=legal_values(5.0))
+    assert value == 1.5
+    assert score > 0.9
+
+
+def test_leading_zero_padding_does_not_invent_a_false_match():
+    """A confident, UNPADDED two-glyph read — '1' then '3' — must not be
+    quietly reinterpreted as a padded '3' just because a padded candidate
+    with that length exists. The padded '0' position still has to score
+    as an actual zero; a confident '1' there should score too low to win,
+    same as any other wrong-digit candidate."""
+    glyph_probs = [one_hot(1), one_hot(3)]
+    value, score = decode_value(glyph_probs, has_decimal_at=None, legal_values=legal_values(5.0))
+    assert value is None
+
+
 def test_decoder_picks_the_best_scoring_whole_number():
     glyph_probs = [one_hot(3)]
     value, score = decode_value(glyph_probs, has_decimal_at=None, legal_values=legal_values(5.0))
@@ -81,16 +120,32 @@ def test_decode_serial_concatenates_confident_glyphs():
     assert serial == "07"
 
 
-def test_decode_serial_flags_the_whole_field_if_any_glyph_is_uncertain():
-    """One bad glyph among several good ones must not produce a
-    partially-guessed string — the data model represents an unreadable
-    serial as fully blank-and-flagged, not '0?'."""
+def test_decode_serial_marks_only_the_uncertain_position():
+    """issues.md N32: a confident glyph next to an uncertain one used to
+    discard the whole field. Measured over real serials, that threw away
+    a leading zero read at 1.00 confidence because its partner scored
+    0.78 — 11 of 17 serials survived where 14 of 17 were correct at raw
+    argmax. The fix mirrors `read_id`'s own contract exactly: a '?' at
+    the uncertain position, the confident glyph kept. `isValidSerial`
+    already rejects a string containing '?', so this still blocks Confirm
+    without any change to the data model or the frontend."""
     ambiguous = np.full(10, 0.01)
     ambiguous[4] = 0.11
     ambiguous[9] = 0.10
     glyph_probs = [one_hot(0), ambiguous]
     serial, confidence = decode_serial(glyph_probs, confidence_floor=0.5, margin_floor=0.3)
-    assert serial is None
+    assert serial == "0?"
+
+
+def test_decode_serial_marks_every_uncertain_position_independently():
+    """Two uncertain glyphs around one confident one — each gets its own
+    '?', not a single field-wide flag."""
+    ambiguous = np.full(10, 0.01)
+    ambiguous[4] = 0.11
+    ambiguous[9] = 0.10
+    glyph_probs = [ambiguous, one_hot(7), ambiguous]
+    serial, confidence = decode_serial(glyph_probs, confidence_floor=0.5, margin_floor=0.3)
+    assert serial == "?7?"
 
 
 def test_decode_serial_of_no_glyphs_is_none_not_empty_string():

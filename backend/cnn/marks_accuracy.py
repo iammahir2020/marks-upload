@@ -85,9 +85,26 @@ def main() -> int:
                 read_serial = result.serial
                 match = read_serial == true_serial
                 serial_correct += int(match)
-                if read_serial is not None and not match:
+                # issues.md N32: decode_serial now returns a partial string
+                # ("0?") rather than blanking the whole field, mirroring
+                # read_id/cnn/accuracy.py's own ID handling. A read
+                # containing '?' was a HONEST flag on at least one
+                # position, not a confident wrong guess, so it must not
+                # count toward the same bar a genuinely wrong full read
+                # does — this mirrors accuracy.py's own "a flagged
+                # position never counts as confidently wrong" comment.
+                is_partial = read_serial is not None and "?" in read_serial
+                if read_serial is not None and not is_partial and not match:
                     confidently_wrong += 1
-                print(f"{name}: serial true={true_serial} read={read_serial} {'OK' if match else ('FLAGGED' if read_serial is None else 'WRONG')}")
+                if match:
+                    outcome = "OK"
+                elif read_serial is None:
+                    outcome = "FLAGGED"
+                elif is_partial:
+                    outcome = "PARTIAL"
+                else:
+                    outcome = "WRONG"
+                print(f"{name}: serial true={true_serial} read={read_serial} {outcome}")
 
             true_questions = {q["q"]: q["value"] for q in label["questions"]}
             for i, read_value in enumerate(result.questions, start=1):

@@ -114,6 +114,77 @@ def test_a_blank_confirmed_question_is_not_harvested_at_all(tmp_path):
     assert _files_under(harvest_dir) == []
 
 
+def test_an_unmatched_question_is_refused_even_though_a_legal_value_was_confirmed(tmp_path):
+    """issues.md N31 — the real bug: a student writes 7 on a 5-mark
+    question, decode_value can't match any legal value so the field is
+    flagged blank, and the instructor types 5 to get past Confirm's
+    legal-value check. The crop of the 7 must NOT be harvested labelled
+    "5" — the two never matched, and self-selecting for exactly the
+    hardest crops is how the first corpus got poisoned."""
+    cells_dir = _make_cells(tmp_path, ["marks_r1_c0.png"])
+    harvest_dir = tmp_path / "harvest"
+    harvest(
+        cells_dir, id_digits=0, question_count=1,
+        original_student_id=None, confirmed_student_id=None,
+        original_serial=None, confirmed_serial=None,
+        original_questions=[None], confirmed_questions=[5.0],  # the workaround
+        original_total=None, confirmed_total=None,
+        store=LocalStore(harvest_dir),
+        unmatched_fields=frozenset({"q1"}),
+    )
+    assert _files_under(harvest_dir) == []
+
+
+def test_an_unmatched_total_is_refused_the_same_way(tmp_path):
+    cells_dir = _make_cells(tmp_path, ["marks_r1_c1.png"])
+    harvest_dir = tmp_path / "harvest"
+    harvest(
+        cells_dir, id_digits=0, question_count=1,
+        original_student_id=None, confirmed_student_id=None,
+        original_serial=None, confirmed_serial=None,
+        original_questions=[None], confirmed_questions=[None],
+        original_total=None, confirmed_total=99.0,
+        store=LocalStore(harvest_dir),
+        unmatched_fields=frozenset({"total"}),
+    )
+    assert _files_under(harvest_dir) == []
+
+
+def test_unmatched_refusal_does_not_affect_a_sibling_question(tmp_path):
+    """Only the flagged field is refused — a real answer sitting next to
+    the out-of-range one must still be harvested normally."""
+    cells_dir = _make_cells(tmp_path, ["marks_r1_c0.png", "marks_r1_c1.png"])
+    harvest_dir = tmp_path / "harvest"
+    harvest(
+        cells_dir, id_digits=0, question_count=2,
+        original_student_id=None, confirmed_student_id=None,
+        original_serial=None, confirmed_serial=None,
+        original_questions=[None, 3.0], confirmed_questions=[5.0, 3.0],
+        original_total=None, confirmed_total=None,
+        store=LocalStore(harvest_dir),
+        unmatched_fields=frozenset({"q1"}),
+    )
+    files = _files_under(harvest_dir)
+    assert not any("marks_q1" in f for f in files)
+    assert any(f.startswith("unknown/marks_q2/confirmed/3_") for f in files)
+
+
+def test_no_unmatched_fields_harvests_exactly_as_before(tmp_path):
+    """The default (empty set) must reproduce every pre-N31 test in this
+    file unchanged — this is the regression guard for the default arg."""
+    cells_dir = _make_cells(tmp_path, ["marks_r1_c0.png"])
+    harvest_dir = tmp_path / "harvest"
+    harvest(
+        cells_dir, id_digits=0, question_count=1,
+        original_student_id=None, confirmed_student_id=None,
+        original_serial=None, confirmed_serial=None,
+        original_questions=[None], confirmed_questions=[5.0],
+        original_total=None, confirmed_total=None,
+        store=LocalStore(harvest_dir),
+    )
+    assert _files_under(harvest_dir) != []
+
+
 def test_serial_and_total_are_harvested_too(tmp_path):
     cells_dir = _make_cells(tmp_path, ["serial.png", "marks_r1_c1.png"])
     harvest_dir = tmp_path / "harvest"

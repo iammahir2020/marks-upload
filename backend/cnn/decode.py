@@ -73,6 +73,28 @@ def _digits_of(value: float) -> tuple[list[int], int | None]:
     return digits, decimal_at
 
 
+def _digit_candidates(value: float) -> list[tuple[list[int], int | None]]:
+    """One legal value's plausible glyph-sequence readings: the canonical
+    minimal form `_digits_of` returns, plus the same digits with a single
+    leading zero prepended.
+
+    Without this, a leading-zero write can never match ANY legal value.
+    `_digits_of(3)` always returns the single digit `[3]` — `_fmt` never
+    produces a leading zero — so a student who writes "03" for a 3-mark
+    answer segments into 2 glyphs, fails the length check against every
+    candidate, and the cell is flagged unmatched even though a perfectly
+    legible read is sitting right there. The padded candidate is scored
+    exactly like any other: the leading glyph still has to score as a
+    genuine "0" against the classifier, so it only wins when that's what
+    was actually drawn, never as a free pass. Extended to the decimal
+    case too ("01.5") for the same reason, by shifting the expected
+    decimal position along with the extra digit.
+    """
+    digits, decimal_at = _digits_of(value)
+    padded_decimal_at = None if decimal_at is None else decimal_at + 1
+    return [(digits, decimal_at), ([0, *digits], padded_decimal_at)]
+
+
 def decode_value(
     glyph_probs: list[np.ndarray],
     has_decimal_at: int | None,
@@ -91,25 +113,25 @@ def decode_value(
     best_score = 0.0
 
     for value in legal_values:
-        digits, expects_decimal_at = _digits_of(value)
-        if len(digits) != len(glyph_probs):
-            continue
-        # WHERE the point is, not merely whether there is one (issues.md
-        # N24). The old check compared presence only and discarded the
-        # index, which is harmless against today's legal sets — every
-        # x and x.5 of the same digit count puts the point in the same
-        # place — and silently wrong the moment two legal values share
-        # their digits and differ only in point position. A quarter-mark
-        # or two-decimal scheme does exactly that.
-        if expects_decimal_at != has_decimal_at:
-            continue
+        for digits, expects_decimal_at in _digit_candidates(value):
+            if len(digits) != len(glyph_probs):
+                continue
+            # WHERE the point is, not merely whether there is one (issues.md
+            # N24). The old check compared presence only and discarded the
+            # index, which is harmless against today's legal sets — every
+            # x and x.5 of the same digit count puts the point in the same
+            # place — and silently wrong the moment two legal values share
+            # their digits and differ only in point position. A quarter-mark
+            # or two-decimal scheme does exactly that.
+            if expects_decimal_at != has_decimal_at:
+                continue
 
-        score = 1.0
-        for digit, probs in zip(digits, glyph_probs):
-            score *= float(probs[digit])
+            score = 1.0
+            for digit, probs in zip(digits, glyph_probs):
+                score *= float(probs[digit])
 
-        if score > best_score:
-            best_value, best_score = value, score
+            if score > best_score:
+                best_value, best_score = value, score
 
     if best_value is None or best_score < floor:
         return None, best_score
@@ -126,16 +148,28 @@ def decode_serial(
     search as just taking each glyph's own best-scoring digit: there is
     no cross-digit constraint to exploit the way there is for a 5-mark
     question's ~11 legal values. So this decodes each glyph independently
-    via the same confidence/margin floors, and flags the *whole* serial
-    (returns None) if any single glyph is uncertain — matching this
-    project's data model, which represents an unreadable serial as one
-    None-and-flagged field, not a partially-filled string with a
-    stray "?" in it.
+    via the same confidence/margin floors.
 
-    Returns the plain digit string as segmented (e.g. "07") — leading-zero
-    stripping for comparison purposes is `validateMarks.ts`'s job on the
-    frontend, not this function's; every other recognizer (Gemini, the
-    Tesseract fallback) also returns the raw string it read.
+    Returns the plain digit string as segmented, with '?' at any position
+    that failed its own floors (e.g. "0?") — mirroring `read_id`'s
+    contract exactly, rather than discarding the whole field the way this
+    function used to (issues.md N32). Measured over every labelled real
+    serial: the leading digit of "07" read at confidence 1.00 and its
+    partner at 0.78 — a perfectly-read glyph was being thrown away
+    because of an uncertain neighbour, at a real cost (11 of 17 serials
+    survived the old all-or-nothing rule; 14 of 17 were correct at raw
+    argmax). `isValidSerial` on the frontend already rejects a string
+    containing '?' the same way `isCompleteId` already does for a partial
+    ID, so a partial serial blocks Confirm without any data-model change.
+
+    Only a completely blank cell (no glyphs at all) still returns
+    `(None, 0.0)` — there is nothing to partially decode there, and this
+    project's "blank means None" rule (not "????") holds for that case
+    exactly as it does everywhere else.
+
+    Leading-zero stripping for comparison purposes is `validateMarks.ts`'s
+    job on the frontend, not this function's; every other recognizer
+    (Gemini, the Tesseract fallback) also returns the raw string it read.
     """
     if not glyph_probs:
         return None, 0.0
@@ -144,9 +178,7 @@ def decode_serial(
     min_confidence = 1.0
     for probs in glyph_probs:
         digit, confidence, margin = decide_digit(probs, confidence_floor, margin_floor)
-        if digit is None:
-            return None, min(min_confidence, confidence)
-        digits.append(str(digit))
         min_confidence = min(min_confidence, confidence)
+        digits.append(str(digit) if digit is not None else "?")
 
     return "".join(digits), min_confidence

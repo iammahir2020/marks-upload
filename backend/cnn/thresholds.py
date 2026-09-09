@@ -52,7 +52,18 @@ MARGIN_FLOOR = 0.6
 # Genuinely provisional — only one labelled real photo carried ground-truth
 # serial values when these were set (testset/labels.json's own documented
 # caveat, step.md step 3r.5), so there was no real gap in real data to
-# calibrate against. Serial is the weakest field the CNN reads (63.2%), and
-# these are the first numbers to revisit when that is addressed.
+# calibrate against.
+#
+# These are NOT "the first numbers to revisit" (an earlier version of this
+# comment said so, and issues.md N32 found that claim wrong when it swept
+# the actual data): lowering them to the ID's 0.75/0.6 recovers 3 more
+# reads but lets through a confidently-wrong digit against a bar this field
+# currently meets at 0. The real problem measured in N32 was not the
+# floors — it was `decode_serial` discarding an entire serial whenever any
+# single glyph missed either floor, throwing away a perfectly-read
+# neighbour along with it (11 of 17 real serials survived, though 14 of 17
+# were correct at raw argmax). Fixed by returning '?' per uncertain
+# position instead of blanking the field (mirrors `read_id`), which is the
+# actual lever here — leave these two numbers alone.
 SERIAL_CONFIDENCE_FLOOR = 0.9
 SERIAL_MARGIN_FLOOR = 0.8

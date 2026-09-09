@@ -13,6 +13,7 @@ import type { StudentRecord } from './types';
 function record(overrides: Partial<StudentRecord>): StudentRecord {
   return {
     id: 'existing-1',
+    assessmentId: 'test-assessment',
     studentId: '1912345',
     serial: '7',
     questions: [],

@@ -153,7 +153,11 @@ p {
   flex-wrap: wrap;
 }
 
-.app-header .eyebrow {
+/* step.md 13.13 — a bare .eyebrow, not scoped to .app-header, so Review.tsx
+   can show the same section-context label inside its own fixed overlay,
+   which sits above Scan.tsx's header entirely and would otherwise hide it
+   at the exact moment the instructor is deciding whether to Confirm. */
+.eyebrow {
   display: block;
   font-size: 0.8125rem;
   color: var(--muted-foreground);
@@ -309,6 +313,17 @@ p {
   width: 100%;
 }
 
+/* A square, icon-only button — same pill family, no text padding. Always
+   pair with an aria-label; nothing here is visible to a screen reader on
+   its own. Used for a compact destructive action (Library.tsx's per-row
+   deletes) where a text label would push a tight row past the viewport
+   width on a phone. */
+.btn-icon {
+  width: 36px;
+  padding: 0;
+  flex-shrink: 0;
+}
+
 .flex-1 {
   flex: 1;
 }
@@ -363,6 +378,14 @@ p {
 .error-text {
   font-size: 0.8125rem;
   color: var(--danger);
+}
+
+/* issues.md N33 — same warning color as .input-flagged, distinct from
+   .error-text's danger red: this explains an unexplained blank, it
+   doesn't reject something the instructor just typed. */
+.warning-text {
+  font-size: 0.8125rem;
+  color: var(--warning);
 }
 
 /* --- Identity fields (Review screen): render first and largest --- */

@@ -2,7 +2,7 @@
 // confirm -> save -> next capture loop (step.md step 8).
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { scanImage } from './api';
-import { getAllRecords } from './db';
+import { getRecordsByAssessment } from './db';
 import Review from './Review';
 import type { ParsedRoster } from './roster';
 import { inFlightCount, nextToReview, queueReducer } from './scanQueue';
@@ -23,10 +23,23 @@ const CAPTURE_JPEG_QUALITY = 0.92;
 
 interface ScanProps {
   config: QuizConfig;
+  // Step.md step 13 — every record belongs to one Assessment. Threaded
+  // straight to Review, which writes it into every saved record.
+  assessmentId: string;
+  // Step.md 13.13 — a head start on Phase C's persistent context header:
+  // "CSE203-2" shown alongside the quiz name, so scanning into the wrong
+  // section is visible on the one screen the instructor is actually
+  // looking at, not just discoverable after the fact. Full Phase C
+  // (resume confirmation, scoped duplicate checks) is still separate.
+  sectionLabel: string;
   // Step.md 12.9/12.10 — optional and defaulted to null in the component
-  // below, so the plain-mode path (no class list attached) is unaffected.
+  // below, so a section with no class list attached is unaffected.
   roster?: ParsedRoster | null;
   onShowResults: () => void;
+  // Step.md step 13 — back to the library, now that Scan is no longer
+  // reachable only from a single held config (there is no "Setup" to
+  // fall back to any more).
+  onExit: () => void;
 }
 
 interface Preview {
@@ -35,19 +48,20 @@ interface Preview {
   height: number;
 }
 
-export default function Scan({ config, roster = null, onShowResults }: ScanProps) {
+export default function Scan({ config, assessmentId, sectionLabel, roster = null, onShowResults, onExit }: ScanProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [entries, dispatch] = useReducer(queueReducer, []);
-  // Records saved so far this session — not a plain in-memory counter,
+  // Records saved so far THIS ASSESSMENT — not a plain in-memory counter,
   // because a mid-session refresh (step 8.3) would reset that to 0 while
   // IndexedDB still held every prior record. Seeded from the DB on mount
   // and incremented on each save, so it always reflects what's actually
-  // persisted.
+  // persisted. Scoped by assessmentId (step.md 13.8) — unscoped, this
+  // would count every quiz on the device, not just this one.
   const [savedCount, setSavedCount] = useState(0);
   useEffect(() => {
-    getAllRecords().then((records) => setSavedCount(records.length));
-  }, []);
+    getRecordsByAssessment(assessmentId).then((records) => setSavedCount(records.length));
+  }, [assessmentId]);
   // Debug aid: the backend is stateless and discards every upload
   // immediately (plan.md §9), so without this there's no way to see what a
   // capture actually looked like when a scan unexpectedly fails — see
@@ -221,6 +235,8 @@ export default function Scan({ config, roster = null, onShowResults }: ScanProps
             <Review
               result={reviewingEntry.result}
               config={config}
+              assessmentId={assessmentId}
+              sectionLabel={`${sectionLabel} · ${config.quizName}`}
               roster={roster}
               imagePreviewUrl={previews[reviewingEntry.id]?.url}
               onRetake={() => {
@@ -239,16 +255,26 @@ export default function Scan({ config, roster = null, onShowResults }: ScanProps
 
       <div className="app-header">
         <div>
-          <span className="eyebrow">{config.quizName}</span>
+          {/* Step.md 13.13 (a head start on it) — section and quiz both
+              visible, so grading two sections back to back doesn't rely
+              on remembering which one this camera is pointed at. */}
+          <span className="eyebrow">
+            {sectionLabel} · {config.quizName}
+          </span>
           {/* Step.md 12.9 — the class size, when a roster is attached. */}
           <h1>
             Scanned {savedCount}
             {roster ? ` of ${roster.students.length}` : ''}
           </h1>
         </div>
-        <button className="btn btn-quiet" onClick={onShowResults}>
-          View results &rarr;
-        </button>
+        <div className="row" style={{ gap: 6 }}>
+          <button className="btn btn-quiet" onClick={onExit}>
+            All sections
+          </button>
+          <button className="btn btn-quiet" onClick={onShowResults}>
+            View results &rarr;
+          </button>
+        </div>
       </div>
 
       {cameraError && (

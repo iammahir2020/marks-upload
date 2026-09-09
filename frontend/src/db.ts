@@ -1,44 +1,58 @@
-// IndexedDB schema (step.md step 5.2). Two stores: records (keyed by uuid,
-// indexed on serial and studentId) and config (a single QuizConfig).
+// IndexedDB schema (step.md step 5.2, extended by step.md step 13 / plan.md
+// §18). `sections` and `assessments` (v5) replace the single-value `config`
+// store: a Section is the durable, semester-long thing (course, label,
+// semester, ID digits, the class list); an Assessment is one quiz's
+// question config plus its own export state, scoped to a Section.
+// `records` is indexed on serial, studentId AND (v5) assessmentId.
 //
-// The indexes must permit duplicates — a repeated serial is exactly what
-// step 7's identity cross-check exists to surface (plan.md §10). A unique
-// index would throw on write instead of letting two conflicting records
-// sit side by side for the instructor to compare.
+// The serial/studentId indexes must permit duplicates — a repeated serial
+// is exactly what step 7's identity cross-check exists to surface (plan.md
+// §10). A unique index would throw on write instead of letting two
+// conflicting records sit side by side for the instructor to compare.
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import type { RosterUpload } from './roster';
-import type { QuizConfig, StudentRecord } from './types';
+import type { Assessment, QuizConfig, Section, StudentRecord } from './types';
 import { normalizeSerial } from './validateMarks';
 
 interface ScanDB extends DBSchema {
   records: {
     key: string;
     value: StudentRecord;
-    indexes: { 'by-serial': string; 'by-studentId': string };
+    indexes: { 'by-serial': string; 'by-studentId': string; 'by-assessment': string };
   };
-  config: {
-    key: string;
-    value: QuizConfig;
-  };
-  // v2 (step 11.2.5). A separate store rather than another key in
-  // `config` for one specific reason: resetAll() clears `config`, and the
-  // source id must survive that. It identifies a *writer*, not a session
-  // — regenerating it on every "Reset everything" would split one
-  // person's collected handwriting across several prefixes and defeat the
-  // held-out-writer evaluation it exists to make possible (plan.md §16).
+  // v2 (step 11.2.5). A separate store rather than another key alongside
+  // sections/assessments, for one specific reason: resetAll() clears
+  // those, and the source id must survive that. It identifies a *writer*,
+  // not a session — regenerating it on every "Reset everything" would
+  // split one person's collected handwriting across several prefixes and
+  // defeat the held-out-writer evaluation it exists to make possible
+  // (plan.md §16).
   meta: {
     key: string;
     value: string;
   };
-  // v4 (step 12.14). A separate store from `config`, deliberately, for the
-  // opposite reason `meta` is separate from it: `meta`'s source id must
-  // SURVIVE resetAll() (it identifies a writer across sessions), while
-  // this must be CLEARED by it (a class list belongs to one session, and
-  // "Reset everything" starting a genuinely new class must not silently
-  // carry the old one's roster forward). `workbookBytes` is a plain
-  // ArrayBuffer — structured-clone-safe on its own, unlike an
-  // `ExcelJS.Workbook` instance, which is why `RosterUpload` never holds
-  // one; Setup.tsx re-loads a fresh Workbook from these bytes each time.
+  // v5 (step.md step 13, plan.md §18). The durable, semester-long thing.
+  // Course is not its own field — `courseCode`, grouped by sections.ts.
+  sections: {
+    key: string;
+    value: Section;
+  };
+  // v5. One quiz's config plus its export state, scoped to a Section.
+  // Replaces the single-value `config` store (retired below, not
+  // repurposed — QuizConfig's fields live inside this instead of having
+  // two homes that could drift).
+  assessments: {
+    key: string;
+    value: Assessment;
+  };
+  // Retired at v5 (13.1) — declared here ONLY so the migration code below
+  // can read/delete them with real types instead of casting through
+  // `any`. Nothing outside upgrade() may reference these; there is no
+  // `loadConfig`/`saveConfig` any more, on purpose.
+  config: {
+    key: string;
+    value: QuizConfig;
+  };
   rosterUpload: {
     key: string;
     value: RosterUpload;
@@ -46,10 +60,14 @@ interface ScanDB extends DBSchema {
 }
 
 const DB_NAME = 'marks';
-const DB_VERSION = 4;
-const CONFIG_KEY = 'current';
+const DB_VERSION = 5;
 const SOURCE_ID_KEY = 'sourceId';
-const ROSTER_UPLOAD_KEY = 'current';
+
+// Only used by the v5 migration, to read what a v1-v4 database had under
+// the old single-value stores before they're deleted. Not exported —
+// nothing at the current schema version should ever key by these again.
+const OLD_CONFIG_KEY = 'current';
+const OLD_ROSTER_UPLOAD_KEY = 'current';
 
 // No module-level connection caching on purpose: idb/the browser already
 // pool repeated opens to the same DB name+version cheaply, and caching a
@@ -66,7 +84,12 @@ function getDB(): Promise<IDBPDatabase<ScanDB>> {
         const records = db.createObjectStore('records', { keyPath: 'id' });
         records.createIndex('by-serial', 'serial');
         records.createIndex('by-studentId', 'studentId');
-        db.createObjectStore('config');
+        // NOT creating 'config' here any more (step.md 13.1 — retired,
+        // not repurposed). A brand-new v5 install has no use for it at
+        // all; an existing v1-v4 database already has one from when IT
+        // first ran this branch, and the v5 block below reads it before
+        // deleting it, so this only changes what a genuinely fresh
+        // install creates.
       }
       if (oldVersion < 2) {
         db.createObjectStore('meta');
@@ -95,49 +118,160 @@ function getDB(): Promise<IDBPDatabase<ScanDB>> {
         });
       }
       if (oldVersion < 4) {
-        db.createObjectStore('rosterUpload');
+        // rosterUpload existed only from v4 to v4 — created here, folded
+        // into a Section and deleted again below at v5. Anyone who was
+        // never at exactly v4 (a fresh install, or an old v1-v3 database
+        // jumping straight to v5) never sees this store exist at all.
+        if (oldVersion >= 1) {
+          db.createObjectStore('rosterUpload');
+        }
+      }
+      if (oldVersion < 5) {
+        db.createObjectStore('sections', { keyPath: 'id' });
+        db.createObjectStore('assessments', { keyPath: 'id' });
+        const records = transaction.objectStore('records');
+        records.createIndex('by-assessment', 'assessmentId');
+
+        // step.md 13.2 — "the migration, written as the hard case." A v1-v4
+        // database that had a saved config becomes exactly one Section
+        // (courseCode "Imported", so it's visibly distinct from anything
+        // created after this point) and one Assessment holding every
+        // existing record, stamped with the new assessmentId. A v1-v4
+        // database with no saved config (nobody had started a quiz)
+        // produces nothing — there is nothing to fold in. Either way the
+        // old stores are retired at the end, since their data now lives
+        // here or never existed.
+        //
+        // Someone may be MID-QUIZ when this runs (rule 3 — the migration
+        // folds an in-flight session, it never drops one), so `records`
+        // read here can be non-empty even for a session that was never
+        // "finished" by exporting.
+        if (db.objectStoreNames.contains('config')) {
+          const configStore = transaction.objectStore('config');
+          const rosterStore = db.objectStoreNames.contains('rosterUpload')
+            ? transaction.objectStore('rosterUpload')
+            : null;
+
+          Promise.all([
+            configStore.get(OLD_CONFIG_KEY),
+            rosterStore ? rosterStore.get(OLD_ROSTER_UPLOAD_KEY) : Promise.resolve(undefined),
+            records.getAll(),
+          ]).then(async ([oldConfig, oldRosterUpload, existingRecords]) => {
+            if (oldConfig) {
+              const now = new Date().toISOString();
+              const sectionId = crypto.randomUUID();
+              const assessmentId = crypto.randomUUID();
+
+              const section: Section = {
+                id: sectionId,
+                courseCode: 'Imported',
+                label: '1',
+                semester: 'Imported',
+                idDigits: oldConfig.idDigits,
+                ...(oldRosterUpload
+                  ? {
+                      roster: oldRosterUpload.roster,
+                      workbook: {
+                        fileName: oldRosterUpload.fileName,
+                        bytes: oldRosterUpload.workbookBytes,
+                        capturedAt: now,
+                        source: 'uploaded' as const,
+                      },
+                    }
+                  : {}),
+              };
+              const assessment: Assessment = {
+                id: assessmentId,
+                sectionId,
+                quizName: oldConfig.quizName,
+                questions: oldConfig.questions,
+                totalMax: oldConfig.totalMax,
+                createdAt: now,
+                exportedAt: null,
+              };
+
+              await transaction.objectStore('sections').put(section);
+              await transaction.objectStore('assessments').put(assessment);
+              for (const record of existingRecords) {
+                await records.put({ ...record, assessmentId });
+              }
+            }
+
+            // Retired either way — config's data has either just been
+            // folded above, or never existed to fold.
+            db.deleteObjectStore('config');
+            if (db.objectStoreNames.contains('rosterUpload')) {
+              db.deleteObjectStore('rosterUpload');
+            }
+          });
+        }
       }
     },
   });
 }
 
-export async function saveConfig(config: QuizConfig): Promise<void> {
+export async function saveSection(section: Section): Promise<void> {
   const db = await getDB();
-  await db.put('config', config, CONFIG_KEY);
+  await db.put('sections', section);
 }
 
-export async function loadConfig(): Promise<QuizConfig | undefined> {
+export async function getAllSections(): Promise<Section[]> {
   const db = await getDB();
-  return db.get('config', CONFIG_KEY);
+  return db.getAll('sections');
 }
 
-// Step 12.14 — persisted alongside `config` at the same moment (Setup's
-// handleSubmit), so a mid-session refresh doesn't silently drop back to
-// plain mode: Scan's "of 16" header and Review's not-on-list flagging both
-// depend on the roster still being there after a reload, the same
-// crash-resilience `config`/`records` already have. A fresh upload is
-// still required to START a *new* quiz (12.1's own rule) — this exists to
-// survive a refresh mid-quiz, not to let one upload serve several quizzes.
-export async function saveRosterUpload(upload: RosterUpload): Promise<void> {
+export async function getSection(id: string): Promise<Section | undefined> {
   const db = await getDB();
-  await db.put('rosterUpload', upload, ROSTER_UPLOAD_KEY);
+  return db.get('sections', id);
 }
 
-export async function loadRosterUpload(): Promise<RosterUpload | undefined> {
+// Step.md 13.18/13.19 — the semester purge deletes a section wholesale:
+// itself, every assessment under it, and every record under those
+// assessments. Not used by anything before Phase D; defined here now so
+// the store-level primitive exists alongside the ones it depends on.
+export async function deleteSection(sectionId: string): Promise<void> {
   const db = await getDB();
-  return db.get('rosterUpload', ROSTER_UPLOAD_KEY);
+  const tx = db.transaction(['sections', 'assessments', 'records'], 'readwrite');
+  const assessments = await tx.objectStore('assessments').getAll();
+  const toDelete = assessments.filter((a) => a.sectionId === sectionId);
+  for (const assessment of toDelete) {
+    const records = await tx.objectStore('records').index('by-assessment').getAllKeys(assessment.id);
+    for (const key of records) {
+      await tx.objectStore('records').delete(key);
+    }
+    await tx.objectStore('assessments').delete(assessment.id);
+  }
+  await tx.objectStore('sections').delete(sectionId);
+  await tx.done;
 }
 
-// Starting a new quiz in PLAIN mode has to clear whatever an earlier
-// quiz's workbook upload left behind, not just skip saving a new one —
-// otherwise a refresh mid-session restores the old roster (via the
-// saved-config quick-start path) onto a session the instructor explicitly
-// chose not to attach one to. `resetAll()` already clears this store too,
-// for the bigger "start a genuinely new class" case; this is the narrower
-// "same session, switched to plain mode" one.
-export async function clearRosterUpload(): Promise<void> {
+export async function saveAssessment(assessment: Assessment): Promise<void> {
   const db = await getDB();
-  await db.delete('rosterUpload', ROSTER_UPLOAD_KEY);
+  await db.put('assessments', assessment);
+}
+
+// Step.md 13.24 — one quiz, wrongly added, without touching the section it
+// belongs to or any other quiz in it. Narrower than deleteSection: itself,
+// and every record under it, nothing else.
+export async function deleteAssessment(assessmentId: string): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction(['assessments', 'records'], 'readwrite');
+  const records = await tx.objectStore('records').index('by-assessment').getAllKeys(assessmentId);
+  for (const key of records) {
+    await tx.objectStore('records').delete(key);
+  }
+  await tx.objectStore('assessments').delete(assessmentId);
+  await tx.done;
+}
+
+export async function getAllAssessments(): Promise<Assessment[]> {
+  const db = await getDB();
+  return db.getAll('assessments');
+}
+
+export async function getAssessment(id: string): Promise<Assessment | undefined> {
+  const db = await getDB();
+  return db.get('assessments', id);
 }
 
 // The serial is normalized on the way in, so the by-serial index has one
@@ -149,9 +283,19 @@ export async function saveRecord(record: StudentRecord): Promise<void> {
   await db.put('records', { ...record, serial: normalizeSerial(record.serial) });
 }
 
+// Unscoped — every record in every assessment. Real uses are rare on
+// purpose (step.md 13.8 scoped the two call sites that used to reach for
+// this — Results' table, Scan's saved counter — to getRecordsByAssessment
+// instead); kept as a primitive for whatever genuinely needs everything,
+// such as Phase D's purge-preview counts.
 export async function getAllRecords(): Promise<StudentRecord[]> {
   const db = await getDB();
   return db.getAll('records');
+}
+
+export async function getRecordsByAssessment(assessmentId: string): Promise<StudentRecord[]> {
+  const db = await getDB();
+  return db.getAllFromIndex('records', 'by-assessment', assessmentId);
 }
 
 // Queried with the NORMALIZED serial, matching how records are now stored.
@@ -159,16 +303,28 @@ export async function getAllRecords(): Promise<StudentRecord[]> {
 // crossCheck normalizes both sides correctly, but it can only compare the
 // records this lookup already returned, and an exact-match index lookup for
 // "7" never returned the record saved as "007".
-export async function findRecordsBySerial(serial: string): Promise<StudentRecord[]> {
+//
+// Step.md 13.15 (Phase C) — scoped to ONE assessment, via an in-memory
+// filter after the index lookup rather than a second index: `records`
+// already carries `assessmentId` on every row, and the result set from
+// `by-serial`/`by-studentId` is a handful of rows at this app's real
+// scale (one class, one serial/ID), never worth a compound index for.
+// Unscoped, a CSE100 student and a CSE203 student sharing serial "7" is
+// normal and used to raise plan.md §2's identity cross-check across
+// course boundaries — a warning that's usually wrong gets dismissed on
+// the occasion it's right.
+export async function findRecordsBySerial(serial: string, assessmentId: string): Promise<StudentRecord[]> {
   const db = await getDB();
   const normalized = normalizeSerial(serial);
   if (normalized === null) return [];
-  return db.getAllFromIndex('records', 'by-serial', normalized);
+  const matches = await db.getAllFromIndex('records', 'by-serial', normalized);
+  return matches.filter((r) => r.assessmentId === assessmentId);
 }
 
-export async function findRecordsByStudentId(studentId: string): Promise<StudentRecord[]> {
+export async function findRecordsByStudentId(studentId: string, assessmentId: string): Promise<StudentRecord[]> {
   const db = await getDB();
-  return db.getAllFromIndex('records', 'by-studentId', studentId);
+  const matches = await db.getAllFromIndex('records', 'by-studentId', studentId);
+  return matches.filter((r) => r.assessmentId === assessmentId);
 }
 
 // An opaque, random per-browser tag sent with each harvest request so
@@ -202,9 +358,12 @@ export async function getSourceId(): Promise<string> {
   return generated;
 }
 
-// Full session reset: every saved record and the quiz config itself, so
-// the next screen the app shows is Setup, not a Scan screen for a config
-// that no longer has anywhere to save to.
+// Full wipe: every section, assessment and record. Step.md step 13's real
+// replacement for this is the Phase D semester purge (scoped to one
+// semester, blocked by an unexported assessment) — until that lands, this
+// stays the only way back to a genuinely empty app, the same blast radius
+// `resetAll()` always had, just aimed at the new stores instead of the
+// retired `config`/`rosterUpload` ones.
 //
 // Deliberately does NOT clear `meta`. The source id identifies this
 // browser as a writer across sessions; wiping it on every reset would
@@ -212,8 +371,6 @@ export async function getSourceId(): Promise<string> {
 export async function resetAll(): Promise<void> {
   const db = await getDB();
   await db.clear('records');
-  await db.clear('config');
-  // Step 12.14 — cleared here, unlike `meta` above: a class list belongs
-  // to one session's quiz, not to this browser across every future one.
-  await db.clear('rosterUpload');
+  await db.clear('sections');
+  await db.clear('assessments');
 }

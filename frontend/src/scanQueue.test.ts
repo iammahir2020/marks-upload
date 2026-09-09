@@ -10,6 +10,7 @@ const okResult: ScanResult = {
   questions: [{ q: 1, value: 4 }],
   total: { q: 0, value: 4 },
   low_confidence_fields: [],
+  unmatched_fields: [],
 };
 
 describe('queueReducer', () => {

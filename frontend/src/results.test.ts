@@ -5,6 +5,7 @@ import type { StudentRecord } from './types';
 function record(overrides: Partial<StudentRecord>): StudentRecord {
   return {
     id: crypto.randomUUID(),
+    assessmentId: 'test-assessment',
     studentId: null,
     serial: null,
     questions: [],

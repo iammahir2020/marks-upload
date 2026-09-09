@@ -58,13 +58,16 @@ Where a finding was proven by execution it says so.
 
 ## At a glance
 
-49 findings: 43 from the two audits, plus N29 found while mapping backend
-findings to their frontend counterparts, N30 found while deploying, and **N31-N34 found in the first live grading session**.
-**38 fixed, 2 partly fixed, 1 accepted, 8 open.** Grouped by state rather than by number, so the
+51 findings: 43 from the two audits, plus N29 found while mapping backend
+findings to their frontend counterparts, N30 found while deploying,
+**N31-N34 found in the first live grading session**, **N35 found
+while checking a user-raised question about the marks decoder**, and
+**N36 found while building the per-assessment delete feature**.
+**43 fixed, 2 partly fixed, 1 accepted, 5 open.** Grouped by state rather than by number, so the
 actionable set is the first thing on the page. Search the `#` to jump to a
 finding's full entry in Part A or Part B below.
 
-Three rounds of fixes on 2026-08-31:
+Six rounds of fixes total, the last on 2026-09-10:
 
 1. **Frontend pass** — the 12 addressable without touching the backend,
    plus 4 doc/drift items. Cleared all four broken invariants.
@@ -82,39 +85,215 @@ Three rounds of fixes on 2026-08-31:
    four activate the moment it starts, and two of them damage it — **#3**
    by handicapping the very baseline it measures, **N9** by writing student
    IDs to disk during a real class.
+5. **Live-session pass (2026-09-09)** — **N31** and **N32**, the two HIGH
+   findings the first real grading session surfaced, plus **N33** (fixed
+   alongside N31, per its own recommendation that the two "want fixing
+   together"). Closes both HIGH findings a second time, on a different
+   pair than the pair pass above. **N34 was deliberately left open** —
+   the user chose "defer entirely" over the out-of-band or automated-
+   capture options when asked, so nothing was built toward it.
+6. **N35 (2026-09-10)** — a leading-zero mark ("03", "05") could never
+   decode on the default `cnn` path, found by checking a direct user
+   question rather than by an audit pass. Fixed the same day.
+7. **N36 (2026-09-10)** — the section/semester delete guards blocked on
+   `exportedAt === null` alone, with no regard to whether an assessment
+   actually held any records — so a brand-new, wrongly-added assessment
+   (always unexported) would have made the section it lived in
+   permanently undeletable the moment step 13.24 shipped a way to delete
+   one. Found and fixed the same day, before it ever shipped broken.
 
-What is left — **every open finding is now Low**:
+What is left — **every open finding is Low, except N34 (Med, deferred by
+explicit choice)**:
 
-- **4 from the live session** (N31–N34), two of them High — see "Start
-  here" below. These are the ones to work on next.
+- **N34**, deferred — this finding always needed a decision, not just
+  code (retaining a failing photo means new server-side retention and its
+  own disclosure). Asked to choose on 2026-09-09, the user chose to defer
+  entirely rather than commit to a fix direction.
 - **4 are deploy/infra**, recognizer-independent — N11, N15, N22, N23, all
   Low and none blocking.
 
 Everything the two desk audits found on the `cnn` path is closed; what is
-open now came from using the thing.
-- **0 are frontend, 0 are dormant, and nothing High or Med-on-a-hot-path
-  remains open anywhere.**
+open now is one deferred-by-choice finding and infra.
+- **0 are frontend, 0 are dormant, and nothing High remains open
+  anywhere.**
 
-Suites: **246 backend, 119 frontend** — from 148/79 before the audits. They
-passed then too, which is the point worth internalising rather than a
-footnote.
+Suites: **259 backend, 358 frontend** — from 148/79 before the audits.
+They passed then too, which is the point worth internalising rather than
+a footnote.
 
-### Start here — from the first live session (2026-08-31)
+### Still open — from the first live session (2026-08-31)
 
-Found by actually grading on the deployed URL, which is why none of them
-appear above: every one needs a real script, a real phone and a real
-instructor working at speed. They are the first thing to pick up.
-
-| # | Finding | Why it is first | Sev |
-|---|---|---|---|
-| **N31** | Harvest mislabels a crop when the instructor works around an out-of-range mark | Silently corrupts training data, self-selecting for the hardest crops, and irreversible once mixed in. The first corpus was already thrown away once for a lesser version of this. | **High** |
-| **N32** | `decode_serial` discards a confident digit along with an uncertain sibling | The top day-to-day friction. Measured: 14/17 serials are correct at raw argmax, only 11/17 survive. Reported as "leading zeros fail" — they don't; they are the most reliable glyph and get thrown away with their partner. | **High** |
-| **N33** | An out-of-range mark is an unexplained blank | It is what pushes the instructor into N31's workaround, so the two want fixing together. | Med |
-| **N34** | Live detection failures cannot be debugged | Blocks any work on detection accuracy — a live failure leaves a log line and no image, by design. Needs a decision before code. | Med |
+| # | Finding | What's wrong | Sev | State |
+|---|---|---|---|---|
+| **N34** | Live detection failures cannot be debugged | A live `table_not_found`/`column_count_mismatch` leaves a log line and no image, by design (the backend is stateless and never writes a script to disk) — so the step-1 tuning loop (look at the overlay, adjust, re-run) cannot be entered for a failure that only happened in the field. | Med | **Deferred by explicit user choice, 2026-09-09** — asked to choose between out-of-band (save failing photos from the camera roll into `testset/images/`, no code), deferring entirely, or building automated server-side capture (which reopens the `debug_uploads/` question step 11.0.1 deliberately closed), the user chose to defer entirely. Nothing built. |
 
 Also confirmed in that session: **serial normalization on export works**
 (`008` → `8`), which was the `#2` fix deployed the same day. Recorded here
 because it was reported as an open issue and is not one.
+
+### Fixed 2026-09-09 — live-session pass (N31, N32, N33)
+
+The first live grading session found four findings; three are fixed here,
+the fourth (N34) is the deferred-by-choice row above. Chosen to fix ahead
+of step 13 (multi-course persistence, plan.md §18) rather than after it —
+more sections means more serial reads hitting N32's bug and a longer
+collection window for N31 to quietly poison before anyone would notice.
+
+**N32 — `decode_serial` mirrors `read_id`'s own contract.**
+[`cnn/decode.py`](backend/cnn/decode.py)'s `decode_serial` now returns a
+'?' at any position that fails its own floors instead of discarding the
+whole field — exactly what `read_id` already did for the student ID. No
+change to `SERIAL_CONFIDENCE_FLOOR`/`SERIAL_MARGIN_FLOOR` (0.9/0.8):
+issues.md's own measurement showed lowering them to the ID's 0.75/0.6
+recovers 3 more reads but lets a confidently-wrong digit through against
+a bar this field currently meets at 0 — the floors were never the
+problem, the all-or-nothing rule was.
+[`cnn/thresholds.py`](backend/cnn/thresholds.py)'s comment calling them
+"the first numbers to revisit" — flagged as wrong by this same finding —
+is corrected. `isValidSerial` on the frontend already rejects a string
+containing '?' (the same rule `isCompleteId` already applies to a partial
+ID), so **no frontend change was needed at all** — `validateMarks.ts` was
+already written for exactly this case. 2 new `test_cnn_decode.py` cases
+replace the one that pinned the old (now-wrong) all-or-nothing behaviour;
+`cnn/marks_accuracy.py`'s serial reporting gained a `PARTIAL` outcome so a
+partial-but-honest read no longer inflates the harness's own
+`confidently_wrong` counter the way a real wrong read does.
+
+**N31 + N33 — fixed together, as the finding itself recommended.** The
+root cause was one collapsed distinction in
+[`app/recognizers/local.py`](backend/app/recognizers/local.py)'s
+`_decode_value_cell`: a genuinely blank cell and a cell with ink that
+matched no legal value both produced an identical `None`. Split into
+`(value, had_ink)`; `read_marks` now reports which flagged fields had ink
+in a new `unmatched_fields` list — a strict subset of
+`low_confidence_fields` — threaded through `MarksResult`
+([`app/marks.py`](backend/app/marks.py)) and `ScanResult`
+([`app/models.py`](backend/app/models.py)) unchanged for every other
+recognizer (empty list by default, so `remote`/`both` are untouched).
+
+- **N31's fix**: [`app/harvest.py`](backend/app/harvest.py)'s `harvest()`
+  takes a new `unmatched_fields` set and refuses to write a question/total
+  crop whose original read is in it, **regardless of what the instructor
+  typed to get past Confirm's legal-value check** — the ink is known to
+  match no legal label, so no label attached to it is trustworthy. Wired
+  through `/api/harvest` (`HarvestFields.unmatchedFields`, only read off
+  the `original` side) and `Review.tsx` (passes `result.unmatched_fields`
+  into the harvest request it already builds on Confirm). 4 new
+  `test_harvest.py` cases (the workaround-value refusal, the total case, a
+  sibling field unaffected, the default-empty-set regression guard), 1 new
+  `test_harvest_endpoint.py` case proving the refusal end to end through
+  the real endpoint, 4 new `test_local_recognizer_unmatched.py` cases
+  against the real trained model (`legal_values` monkeypatched to force
+  determinism — patched via `read_marks.__globals__` specifically,
+  because `test_cnn_preprocess.py`'s own N16 regression test reloads
+  `app.recognizers.local` earlier in the same session and patching by
+  module name silently patched the wrong module object once that had
+  happened; found by the full suite failing only in combination, not in
+  isolation).
+- **N33's fix**: [`Review.tsx`](frontend/src/Review.tsx) shows "Couldn't
+  match this to a legal value — check the script." on any question/total
+  field that is `unmatched` and still blank, instead of an unexplained
+  blank box — the thing that was pushing the instructor into N31's
+  workaround in the first place. Purely informational: it never blocks
+  Confirm (a blank field is valid-but-unverified, same as any other) and
+  disappears the instant the instructor types anything, legal or not. New
+  `.warning-text` CSS class, same `--warning` color `.input-flagged`
+  already uses, kept visually distinct from `.error-text`'s danger red
+  since this explains a blank rather than rejecting a typed value. 4 new
+  `Review.test.tsx` cases.
+
+Backend suite: 246 → 256. Frontend suite: 241 → 245.
+
+### Fixed 2026-09-10 — N35: a leading-zero mark could never decode
+
+**N35 — a single-digit mark written with a leading zero ("03", "05")
+always flagged as unmatched, on the default `cnn` path.** Found by
+checking a direct user question ("why can't the detector read 03, 05")
+rather than by an audit pass — the same category of "found in use" as
+the 2026-09-08 cleared-field fix below, just surfaced by a question
+instead of a live session. Severity **Medium**: it fails safe exactly as
+designed (a blank plus a flag, never a silently wrong number — the same
+"flag, never guess" rule N31/N33 exist to protect), but it's a real,
+common handwriting pattern that was unrecoverable every single time,
+adding an instructor correction on marks that were perfectly legible.
+
+Root cause: [`cnn/decode.py`](backend/cnn/decode.py)'s `decode_value`
+scores every legal value's *canonical* digit rendering
+(`_digits_of`/`_fmt` — `_fmt(3)` is `"3"`, never `"03"`) against the
+segmented glyphs, and rejects any candidate whose digit count doesn't
+exactly match the glyph count. A student writing "03" for a 3-mark
+answer segments into 2 glyphs; no legal value has a 2-digit canonical
+form for the value 3, so **no candidate at any digit count could ever
+match** — not a confidence-floor miss, a candidate that structurally
+could not exist. `decide_serial` was already immune (issues.md N32's own
+fix made it read digits independently, with no fixed-length legal set to
+match against), which is why this was marks-only.
+
+**The fix**: `_digit_candidates(value)` returns each legal value's
+canonical digit sequence **and** the same digits with a single leading
+zero prepended (decimal position shifted along with it, so "01.5" is
+covered too, not just whole numbers), and `decode_value` scores both. The
+padded candidate is scored exactly like any other — the leading glyph
+still has to classify as an actual "0" — so it only wins when that's
+genuinely what was drawn; `test_leading_zero_padding_does_not_invent_a_
+false_match` pins that a confident, unpadded 2-glyph read is never
+reinterpreted as a padded shorter value. No change to any confidence
+floor, no change to `legal_values` itself, no frontend change — this is
+entirely a candidate-generation fix inside the decoder. 4 new
+`test_cnn_decode.py` cases: the leading-zero whole-number case (both "03"
+→ 3 and "05" → 5), the leading-zero half-mark case ("01.5" → 1.5,
+covering the same decimal-position bookkeping N24 already had to get
+right once), and the false-positive guard above.
+
+Half marks themselves (0.5, 1.5, 2.5, …) were **already working** before
+this fix — `_fmt(1.5)` is `"1.5"`, a 2-digit canonical form the decoder
+already scored correctly, and `test_decoder_returns_the_legal_value_its_
+glyphs_encode` already pinned the 4.5 case. Checked directly rather than
+assumed, since it was asked about in the same breath as the leading-zero
+bug.
+
+Backend suite: 256 → 259.
+
+### Fixed 2026-09-10 — N36: the delete guards blocked on the wrong condition
+
+**N36 — the unexported-assessment guard, shared by the semester purge
+and the single-section delete, blocked on `exportedAt === null` alone,
+with no regard to whether the assessment held any records at all.**
+Severity **Medium**: not data-destroying (it fails toward being *too*
+cautious, never too permissive) but it made the guard's own stated
+purpose self-defeating the moment a real user of it existed. Found while
+building step 13.24 (per-assessment delete, requested so "wrongfully
+added assessments can be deleted") — a brand-new, mistakenly-created
+assessment is *always* unexported the instant it's created, so under the
+old guard, a section holding even one empty, wrongly-added assessment
+could never be deleted at all. The one thing this feature exists to fix
+would have been permanently blocked by the safety mechanism guarding an
+adjacent feature.
+
+The guard's own reasoning was right — "deleting unrecovered work
+silently is the one outcome this feature must never produce"
+(plan.md §18) — it was just checking the wrong thing. Unrecovered *work*
+means records exist; `exportedAt === null` on its own just means
+"nothing has been exported yet," which is equally true of a brand-new
+empty assessment and one holding a full class's marks. Fixed by adding
+`sections.ts`'s `isBlocking(assessment, recordCounts)` — `exportedAt ===
+null && recordCount > 0` — and routing `purgePreview`, `sectionDelete
+Preview`, and the new `assessmentDeletePreview` through it uniformly,
+rather than leaving the semester/section guards on the old rule while
+only the new assessment guard got it right.
+
+Caught and fixed before shipping, not after: two existing
+`Library.test.tsx` cases (the semester-purge block, the section-delete
+block) had always tested with a record-less "unexported" fixture, which
+would have silently stopped demonstrating the guard at all once the fix
+landed — updated to give that fixture a real record, and two new tests
+pin the other direction directly (an unexported, EMPTY assessment does
+NOT block either delete path). 9 new `sections.test.ts` cases in total
+cover `isBlocking`'s boundary from both existing preview functions and
+the new one.
+
+Backend: untouched (frontend-only). Frontend suite: 339 → 358 (shared
+with step 13.24's own count, since the fix landed in the same change).
 
 ### Open — deploy and infra (recognizer-independent)
 
@@ -162,6 +341,40 @@ silently mislabel training data.
 | # | Finding | Why |
 |---|---|---|
 | 12 | Portrait rotation hardcoded | Re-checked: a wrong-direction rotation yields `table_not_found`, which is the one reason that triggers the 4-way retry, and `_label_column_is_backwards` catches the 180° case. Cost is wasted detection passes, not a wrong read. |
+
+### Found in use and fixed the same day — 2026-09-08
+
+Kept outside the audit numbering on purpose: this was not found by an
+audit and has no `N` number, so the counts above are unchanged. It is
+recorded here because it belongs to the same category as N31–N34 —
+things only real use finds — and because the *cause* is a trap worth
+recognising again.
+
+| Finding | What was wrong | Sev | State |
+|---|---|---|---|
+| Setup's number fields wrote a `0` into any box you cleared | `onChange={e => setX(Number(e.target.value))}` on ID digits, question count and each per-question max. An `<input>` reports `''` the moment its last character is deleted, and `Number('')` is `0` — not `NaN` — so clearing a field put a literal `0` back into it, and the digits typed next landed after that zero (`10` → `010`). | Med | **Fixed 2026-09-08** |
+
+The fix holds `NumField = number | ''` and converts once, at submit, to
+`NaN` rather than to a default — so an emptied field fails validation with
+the message a `0` already got, instead of silently validating as something
+the instructor never typed. No validation rule and no bound changed, which
+matters because `validateConfig.ts`'s bounds are pinned against
+`app/models.py` by `tests/test_models.py`.
+
+Two things about it are worth carrying forward:
+
+- **It sat in the first screen of the app, in code from step 5, through
+  two full audits and 238 passing frontend tests.** Both audits read
+  `Setup.tsx`; neither modelled "what does this do when the field is
+  empty." Same shape as the audits' own headline lesson — the suites
+  passed before them too.
+- **Only one of the three new tests fails against the old code.** jsdom
+  has no caret, so the `010` the user actually saw cannot be reproduced in
+  a test at all; what is pinned is the cause (a cleared box stays empty).
+  Recorded in the test file itself rather than left for someone to
+  discover by trusting three green checkmarks.
+
+CLAUDE.md's "Things to avoid" carries the general rule.
 
 ### Fixed 2026-08-31 — deploy pass
 
@@ -1015,6 +1228,16 @@ return `AccessDenied` (observed here; it passed ~10 s later).
 
 ### N31. Harvesting mislabels a crop when the instructor works around an out-of-range mark
 
+**Status: FIXED 2026-09-09 (live-session pass), together with N33 per this
+finding's own recommendation.** `_decode_value_cell` in `local.py` now
+reports `(value, had_ink)` — a genuinely blank cell and "ink present, no
+legal match" no longer collapse into the same `None`. `read_marks` surfaces
+the distinction as `MarksResult.unmatched_fields`, threaded through
+`ScanResult` and `HarvestFields.unmatchedFields` to `harvest()`, which
+refuses to write any crop in that set **regardless of what the instructor
+confirmed** — closing exactly the hole described below. See the "Fixed
+2026-09-09" writeup above for the full account and every file/test touched.
+
 **Severity: HIGH.** Found in the first live session (2026-08-31).
 **Files:** [harvest.py:170-176](backend/app/harvest.py#L170-L176), [decode.py](backend/cnn/decode.py) (`decode_value`), [Review.tsx](frontend/src/Review.tsx)
 
@@ -1055,6 +1278,15 @@ the paper; surfacing it is right, recording it is not (plan.md §4, and
 CLAUDE.md's "never store a wrong number").
 
 ### N32. `decode_serial` is all-or-nothing, so a confident digit is discarded with an uncertain sibling
+
+**Status: FIXED 2026-09-09 (live-session pass).** `decode_serial` now
+returns a '?' at each position that fails its own floors instead of
+blanking the whole field — exactly the fix direction below, and exactly
+`read_id`'s existing contract. The floors themselves (0.9/0.8) were left
+alone, per this finding's own warning: `cnn/thresholds.py`'s "first
+numbers to revisit" comment is corrected rather than acted on. No
+frontend change — `isValidSerial` already rejected a '?'-bearing string.
+See the "Fixed 2026-09-09" writeup above for the full account.
 
 **Severity: HIGH.** Found in the first live session (2026-08-31).
 **File:** [decode.py:104-137](backend/cnn/decode.py#L104-L137) (`decode_serial`)
@@ -1102,9 +1334,20 @@ positions, mirroring `read_id`. `isValidSerial` already blocks Confirm on a
 partial value, so N5's pattern carries over with no data-model change.
 
 Separately, one case (`99`) segmented as a **single** glyph — a
-segmentation merge bug, worth its own look.
+segmentation merge bug, worth its own look. **Not fixed by the
+2026-09-09 pass above** — that fix is entirely in `decode_serial`, not
+`segment_cell`, and this is still open, uncounted (no `N` number of its
+own), and worth picking up separately if it recurs.
 
 ### N33. An out-of-range mark is an unexplained blank
+
+**Status: FIXED 2026-09-09 (live-session pass), together with N31 per
+this finding's own recommendation.** `Review.tsx` now shows "Couldn't
+match this to a legal value — check the script." on any question/total
+field flagged in the new `unmatched_fields` (N31's signal) while it's
+still blank — exactly the fix direction below. Informational only: never
+blocks Confirm, clears the instant anything is typed. See the "Fixed
+2026-09-09" writeup above for the full account.
 
 **Severity: MEDIUM.** Found in the first live session (2026-08-31).
 **Files:** [decode.py:68-101](backend/cnn/decode.py#L68-L101), [Review.tsx](frontend/src/Review.tsx)
@@ -1125,7 +1368,25 @@ workaround.
 "looks like a mark above the maximum; check the script". Same information
 N31 needs to suppress the harvest, so the two want doing together.
 
+**One deliberate deviation in the shipped message.** The signal
+`decode_value` actually exposes is coarser than "specifically out of
+range": it is "ink present, no legal value scored above the floor",
+which covers case 3 above AND a genuinely illegible-but-in-range digit
+(a smudged 4 vs 9) identically — there is no way to tell them apart from
+the decode score alone. Rather than claim a certainty the signal doesn't
+have, the shipped message says "Couldn't match this to a legal value —
+check the script," honest about covering both cases, instead of asserting
+"above the maximum" when it might be neither.
+
 ### N34. Live detection failures cannot be debugged
+
+**Status: OPEN — deferred by explicit user choice, 2026-09-09.** Asked to
+choose between the out-of-band option below (no code — save a failing
+photo from the camera roll, add it to `testset/images/` with a label),
+deferring entirely, or building automated server-side capture (behind its
+own disclosure, reopening the `debug_uploads/` question step 11.0.1
+deliberately closed), the user chose to defer entirely rather than commit
+to either fix direction. Nothing built toward this finding.
 
 **Severity: MEDIUM.** Found in the first live session (2026-08-31).
 

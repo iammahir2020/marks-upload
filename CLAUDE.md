@@ -9,12 +9,39 @@ instructor confirm or correct them on the spot, and exports the whole session
 as one Excel file.
 
 Single instructor, one quiz session, one class (pilot: CSE211L). No auth, no
-server-side database. Session state lives in IndexedDB until export. "No
-uploads" described the MVP pilot; an optional one was added 2026-09-07
-(plan.md §17, step.md step 12, specced but not yet built) — the
-instructor's own class-list workbook, read at Setup and written back into
-at export. Everything else about the sentence above still holds for
-whoever doesn't use it.
+server-side database. Session state lives in IndexedDB until export.
+
+Two clauses of that sentence have been picked up deliberately since, and
+both are worth knowing before trusting it:
+
+- **"No uploads" described the MVP pilot.** An optional one was added
+  2026-09-07 (plan.md §17, step.md step 12, **all four phases built**) —
+  the instructor's own class-list workbook, written back into at export.
+  As of step 13 (below) it's attached once per **section**, not
+  re-uploaded per quiz; everything else about the sentence still holds
+  for whoever doesn't use one.
+- **"One quiz session" is now one semester** (2026-09-09, plan.md §18,
+  step.md step 13, **all four phases done, 2026-09-10**). A faculty
+  member teaches several sections at once — the real case is one section
+  of CSE100, one of CSE200 and two of CSE203 — and the built code
+  handles exactly that: a **Section** (course, label, semester, ID
+  digits, an optional class list) and an **Assessment** (one quiz's
+  config plus its records) replace the single-value `config` store that
+  used to make the second CSE203 section destroy the first's marks.
+  Grading into the wrong section is guarded three ways: a persistent
+  context header, a confirmation when resuming an assessment last
+  touched before today, and duplicate detection scoped to the assessment
+  (a shared serial across two courses no longer raises a false
+  conflict). A semester ends with a real, scoped purge — offered only
+  when a new semester's first section is created, blocked outright while
+  any assessment in that semester hasn't been exported, and comparing
+  semester labels by exact string so drift never gets silently folded
+  into one purge decision. Still no auth and still no server-side
+  database; it all stays in IndexedDB. **Both things the spec originally
+  left open are now decided** (13.22, 2026-09-10): semester labels are a
+  Spring/Summer/Autumn-plus-year picker, not free text, and the app opens
+  on the library rather than jumping into the last active assessment. See
+  step.md's step 13 for the full account.
 
 ## Current state — read this first
 
@@ -25,11 +52,11 @@ source of truth.
 
 | File | What it is |
 |---|---|
-| [plan.md](plan.md) | Architecture, data models, screens, API contract, resolved decisions |
-| [step.md](step.md) | Execution plan — steps 0–12, each with a *Before you start*, substeps, a test, and a *Done when* bar. Steps 0–10 match plan §14; step 11 (hosted demo) and step 12 (class-list workbook round trip) are later, deliberate extensions beyond plan §13's MVP scope, each running in independently-shippable phases — three for 11, four for 12. **All four phases of step 12 are done** (2026-09-07: roster upload/parsing/identification at Setup, writing the exam sheet back into the instructor's own file, roster-aware review/results, and pre-export coverage/duplicate-blocking/an opt-in totals column/IndexedDB persistence — each verified against the real 16-student marksheet, not only synthetic shapes); it reverses three of plan §15/§2/§13's recorded decisions on purpose, amended in 12.0. What remains is real-phone verification of the file picker and download, needing the user's own participation. Ends with the Progress table. |
+| [plan.md](plan.md) | Architecture, data models, screens, API contract, resolved decisions. §19 (2026-09-10) specs the landing page: static-first, prerendered, zero runtime JS, dark, Raycast's structure but not its skin — **specced, not built** |
+| [step.md](step.md) | Execution plan — steps 0–14, each with a *Before you start*, substeps, a test, and a *Done when* bar. **Step 14 (landing page) is specced 2026-09-10 and NOT built** — see plan.md §19 for its rationale, including why it is pre-rendered at build time rather than server-rendered. Steps 0–10 match plan §14; step 11 (hosted demo), step 12 (class-list workbook round trip) and step 13 (multi-course, multi-section persistence) are later, deliberate extensions beyond plan §13's MVP scope, each running in independently-shippable phases — three for 11, four for 12, four for 13. **All four phases of step 12 are done** (2026-09-07: roster upload/parsing/identification at Setup, writing the exam sheet back into the instructor's own file, roster-aware review/results, and pre-export coverage/duplicate-blocking/an opt-in totals column/IndexedDB persistence — each verified against the real 16-student marksheet, not only synthetic shapes); it reverses three of plan §15/§2/§13's recorded decisions on purpose, amended in 12.0. What remains is real-phone verification of the file picker and download, needing the user's own participation. **Step 13's all four phases are done (2026-09-10)**: the DB v5 schema/migration, `Library.tsx`/`SectionForm.tsx`/`AssessmentForm.tsx` replacing `Setup.tsx` (deleted), the roster moved onto the Section, every "don't grade into the wrong section" protection (context header, resume confirmation, assessment-scoped duplicate detection, an identity-carrying filename), and the real scoped semester purge — offered only when a section is created under a genuinely new semester label, blocked outright while any assessment in that semester has never been exported, comparing semester labels by exact string so drift (`Fall 2026` vs `fall 2026`) is surfaced as two purge candidates rather than silently merged. It reverses 12.1's fresh-upload-per-quiz rule on purpose, replacing it with a provenance line + Re-pick + re-cache rather than quietly editing the old sentence, and 12.1 now carries an amendment note saying so. **A same-day follow-up (13.22, 2026-09-10)** replaced the free-text semester field with a Spring/Summer/Autumn-plus-year picker and confirmed the app opens on the library — the two things step 13 had originally left open. Ends with the Progress table. |
 | [stack-reference.md](stack-reference.md) | Library-level notes from Context7: exact calls, starting parameter values, known traps |
 | [learn.md](learn.md) | Plain-language walkthrough of what each finished step's code actually does, for learning alongside the build. Updated after each step — see "How to work here." |
-| [issues.md](issues.md) | **The open-defect register — read it before trusting any screen or endpoint.** Two audits: 2026-08-27 (15 findings) and a full re-read on 2026-08-31 (28 more, N1–N28). **38 of 49 are now fixed** on 2026-08-31 — frontend (12), pair (11, closing both HIGH findings: N1 path traversal, N2 unbounded config), hot-path (**N4**, where a blank ID cell was producing a confident fabricated digit — demonstrated, not inferred, plus N18), cnn-path (N16, N17, N24, 15), and dormant (4, cleared *ahead of* step 3r.6's comparison run, because that run is `RECOGNIZER=both` and #3 would have handicapped the baseline it measures). **8 remain open.** Four are Low deploy/infra. The other four (**N31-N34**) came from the first live grading session on the deployed URL and are the **first thing to pick up** — see issues.md's "Start here". Two are High: **N31**, where harvesting mislabels a crop if the instructor works around an out-of-range mark, and **N32**, where a confident serial digit is discarded along with an uncertain sibling. Everything the desk audits found on the `cnn` path is closed; what is open now came from using the thing. Suites went 148/79 → **246/119**; they passed before the audits too, which is the point worth internalising. It also carries an explicit "what this audit did NOT cover" section naming the files never opened. |
+| [issues.md](issues.md) | **The open-defect register — read it before trusting any screen or endpoint.** Two audits: 2026-08-27 (15 findings) and a full re-read on 2026-08-31 (28 more, N1–N28), plus a first live grading session (N31–N34), N35 found while checking a direct user question, and N36 found while building the per-assessment delete feature. **46 of 51 are now fixed** — frontend (12), pair (11, closing both HIGH findings: N1 path traversal, N2 unbounded config), hot-path (**N4**, where a blank ID cell was producing a confident fabricated digit — demonstrated, not inferred, plus N18), cnn-path (N16, N17, N24, 15), dormant (4, cleared *ahead of* step 3r.6's comparison run), a **2026-09-09 live-session pass** closing **N31** and **N32**, both HIGH, plus **N33** — `decode_serial` now returns '?' per uncertain position instead of blanking the whole field (mirrors `read_id`), and harvesting refuses a crop the original scan couldn't match to a legal value regardless of what the instructor typed to get past Confirm — **N35 (2026-09-10)**, where a leading-zero mark ("03", "05") could never decode on the default `cnn` path because the decoder only ever scored a legal value's un-padded digit rendering — and **N36 (2026-09-10)**, where the section/semester delete guards blocked on `exportedAt === null` alone, which would have made a section holding even one brand-new (and therefore always-unexported) assessment permanently undeletable. **5 remain open**: **N34** (Med) was deliberately left unbuilt — asked to choose a fix direction, the user chose to defer it entirely — plus four Low deploy/infra items. Everything the desk audits found on the `cnn` path is closed, and three of the four live-session findings are too; N34 is open by choice, not by omission. Suites went 148/79 → **259/358**. It also carries an explicit "what this audit did NOT cover" section naming the files never opened. |
 | `marks-grid-template.docx` | The grid the instructor pastes into the question paper |
 
 Commands below are the ones the specs call for. Once a step has actually
@@ -215,7 +242,110 @@ exists to prevent. Caught before shipping, guarded by two new
 one proving a real "Total Marks Trend" column still correctly doesn't)
 and verified against the real 16-student roster directly, including a
 re-upload of the app's own output to confirm `data` is still identified
-correctly with the annotated headers actually present. **Step 11's
+correctly with the annotated headers actually present.
+
+**A sixth fix, same origin (2026-09-08).** Clearing any Setup number field
+— ID digits, question count, a per-question max — put a literal `0` back
+into the box, so the next digits typed landed after it (`10` became
+`010`). `Number('')` is `0`, and every keystroke was coerced through it.
+The three fields now hold `NumField = number | ''`; an emptied box reaches
+`validateConfig` as `NaN`, which its existing `Number.isInteger` /
+`Number.isFinite` checks already reject with the same message a `0` gets,
+so **no validation rule and no bound changed** — the pinned
+`validateConfig.ts` ↔ `app/models.py` pair was not touched. Two knock-ons
+handled deliberately: `handleQuestionCountChange` short-circuits on `''`
+*before* issues.md #1's array-resize guard, and `parseRosterSheet` gets
+`0` for an empty ID-digits box, which is exactly what it already received
+when the field coerced to `0`. Frontend suite 238 → 241. Note the honest
+limit recorded in `learn.md` and in the test file itself: jsdom has no
+caret, so only one of the three new cases fails against the old code — the
+symptom needed a phone, the tests pin the cause.
+
+**Redeployed 2026-09-08** (`./deploy.sh frontend`) so the live URL carries
+all six fixes: preflight clean, bundle `index-WQ0p53dA.js`, CloudFront
+invalidation `IEYK5IQAFMGB3JPE25XCWNLPFD`, and `GET /api/scan` still
+returning `405` from the Lambda afterwards — a frontend-only deploy must
+not disturb the `/api/*` behaviour. Backend image not rebuilt; nothing
+under `backend/` changed.
+
+**Step 13's all four phases are done (2026-09-10, plan.md §18)** —
+`db.ts` bumped to v5 (`sections`/`assessments` stores, `StudentRecord`
+gained `assessmentId`, `config`/`rosterUpload` retired with a
+three-case-tested migration folding any v1-v4 database, including a
+persisted roster, into one Section + one Assessment). `Setup.tsx` is
+**deleted outright**, its role fully absorbed by three new files:
+`Library.tsx` (the new entry point — semester → course → sections →
+assessments, plus the disclosure and "Reset everything" that used to
+live in Setup), `SectionForm.tsx` (course/label/semester/ID-digits, plus
+the class-list workbook upload ported from Setup's old workbook mode —
+now an always-optional field rather than a plain/workbook toggle, since
+the roster is a property of the section, not a per-quiz choice), and
+`AssessmentForm.tsx` (quiz name/question count/maxes — Setup's old form
+minus ID digits, inherited from the section). `sections.ts` is the new
+pure-logic module (grouping, sorting, `assessmentConfig()`), matching
+`results.ts`/`examSheet.ts`'s shape. `App.tsx` got a real screen enum
+(`library | section | assessment | scan | results`) replacing
+`config === null` as the router. Every workbook export now shows
+provenance ("the file you picked" / "the copy this app wrote," with
+**when**) and a **Re-pick** button, and re-caches the bytes it just wrote
+so a second quiz in the same section builds on the first quiz's sheet
+instead of silently losing it — verified end to end by actually exporting
+two quizzes and reloading the real downloaded bytes. `Review.tsx` also
+gained a `sectionLabel` prop: it renders as a fixed overlay that hides
+Scan's own header, so the section context needed its own copy at the
+exact moment a save is confirmed. **Phase C, same day**:
+`findRecordsBySerial`/`findRecordsByStudentId` now take an `assessmentId`
+and filter to it (a shared serial across two courses no longer raises a
+conflict, verified against the case that must still fire within one
+course); `sections.ts`'s `needsResumeConfirmation`/`lastActivityAt` drive
+a confirm banner on `Library.tsx` when opening an assessment last touched
+before today (derived from records already fetched, not a stored field);
+`exportFilename` now produces `CSE203-2_Quiz-1_2026-09-09.xlsx`.
+**Phase D, same week**: the real scoped semester purge (13.18) — offered
+exactly when `App.tsx` detects a section was just CREATED (never edited)
+under a semester label that matched none of the prior sections, never on
+a timer, never from merely revisiting a multi-semester library.
+`sections.ts`'s `otherSemesters`/`purgePreview` compare labels by EXACT
+string, deliberately not normalized — `Fall 2026` and `fall 2026` show
+up as two separate purge candidates, surfacing plan.md §18's own
+label-drift risk instead of hiding it inside the one feature that
+deletes data. The unexported guard (13.19) blocks a semester's purge
+outright while any assessment in it has `exportedAt === null`, named by
+section and quiz, Cancel only. `Library.tsx`'s old "Reset everything"
+(full wipe) is untouched, staying as the blunt escape hatch alongside
+the new scoped purge. Frontend suite: 245 → 282 (Phase A/B) → 301
+(Phase C) → 322 (Phase D), five consecutive full runs confirmed stable,
+including a first `App.test.tsx` for the one piece of this step's logic
+that lives in App.tsx's routing glue rather than a screen component.
+**13.22, same week**: the semester field became a Spring/Summer/Autumn +
+year picker (`sections.ts`'s `SEMESTER_SEASONS`/`formatSemesterLabel`/
+`parseSemesterLabel`/`currentSemesterSeason`, wired into
+`SectionForm.tsx`), closing the free-text-vs-picker question for all new
+data — a pre-picker label the picker can't parse falls back to today's
+own season/year on edit rather than crashing, costing at most one extra
+tap to correct. The app opening on the library was confirmed rather than
+built (`App.tsx` already defaulted there). Frontend suite: 322 → 333,
+three consecutive full runs confirmed stable. **13.23, same week**: a
+per-section **Delete section** button, for one mis-created section rather
+than a whole semester or a full device wipe — reuses `db.ts`'s existing
+`deleteSection()` cascade, gated by the same block-then-confirm shape the
+semester purge already uses (an unexported assessment blocks it outright,
+named, Cancel only; otherwise a plain confirm with real counts, no undo).
+Frontend suite: 333 → 339. **13.24, same day**: a per-assessment
+**Delete quiz** button (`db.ts`'s new `deleteAssessment()`, one quiz
+narrower than `deleteSection()`), and both delete flows now require
+TYPING the section/assessment name back (`CSE100-1`, `Quiz 1`) before the
+confirm button even enables — a shared `TypedDeleteConfirm` component,
+not a copy per flow. Building this exposed a real bug (issues.md N36):
+the existing unexported-assessment guard blocked on `exportedAt ===
+null` alone, so a brand-new, wrongly-added (and therefore
+always-unexported) assessment would have made its own section
+permanently undeletable — fixed by narrowing the guard everywhere
+(`sections.ts`'s `isBlocking`) to also require a real record count.
+Frontend suite: 339 → 358. See step.md's step 13 for the complete
+account.
+
+**Step 11's
 phases A and B do** — `app/config.py`, `app/stores.py`, the `Dockerfile`,
 and per-faculty source tagging through `db.ts`'s `getSourceId()`; phase C
 (the AWS deploy itself) does not. The CNN
@@ -392,7 +522,10 @@ marks-upload/
 │       │                       #   preprocess_for_cnn (ID) and glyph_to_canvas (segmented glyphs)
 │       ├── inspect_preprocess.py #  visual check: real crops -> 28x28 previews
 │       ├── segment.py          #   step 3r — cell -> glyphs (merge rule, decimal-by-geometry)
-│       ├── decode.py           #   step 3r — constrained decoder (marks/total/serial)
+│       ├── decode.py           #   step 3r — constrained decoder (marks/total/serial);
+│       │                       #   issues.md N35 (2026-09-10) — decode_value also tries
+│       │                       #   each legal value with a leading zero prepended, so a
+│       │                       #   mark written "03"/"05" can decode at all
 │       ├── id_infer.py         #   step 3r — shared TTA+softmax inference, factored out of accuracy.py
 │       ├── train.py            #   EMNIST Digits + augmentation -> ONNX export + parity check
 │       ├── accuracy.py         #   ID accuracy harness, apples-to-apples with id_ocr_accuracy.py;
@@ -407,16 +540,50 @@ marks-upload/
     ├── vite.config.ts          # PWA + basicSsl (not mkcert — see Commands) + Vitest config
     └── src/
         ├── types.ts            # QuizConfig, StudentRecord — mirrors app/models.py
-        ├── db.ts               # IndexedDB (idb) — step 5.2; resetAll() (2026-08-30)
-        │                       # clears records+config; getSourceId() (11.2.5) lives in a
-        │                       # separate `meta` store (DB v2) that resetAll deliberately spares;
-        │                       # rosterUpload store (DB v4, step 12.14) — the opposite of `meta`:
-        │                       # cleared by resetAll AND by starting a new quiz in plain mode
+        ├── db.ts               # IndexedDB (idb) — step 5.2, now DB v5 (step 13):
+        │                       # sections/assessments stores replace the retired
+        │                       # config/rosterUpload (13.1, migration folds any v1-v4
+        │                       # database into them, 13.2); resetAll() clears
+        │                       # records+sections+assessments; getSourceId() (11.2.5)
+        │                       # lives in a separate `meta` store (DB v2) that resetAll
+        │                       # deliberately spares; findRecordsBySerial/
+        │                       # findRecordsByStudentId take an assessmentId and
+        │                       # filter to it (13.15) — a shared serial/ID across two
+        │                       # courses no longer cross-matches; deleteAssessment()
+        │                       # (13.24) — one quiz and its records, narrower than
+        │                       # deleteSection(), which it does not call
         ├── api.ts              # POST /api/scan client (step 6.4); harvestScan,
         │                       # POST /api/harvest client (step 3r.6c)
         ├── validateConfig.ts   # pure form-validation logic, unit-tested
         ├── validateMarks.ts    # sum check, legal-value check, serial normalisation,
         │                       # identity cross-check (plan.md §10) — step 7
+        ├── sections.ts         # step 13.3 (plan.md §18) — pure grouping/sorting/labelling:
+        │                       # groupSections (semester -> course -> section, natural-
+        │                       # numeric label sort), isDuplicateSection, assessmentConfig
+        │                       # (combines an Assessment with its Section into the
+        │                       # QuizConfig shape Scan/Review/Results already take —
+        │                       # idDigits read from the SECTION, never copied); step
+        │                       # 13.14 — lastActivityAt (derived, not stored) and
+        │                       # needsResumeConfirmation (compares LOCAL calendar day,
+        │                       # not a rolling 24h window); step 13.18 —
+        │                       # otherSemesters (EXACT string match, "Fall 2026" and
+        │                       # "fall 2026" stay separate on purpose) and purgePreview
+        │                       # (per-semester counts + the unexported-assessment block
+        │                       # list, 13.19); step 13.22 — SEMESTER_SEASONS (Spring/
+        │                       # Summer/Autumn, no Winter), formatSemesterLabel/
+        │                       # parseSemesterLabel (the picker <-> stored-string
+        │                       # round trip; parse returns null for a pre-picker label
+        │                       # like "F26"), currentSemesterSeason (today's own
+        │                       # season, used as a brand-new section's starting point
+        │                       # and a pre-picker section's edit-time fallback); step
+        │                       # 13.23 — sectionDeletePreview, purgePreview's single-
+        │                       # section counterpart; step 13.24 — assessmentDeletePreview
+        │                       # (one level narrower still) and the shared isBlocking()
+        │                       # both now route through — issues.md N36: blocking used to
+        │                       # trigger on exportedAt === null alone, which made a
+        │                       # brand-new empty assessment (always unexported)
+        │                       # permanently undeletable; now also requires a real
+        │                       # record count, everywhere the guard is used
         ├── results.ts          # step 9.1/9.2 — sort by serial then ID, unverified-record rule
         ├── roster.ts           # step 12.2/12.3/12.4 (plan.md §17) — class-list roster
         │                       # parsing: header matching, the exclude-then-prefer-then-
@@ -444,35 +611,85 @@ marks-upload/
         │                       # suggestion (one digit off, or consistent with a partial
         │                       # "?"-marked read) offered only when it's the UNIQUE explanation
         ├── scanQueue.ts        # upload-queue reducer — step 6.3
-        ├── Setup.tsx           # step 5.3–5.4; saved-session notice + View +
-        │                       # Reset everything (2026-08-31); step 12.1/12.3/12.4's
-        │                       # marks-export mode toggle, roster upload, and confirm/
-        │                       # picker card (2026-09-07) — ExcelJS dynamic-imported only
-        │                       # on file selection, same reasoning as Results' lazy-load;
-        │                       # step 12.11's second privacy-disclosure paragraph + always-
-        │                       # visible line, worded to not collide with the upload error text;
-        │                       # step 12.14 — restores a persisted roster on mount, threaded
-        │                       # through both the quick-start button and View results; a fresh
-        │                       # quiz in plain mode explicitly clears the store, not just skips it
+        ├── Library.tsx         # step 13.4 (plan.md §18) — the new entry point,
+        │                       # `Setup.tsx`'s replacement: semester -> course ->
+        │                       # sections -> assessments, self-fetching its own
+        │                       # sections/assessments/per-assessment scanned counts.
+        │                       # Also absorbed what Setup.tsx used to own: the "How
+        │                       # this works" disclosure + always-visible privacy
+        │                       # lines, and "Reset everything" (full wipe, untouched —
+        │                       # the blunt escape hatch alongside the scoped purge
+        │                       # below, step 13.18); step 13.14 — a resume-confirmation
+        │                       # banner when opening an assessment last touched before
+        │                       # today (needsResumeConfirmation/lastActivityAt,
+        │                       # sections.ts); step 13.18/13.19 — the real scoped
+        │                       # semester purge, offered ONLY via App.tsx's
+        │                       # pendingSemesterOffer prop (one-shot, set right after
+        │                       # creating a section in a genuinely new semester),
+        │                       # blocked outright by PurgeReviewPanel while any
+        │                       # assessment in that semester has exportedAt === null;
+        │                       # step 13.23 — a per-section Delete section button (a
+        │                       # smaller-blast-radius escape hatch than the semester
+        │                       # purge or Reset everything), SectionDeleteReviewPanel
+        │                       # using the same block-then-confirm shape,
+        │                       # deleteSection()'s existing cascade (db.ts) reused
+        │                       # rather than duplicated; step 13.24 — a per-assessment
+        │                       # Delete quiz button, AssessmentDeleteReviewPanel (same
+        │                       # shape, one level narrower), and the shared
+        │                       # TypedDeleteConfirm both delete panels now use — the
+        │                       # confirm button stays disabled until the section/quiz
+        │                       # name is typed back exactly
+        ├── SectionForm.tsx     # step 13.5/13.9 — create/edit a Section: course code,
+        │                       # label, semester (step 13.22 — a Spring/Summer/Autumn
+        │                       # button group + a year NumField, not free text; an
+        │                       # unparseable pre-picker value falls back to today's
+        │                       # own season/year rather than crashing), ID digits, and
+        │                       # (Phase B, built in the same pass) an optional
+        │                       # class-list workbook upload ported from Setup.tsx's
+        │                       # old workbook mode — unchanged in behaviour, but no
+        │                       # longer gated behind a plain/workbook mode toggle,
+        │                       # since attaching a roster stopped being a per-quiz
+        │                       # choice. NumField (2026-09-08 fix) governs the
+        │                       # ID-digits and semester-year fields here now
+        ├── AssessmentForm.tsx  # step 13.6 — create an Assessment: quiz name, question
+        │                       # count, per-question maxes; idDigits inherited from the
+        │                       # section, never asked. Setup.tsx's old form minus the
+        │                       # ID-digits field and the workbook mode; NumField governs
+        │                       # question count/maxes here now; validateConfig.ts reused
+        │                       # unchanged
         ├── Scan.tsx            # camera + upload queue — step 6; capture-button
         │                       # spinner/disable and Retake dead-row fix (2026-08-30);
-        │                       # step 12.9's "Scanned N of M" header, roster passed to Review
+        │                       # step 12.9's "Scanned N of M" header, roster passed to Review;
+        │                       # step 13.13 — sectionLabel in the eyebrow, "All sections" button
         ├── Review.tsx          # review/edit/save screen (step 7); fires harvestScan
         │                       # on Confirm, fire-and-forget (step 3r.6c); step 12.10/12.11's
-        │                       # matched-name / not-on-list-with-suggestion UI on the ID field
+        │                       # matched-name / not-on-list-with-suggestion UI on the ID field;
+        │                       # step 13.13 — its own sectionLabel eyebrow, since Review
+        │                       # renders as a fixed overlay that hides Scan's header entirely
         ├── Results.tsx         # step 9 — results table, inline editing, Excel export;
         │                       # React.lazy-loaded from App.tsx (ExcelJS is most of its weight);
-        │                       # "Reset everything" button + confirm banner (2026-08-30);
         │                       # step 12.5-12.8's second export button — writes into the
-        │                       # instructor's own class-list workbook when Setup attached
-        │                       # one, always alongside the untouched plain download;
-        │                       # step 12.11's Name column, present only when a roster is attached;
-        │                       # step 12.12/12.13's confirm panel — always shown on a workbook
-        │                       # export, blocking outright on a duplicate (Cancel only, plain
-        │                       # download stays available) or listing who hasn't been scanned
-        │                       # yet; the opt-in totals-column checkbox, off by default
-        └── App.tsx             # threads RosterUpload from Setup to Results, and the parsed
-                                 # roster from Setup to Scan/Review (2026-09-07)
+        │                       # instructor's own class-list workbook when the SECTION has
+        │                       # one attached (step 13), always alongside the untouched plain
+        │                       # download; step 12.11's Name column; step 12.12/12.13's confirm
+        │                       # panel — always shown on a workbook export, blocking outright
+        │                       # on a duplicate (Cancel only) or listing who hasn't been
+        │                       # scanned yet; the opt-in totals-column checkbox, off by default;
+        │                       # step 13.11/13.12 — provenance line + Re-pick + re-cache on
+        │                       # every workbook export, verified end to end by exporting two
+        │                       # quizzes into one section and reloading the real bytes; step
+        │                       # 13.16 — exportFilename(section, quizName) now produces
+        │                       # "CSE203-2_Quiz-1_2026-09-09.xlsx"; step 13.20 — stamps
+        │                       # exportedAt on both export paths. "Reset everything" moved
+        │                       # to Library.tsx (step 13)
+        └── App.tsx             # step 13.7 — a real screen enum (library/section/assessment/
+                                 # scan/results) replaces `config === null` as the router;
+                                 # threads Section/Assessment down to Scan/Review/Results via
+                                 # sections.ts's assessmentConfig(); step 13.18 — the
+                                 # SectionForm save handler reads every prior section's
+                                 # semester BEFORE saving, and only for a genuine creation
+                                 # (never an edit), to decide whether to hand Library a
+                                 # one-shot pendingSemesterOffer
 ```
 
 ## Commands
@@ -492,8 +709,8 @@ cd backend && source venv/bin/activate && python detect.py <image-path> --questi
 cd backend && source venv/bin/activate && python batch_detect.py ../testset/images --questions 5 --id-digits 7 --out ../testset/debug/
 cd backend && source venv/bin/activate && python id_ocr_accuracy.py
 
-# Backend tests — offline, Gemini always mocked, never any AWS (148 tests
-# as of observability, 2026-08-31)
+# Backend tests — offline, Gemini always mocked, never any AWS (259 tests
+# as of the N35 leading-zero-mark fix, 2026-09-10)
 cd backend && source venv/bin/activate && pytest
 
 # CNN accuracy harnesses (steps 2r/3r, plan.md §16). These need NO extra
@@ -583,7 +800,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --ssl-keyfile certs/key.pem --ssl-c
 # Frontend — HTTPS and LAN binding are on by default via vite.config.ts,
 # no --host flag needed
 cd frontend && npm run dev
-cd frontend && npx vitest run   # 79 tests as of Setup's saved-session notice, 2026-08-31
+cd frontend && npx vitest run   # 358 tests as of step 13.24's per-assessment delete, 2026-09-10
                                 # (use `npm run build` to typecheck — see the tsc caveat below); or `npx vitest` for watch mode
 cd frontend && npm run build
 ```
@@ -843,6 +1060,18 @@ all-blank result as if it were a normal scan.
   that store — a tag regenerated on every "Reset everything" would split
   one writer across unrelated prefixes and defeat its own purpose. Don't
   move it there, and don't add it to `resetAll()`.
+- **Don't coerce a number input's value on every keystroke.** `Number('')`
+  is `0`, not `NaN`, and an `<input>` reports `''` the moment you delete
+  its last character — so `onChange={e => setX(Number(e.target.value))}`
+  writes a literal `0` into any box the instructor clears, and the digits
+  they type next land after it (`10` → `010`). Controlled inputs re-render
+  from state on every keystroke, so a lossy transform in the handler is
+  applied to what was typed *before it is finished*. Hold `number | ''` and
+  convert once, at submit — to `NaN`, not to a default, so an emptied field
+  fails validation instead of silently validating as something the user
+  never typed. Fixed in `Setup.tsx` 2026-09-08; the caret behaviour that
+  produces the visible symptom cannot be reproduced in jsdom, so the tests
+  pin the cause (a cleared box stays empty) rather than the symptom.
 - **Don't verify the frontend with a bare `npx tsc --noEmit`.** The root
   `tsconfig.json` is a solution file (`"files": []` plus references), so
   that command typechecks *nothing* and passes on genuinely broken code.
@@ -852,7 +1081,9 @@ all-blank result as if it were a normal scan.
   had been saving labelled cell crops server-side since 3r.6c. The true
   statement has two halves and both must stay: the *photograph* is never
   stored, and *individual cells* are kept with their confirmed values to
-  train and tune recognition. `Setup.test.tsx` pins the always-visible
+  train and tune recognition. This disclosure now lives in `Library.tsx`
+  (step 13 retired `Setup.tsx` and moved it there, since Library is the
+  new first-visited screen); `Library.test.tsx` pins the always-visible
   line and asserts it is NOT inside the collapsible `<details>` — a
   returning instructor has that section collapsed and would otherwise
   never see it.
@@ -912,16 +1143,55 @@ all-blank result as if it were a normal scan.
 
 ## Deferred — don't build these
 
-Client-side detection with OpenCV.js · server-side database and multi-quiz
-history · multi-user auth · a template generator (there deliberately isn't
-one — the grid is a Docs table pasted by hand).
+Client-side detection with OpenCV.js · **server-side** database ·
+multi-user auth · a template generator (there deliberately isn't one — the
+grid is a Docs table pasted by hand) · an override for a mark above a
+question's printed max (see plan.md §13 for the full account — a real
+want raised 2026-09-09, not yet specced).
+
+**Local multi-quiz history came off this list on 2026-09-09**, and the
+split matters: this line used to read "server-side database and multi-quiz
+history" as one item, which conflated a server with *remembering more than
+one quiz*. Holding a semester in IndexedDB needs no server, no account,
+and no privacy surface beyond the device the marks are already on. Without
+it, four sections cost eight config entries and eight class-list uploads
+per quiz round, and grading the second CSE203 section requires deleting
+the first's marks. Specced as plan.md §18 / step.md step 13; **Phases A
+and B are built (2026-09-10)** — a second quiz genuinely no longer
+destroys the first, and a section's class list is picked once. **Not
+built**: the real scoped semester purge (a full "Reset everything" wipe
+stands in for it), resume confirmation, and assessment-scoped duplicate
+detection (still global — a shared serial across two courses raises a
+false conflict today). A server-side database and multi-user auth stay
+deferred for the original reason.
+
+**A deliberate override for a mark above a question's printed max —
+raised 2026-09-09, not specced, no code.** Today `[0, max]` is
+unrepresentable by design: `decode_value` never scores an out-of-range
+value as a candidate, `isLegalValue` blocks Confirm client-side,
+`legal_values` rejects it server-side — there is no way to type `6` on a
+5-mark question and save it. That's correct for a misread or a
+printed-max mismatch (N31/N33, fixed the same day, exist to make the
+resulting blank informative rather than silent). It is NOT yet correct
+for a genuine bonus mark the instructor means to award — today the only
+route is outside the app, hand-editing the exported `.xlsx` after the
+fact. Two directions, undecided between: a per-question tolerance set at
+config time (cheap, widens the ceiling for every student on that
+question) or an explicit per-field override action on Review (keeps every
+other student's ceiling untouched, needs its own confirmation UI and its
+own harvest tagging so it never trains the model to treat an above-max
+read as legal). Either way, what `sumCheck`/`totalMax` compare against
+once one question can legitimately exceed its own max is unresolved. See
+plan.md §13 for the full writeup.
 
 **Roster import is no longer on this list.** It was deferred "to avoid
 file-upload complexity"; picked back up 2026-09-07 once it became clear
 the roster already exists as a workbook the instructor keeps all semester,
 so the complexity being avoided was a roster *management* system, not a
-file picker. See plan.md §17 and step.md step 12 — specced in four
-independently-shippable phases, none built yet.
+file picker. See plan.md §17 and step.md step 12 — four
+independently-shippable phases, **all four built 2026-09-07**, plus six
+fixes from real phone use. Step 13 then moves the upload from the quiz to
+the *section*, which is where the class list actually belongs.
 
 **No longer simply deferred:** a local mark classifier (TFLite/ONNX) was on
 this list until the deferral's own trigger condition — "only if Gemini

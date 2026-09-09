@@ -6205,3 +6205,1199 @@ written into it.
   Phase A and can't be closed from here: the phone's own file picker and
   download, tried by a person, on a real device — same category as
   camera/PWA verification everywhere else in this project.
+
+## The cleared number field — one character of coercion
+
+Not a step. A bug found the same way step 12's five fixes were: by using
+the app on a real phone, after everything was marked done.
+
+**What happened.** On the Setup screen, clear the "Number of questions"
+box — it has `5` in it, you delete the 5 — and a `0` appears. Type `10`
+after that and you get `010`.
+
+**Why.** One line, in each of three places:
+
+```tsx
+onChange={(e) => setIdDigits(Number(e.target.value))}
+```
+
+When you delete the last character of an `<input>`, the browser reports
+its value as the empty string. And `Number('')` is `0` — not `NaN`, which
+is what most people expect, and which would have made this visible
+immediately. So the moment the box went empty, React wrote a `0` straight
+back into it. The caret was sitting *before* that leftover zero, so the
+next digits typed landed after it.
+
+This is a specific hazard of **controlled inputs**. The box does not hold
+its own value; React holds it, and re-renders the box from state on every
+keystroke. That is normally the point — one source of truth — but it means
+any lossy transform in the `onChange` handler is applied to what the user
+typed *before they can finish typing it*. `Number()` is lossy for exactly
+one input, and it happens to be the one you produce every time you clear a
+field.
+
+**The fix** is to let the state say "empty" as a distinct thing from
+"zero":
+
+```tsx
+type NumField = number | '';
+
+function toNumField(raw: string): NumField {
+  return raw === '' ? '' : Number(raw);
+}
+
+const [idDigits, setIdDigits] = useState<NumField>(7);
+```
+
+`value={idDigits}` renders `''` as an empty box, which is exactly what the
+user asked for by pressing backspace.
+
+The interesting half is what happens at the other end. Something
+eventually needs a real number, and the temptation is to substitute a
+default there — `idDigits || 7`. That would be a quiet lie: a field the
+instructor deliberately emptied would validate as though they had typed
+something. So the conversion is deliberately to `NaN`:
+
+```tsx
+function asNumber(value: NumField): number {
+  return value === '' ? NaN : value;
+}
+```
+
+and nothing else changed, because `validateConfig` was already written to
+reject it:
+
+```ts
+if (!Number.isInteger(input.idDigits) || input.idDigits < 1) {
+  errors.push('Student ID digits must be a positive whole number.');
+}
+```
+
+`Number.isInteger(NaN)` is `false`. An empty box gets the same message a
+`0` or a `2.5` gets. No validation rule was touched — which matters more
+than it looks, because those bounds are one half of a pinned pair:
+`backend/tests/test_models.py` reads `validateConfig.ts` and fails if
+either side moves alone.
+
+**Two knock-ons, handled rather than found later.** Both are places that
+already existed and would have broken quietly under the new `''` value:
+
+```tsx
+setQuestionCount(next);
+if (next === '' || !Number.isInteger(next) || next < 1 || next > MAX_QUESTIONS) return;
+```
+
+The `next === ''` comes first on purpose. The guard after it is issues.md
+#1's crash protection — `copy.length = 5.5` throws `RangeError`, and
+`while (copy.length < 99999999999) copy.push(5)` hangs the tab — and an
+empty string would have slipped past `Number.isInteger` into neither
+branch cleanly. And:
+
+```tsx
+parseRosterSheet(workbookState.workbook, effectiveSheetName, idDigits === '' ? 0 : idDigits)
+```
+
+`0` is not a fallback invented here; it is precisely what that function
+already received back when clearing the field produced a `0`. Passing
+`NaN` into roster ID normalization would have been a new behaviour smuggled
+in under a bug fix.
+
+**What the tests can and cannot show.** Three cases went into
+`Setup.test.tsx`. Only one of them fails against the old code — the one
+asserting a cleared box is still empty:
+
+```tsx
+fireEvent.change(count, { target: { value: '' } });
+expect(count.value).toBe('');
+```
+
+The other two pin the resize behaviour and the empty-field validation, and
+both would have passed before the fix. That is worth being explicit about
+rather than letting three green checkmarks imply three caught bugs: jsdom
+has no caret, so the exact `010` the user saw cannot be reproduced in a
+test at all. The comment in the test file says so. What the suite pins is
+the cause; the symptom needed a phone.
+
+Frontend suite: 238 → 241.
+
+## Fixing the two HIGH findings from the first live session — N31, N32, N33
+
+The four findings the first real grading session surfaced (issues.md's
+"Start here") sat behind a decision: fix them before step 13, or after.
+The answer was before — more sections graded per semester means more
+serial reads hitting N32's bug, and a longer collection window for N31 to
+quietly poison the training corpus before anyone would notice. Asked how
+to handle the fourth (N34), the user chose to defer it rather than pick a
+fix direction — recorded as a decision, not an oversight.
+
+### N32 — the serial field was throwing away its best glyph
+
+Reported as "serials with a leading zero mostly don't work." The actual
+measurement said something different: a leading zero was the single most
+*reliable* glyph in the whole field — 1.00 confidence in six of seven
+cases — and it was being discarded anyway, because of its neighbour.
+
+`cnn/decode.py`'s `decode_serial` decoded each glyph independently (there's
+no cross-digit constraint for a serial the way there is for a mark's
+~11 legal values) and then did this:
+
+```python
+for probs in glyph_probs:
+    digit, confidence, margin = decide_digit(probs, confidence_floor, margin_floor)
+    if digit is None:
+        return None, min(min_confidence, confidence)   # <- the whole field, gone
+    digits.append(str(digit))
+```
+
+One uncertain glyph anywhere in the serial threw the entire read away —
+including a `0` at 1.00 confidence sitting right next to it. Measured over
+every labelled real serial: 14 of 17 were correct at raw argmax, but only
+11 of 17 survived this rule.
+
+The fix is almost embarrassingly small once you see it, because
+`app/id_ocr.py`'s `read_id` already solved the identical problem for the
+student ID, months earlier:
+
+```python
+digits.append(str(digit) if digit is not None else "?")
+```
+
+Never discard the field — mark the position and keep going. `"12?4567"`
+was already a normal thing for this app to produce and for the instructor
+to fix by hand; a serial like `"0?"` is exactly the same shape. That's why
+this shipped with **zero frontend changes**: `validateMarks.ts`'s
+`isValidSerial` already rejected any string containing `?`, for the same
+reason `isCompleteId` already rejected a partial ID — the rule existed,
+just nothing on the backend ever produced the value it was written for.
+
+One number that looks tempting and isn't: lowering
+`SERIAL_CONFIDENCE_FLOOR`/`MARGIN_FLOOR` from 0.9/0.8 to the ID's own
+0.75/0.6 recovers 3 more reads. It also lets a confidently-wrong digit
+through, against a bar this field currently meets at zero. The floors
+were never the bug — the all-or-nothing rule was — and
+`cnn/thresholds.py`'s own comment calling them "the first numbers to
+revisit" was itself wrong, corrected in place rather than acted on.
+
+### N31 and N33 — one collapsed distinction, two symptoms
+
+These were specced together because they share a root cause. A student
+writes `7` on a question out of 5. `decode_value` scores only legal
+values, finds no match, and returns `None` — which is *correct*, and which
+`app/recognizers/local.py`'s `_decode_value_cell` had always produced
+identically for a cell with nothing written in it at all:
+
+```python
+def _decode_value_cell(self, path, legal_vals):
+    crop = read_cell(path)
+    if crop is None:
+        return None                    # missing file
+    glyphs = segment_cell(crop)
+    if not glyphs:
+        return None                    # genuinely blank — nothing to mislabel
+    ...
+    value, _score = decode_value(probs, decimal_index, legal_vals, DECODE_FLOOR)
+    return value                       # ink present, but nothing matched — SAME None
+```
+
+Three different situations, one output. The instructor sees an
+unexplained blank box (N33) either way, and a Confirm button that refuses
+the true value `7` no matter how many times they type it — pushing them
+toward typing a *different*, legal value (`5`) just to get past
+validation. `harvest()` then labels the crop of a handwritten `7` with the
+string `"5"` (N31), and does so invisibly: nothing about that write looks
+different from a genuine confirmation.
+
+Why not distinguish "genuinely out of range" from "illegible in-range
+smudge" and word the message precisely? Because the decode score can't
+tell them apart. Both look identical from inside `decode_value` — ink
+that scored below the floor against every legal candidate, for a reason
+the function has no way to know. Rather than assert a certainty it didn't
+have, the fix returns which case it's *not*:
+
+```python
+def _decode_value_cell(self, path, legal_vals):
+    crop = read_cell(path)
+    if crop is None:
+        return None, False
+    glyphs = segment_cell(crop)
+    if not glyphs:
+        return None, False             # blank — not the dangerous case
+    ...
+    value, _score = decode_value(probs, decimal_index, legal_vals, DECODE_FLOOR)
+    return value, value is None        # had ink, nothing matched
+```
+
+`had_ink` is the one new bit of information this needed. `read_marks`
+collects it into `MarksResult.unmatched_fields` — a strict subset of the
+existing `low_confidence_fields` — and that one list does both jobs at
+once:
+
+- **N31**: `app/harvest.py`'s `harvest()` takes the set and refuses to
+  write any crop whose name is in it, no matter what the instructor
+  confirmed:
+
+  ```python
+  if f"q{i + 1}" in unmatched_fields:
+      continue
+  ```
+
+  This is deliberately unconditional — it doesn't check whether the
+  confirmed value differs from the original. We already know the ink
+  matches *no* legal label, so there is no confirmed value that could be
+  trusted to describe it, including one that happens to match what the
+  model's argmax would have guessed.
+
+- **N33**: `Review.tsx` shows a message on exactly the fields in that set,
+  and only while they're still blank:
+
+  ```tsx
+  {!markErrors[qc.q] && !marks[qc.q] && unmatched.has(`q${qc.q}`) && (
+    <span className="warning-text">Couldn't match this to a legal value — check the script.</span>
+  )}
+  ```
+
+  It disappears the instant anything is typed — legal or not — because at
+  that point either `markErrors` or a real value takes over, the same as
+  every other flagged field on this screen. It never blocks Confirm on its
+  own; a blank field was already valid-but-unverified before this existed.
+
+### A monkeypatch that silently patched the wrong module
+
+Testing the `had_ink` distinction directly needed the real trained model
+(the whole point was proving the app's actual decode path, not a
+reimplementation of it), plus a way to force "ink present, nothing legal
+matches" deterministically rather than hoping a hand-drawn rectangle
+confuses the classifier the right way. The trick: pass `legal_vals=set()`
+directly to `_decode_value_cell` — with no candidates to score against,
+`decode_value` can never return anything but `None`, regardless of what
+the model reads.
+
+One level up, testing `read_marks` itself needed the same trick applied
+to the `legal_values()` call *inside* the method, which meant
+monkeypatching a module-level name:
+
+```python
+monkeypatch.setattr(local_module, "legal_values", lambda max_mark: set())
+```
+
+This passed in isolation and failed only when run after the full suite —
+specifically, only after `test_cnn_preprocess.py`'s own N16 regression
+test, which pops `app.recognizers.local` out of `sys.modules` and
+re-imports it fresh, to prove the app doesn't accidentally pull in the CLI
+tuning harness at import time. That test's reload leaves
+`sys.modules['app.recognizers.local']` pointing at a *different* module
+object than the one this file's `CNNRecognizer` class — imported at the
+top of the file, before any test has run — actually belongs to. Patching
+`import app.recognizers.local as local_module` by name patches the new
+one; the method executing belongs to the old one. Two module objects,
+same dotted name, silently disagreeing.
+
+The fix sidesteps `sys.modules` entirely:
+
+```python
+monkeypatch.setitem(CNNRecognizer.read_marks.__globals__, "legal_values", lambda max_mark: set())
+```
+
+`__globals__` is the actual namespace dict a function's code runs against
+— not a lookup by name, the dict itself. It's correct regardless of which
+module object `sys.modules` currently associates with that name, which is
+exactly the property this situation needed. Found by the full suite
+failing where the file alone passed — a reminder that "passes in
+isolation" and "passes in the suite" are different claims, and a
+reload-based test elsewhere in the codebase is precisely the kind of
+thing that can make them diverge.
+
+Backend suite: 246 → 256. Frontend suite: 241 → 245.
+
+## N35 — a mark written with a leading zero could never decode
+
+Raised as a direct question, not found by an audit: "why can't the
+detector read 03, 05?" Worth walking through because the answer isn't a
+confidence-floor tuning problem — it's a structural one, and the same
+shape of bug `decode_serial` already had fixed once (N32, above), just
+hitting a different function that has its own, separate fix.
+
+[`cnn/decode.py`](backend/cnn/decode.py)'s `decode_value` doesn't parse
+freeform digits and validate the result afterward — it scores every
+*legal* value's own digit rendering directly against the glyphs, and
+picks whichever scores highest:
+
+```python
+def _digits_of(value: float) -> tuple[list[int], int | None]:
+    s = _fmt(value)
+    decimal_at = s.index(".") if "." in s else None
+    digits = [int(c) for c in s if c != "."]
+    return digits, decimal_at
+```
+
+`_fmt(3)` is `"3"` — one digit, always, for any whole-number mark. That's
+the right rendering for the *canonical* way to write a 3, but it's also
+the *only* rendering `decode_value` ever tried. A student who writes "03"
+segments into two glyphs. For every legal value in the question's set,
+`decode_value` checks `len(digits) != len(glyph_probs)` and skips the
+candidate on a length mismatch — and no legal value's canonical digit
+count is ever 2 for a single-digit mark. Not one candidate at any
+confidence could ever match. This is different from every other flagged
+case in this codebase: a smudged "4" that scores 0.4 confidence still has
+a *chance* to clear the floor; a "03" reading had no chance at all,
+because there was no candidate shaped like it to compare against.
+
+The fix generates a second candidate per legal value, not just the
+canonical one:
+
+```python
+def _digit_candidates(value: float) -> list[tuple[list[int], int | None]]:
+    digits, decimal_at = _digits_of(value)
+    padded_decimal_at = None if decimal_at is None else decimal_at + 1
+    return [(digits, decimal_at), ([0, *digits], padded_decimal_at)]
+```
+
+`decode_value`'s loop now tries both shapes for every legal value. The
+padded candidate for `3` is `[0, 3]` — and it still has to *win on
+score*, the same way any candidate does: the leading glyph is scored
+against the classifier's actual probability of it being a `0`, just like
+every other digit. Write "13" instead, and the leading glyph reads
+confidently as a `1`, not a `0` — the padded-`3` candidate scores near
+zero on that position and loses to nothing, so the cell correctly flags
+rather than silently reading "13" as "3". `test_leading_zero_padding_
+does_not_invent_a_false_match` pins exactly that case: this is a new
+*candidate*, not a lowered bar.
+
+The `padded_decimal_at = decimal_at + 1` line matters more than it looks:
+without shifting the expected decimal position along with the extra
+leading digit, a padded half-mark like "01.5" would fail the position
+check even though its digit count now matches. Worth noting because it's
+the second time this exact kind of bookkeeping has bitten this file — N24
+(issues.md, and the "Fixing the audit" section above) was a different bug
+in the same neighborhood: comparing *whether* a decimal existed instead
+of *where*. Both bugs are examples of the same lesson: when a
+comparison has more than one dimension (length AND position; presence
+AND position), checking only one of them looks correct until a case
+comes along that needed the other.
+
+One thing worth checking rather than assuming: were half marks (0.5,
+1.5, 2.5, …) *also* broken? No — `_fmt(1.5)` is `"1.5"`, already two
+digits with a decimal point, which is exactly the shape `decode_value`
+already scored correctly; `test_decoder_returns_the_legal_value_its_
+glyphs_encode` already pinned the 4.5 case before this fix existed. The
+leading-zero bug only ever affected whole numbers, because only a whole
+number's canonical rendering is short enough for padding to matter.
+
+4 new `test_cnn_decode.py` cases. Backend suite: 256 → 259.
+
+## Step 13 — Multi-course, multi-section persistence (all four phases done)
+
+Everything up to this point assumed one quiz at a time. Setup.tsx held
+exactly one `QuizConfig`, `records` was one flat pile with nothing saying
+which quiz a record belonged to, and "Reset everything" was the only way
+between sessions. That was correct for the pilot — one instructor, one
+class, one sitting — and wrong the moment a real semester showed up: one
+section of CSE100, one of CSE200, two of CSE203, taught at once. Grading
+the second CSE203 section meant deleting the first's marks first.
+
+This step replaces the single `config` with two durable things: a
+**Section** (course code, label, semester, ID digits, an optional class
+list) and an **Assessment** (one quiz's question config, scoped to a
+section). Phases A and B — the schema, the new screens, and moving the
+roster onto the section — are built. What follows is the interesting
+parts, not a restatement of step.md's own task list.
+
+### The migration has to run inside someone else's browser, once
+
+The riskiest code in this step isn't the new screens — it's the
+`upgrade()` callback in `db.ts`, because it runs on a real instructor's
+device, once, automatically, the moment they load the new build. If it's
+wrong, there's no "try again": whatever it drops is gone.
+
+The hard part isn't reading the old data — it's that IndexedDB's
+versioned-upgrade transaction has a lifetime, and everything has to
+happen inside it:
+
+```javascript
+if (db.objectStoreNames.contains('config')) {
+  const configStore = transaction.objectStore('config');
+  const rosterStore = db.objectStoreNames.contains('rosterUpload')
+    ? transaction.objectStore('rosterUpload')
+    : null;
+
+  Promise.all([
+    configStore.get(OLD_CONFIG_KEY),
+    rosterStore ? rosterStore.get(OLD_ROSTER_UPLOAD_KEY) : Promise.resolve(undefined),
+    records.getAll(),
+  ]).then(async ([oldConfig, oldRosterUpload, existingRecords]) => {
+    if (oldConfig) {
+      // ...build one Section + one Assessment, stamp every existing
+      // record with the new assessmentId...
+    }
+    db.deleteObjectStore('config');
+    if (db.objectStoreNames.contains('rosterUpload')) {
+      db.deleteObjectStore('rosterUpload');
+    }
+  });
+}
+```
+
+`db.deleteObjectStore()` isn't a request — it's a synchronous structural
+change — but it has to run while the versionchange transaction is still
+*active*, and a transaction goes inactive the moment nothing is keeping it
+busy. The chain of `await`ed `put()` calls inside that `.then()` is what
+keeps it alive long enough to reach the `deleteObjectStore` calls at the
+end. This isn't a new trick invented for this step — `db.ts`'s existing
+v3 migration (the one that normalizes old un-normalized serials) already
+proved the pattern, recursively chaining `cursor.continue().then(migrate)`
+through the same kind of transaction. Step 13's migration just chains
+through `Promise.all` and a `for` loop instead of a cursor.
+
+None of this is trustworthy from reading it, so `db.test.ts` runs it for
+real: a genuine `openDB('marks', 1, ...)` with real `config`/`records`
+data, then opens at v5 and checks what came out the other side. Three
+cases, each written as the thing that must not happen rather than the
+happy path: a populated v1 database folds into one Section + one
+Assessment with every record preserved; an empty one produces nothing;
+a v4 database's persisted roster survives into the migrated Section's
+`roster`/`workbook` fields. All three genuinely exercise the transaction
+lifetime question above — if the chaining were wrong, `deleteObjectStore`
+would throw `InvalidStateError` on a closed transaction, and the test
+would fail loudly rather than silently losing data.
+
+### Setup.tsx doesn't get a replacement screen — it gets three
+
+The natural instinct is to keep `Setup.tsx` and just add a picker in
+front of it. That's not what happened: `Setup.tsx` is deleted outright,
+and its one job splits into three files that map onto the two new
+entities:
+
+- **`Library.tsx`** — the new first screen. Semester → course → sections
+  → assessments. It also inherited two things that had nowhere else
+  sensible to live once Setup.tsx was gone: the "How this works"
+  disclosure, and "Reset everything."
+- **`SectionForm.tsx`** — the durable half: course code, label, semester,
+  ID digits, plus (Phase B) the class-list upload.
+- **`AssessmentForm.tsx`** — the per-quiz half: name, question count,
+  maxes. `idDigits` isn't asked here at all — it's inherited from the
+  section.
+
+One consequence of the split is a real simplification worth calling out.
+Setup.tsx had a "plain download" vs. "use my class marksheet" toggle,
+because the roster was a *per-quiz* choice — every quiz asked the
+instructor to pick a file, or not. Once the roster moved onto the
+section, that choice stopped being per-quiz. `SectionForm.tsx` just has
+an optional upload field, always visible, no toggle:
+
+```tsx
+<div className="field">
+  <span className="field-label">Class-list workbook (optional)</span>
+  ...
+  <input id="rosterFile" type="file" accept=".xlsx" onChange={...} />
+</div>
+```
+
+A section either has `section.roster`/`section.workbook` set or it
+doesn't, and `Results.tsx` decides what to show from that alone — the
+same `section.roster && section.workbook &&` guard that used to be
+`rosterUpload &&`.
+
+### `assessmentConfig` is the one seam that kept everything else unchanged
+
+The biggest risk in a change like this is that it ripples into every
+screen. It mostly didn't, because of one small function:
+
+```typescript
+// idDigits comes from the SECTION, never copied onto the Assessment —
+// a copy is exactly how the two would drift.
+export function assessmentConfig(assessment: Assessment, section: Section): QuizConfig {
+  return {
+    quizName: assessment.quizName,
+    idDigits: section.idDigits,
+    questions: assessment.questions,
+    totalMax: assessment.totalMax,
+  };
+}
+```
+
+`Scan.tsx`, `Review.tsx` and `Results.tsx` all still take a plain
+`config: QuizConfig` prop, exactly as before step 13. `App.tsx` is the
+only place that knows about `Section`/`Assessment` at all — it calls
+`assessmentConfig()` once per render and hands the result down. That's
+why `roster.ts`, `examSheet.ts`, `workbookExport.ts`, `rosterMatch.ts`,
+`validateConfig.ts` and `scanQueue.ts` needed **zero** changes for this
+step: none of them ever knew a `Section` existed.
+
+### Proving the re-cache actually works, not just that a field changed
+
+Step 12's export always reloaded the class-list workbook from the
+original upload's bytes. That was correct when there was one quiz per
+upload. It becomes a real bug the moment a section holds several quizzes:
+Quiz 2's export would reload the pristine original file — without Quiz
+1's sheet in it — and silently produce a download that lost Quiz 1
+entirely.
+
+The fix is to re-cache the bytes the app just wrote:
+
+```typescript
+const updatedSection: Section = {
+  ...section,
+  workbook: {
+    fileName: section.workbook.fileName,
+    bytes: buffer as ArrayBuffer,
+    capturedAt: new Date().toISOString(),
+    source: 'exported',
+  },
+};
+await saveSection(updatedSection);
+onSectionUpdated(updatedSection);
+```
+
+`onSectionUpdated` threads back up to `App.tsx`, which updates the
+`activeSection` it's holding — so the *next* export in this section
+starts from the file that already has the earlier quiz's sheet in it.
+
+A test that only checks `updated.workbook.source === 'exported'` would
+pass even if the re-cached bytes were garbage. The test that actually
+matters exports Quiz 1, takes the resulting `Section` (exactly what
+`onSectionUpdated` produced), re-renders `Results` with it and a Quiz 2
+`Assessment`, exports again, and — instead of trusting the mocked
+`URL.createObjectURL` — captures the real `Blob`, reloads it as a genuine
+ExcelJS workbook, and checks the actual sheet names:
+
+```typescript
+const finalWorkbook = new ExcelJS.Workbook();
+await finalWorkbook.xlsx.load(finalBytes);
+const sheetNames = finalWorkbook.worksheets.map((ws) => ws.name);
+
+expect(sheetNames).toContain('data');   // the class list itself
+expect(sheetNames).toContain('Quiz 1');
+expect(sheetNames).toContain('Quiz 2');
+```
+
+This is the one test in the whole step that would have caught the actual
+bug the step exists to prevent, and it does so by round-tripping real
+bytes through a real library rather than asserting on a mock.
+
+### A submit button that looked enabled but wasn't ready
+
+`SectionForm.tsx` fetches every existing section on mount, to check for
+a duplicate course/section/semester combination on submit:
+
+```typescript
+const [existingSections, setExistingSections] = useState<Section[] | null>(null);
+useEffect(() => {
+  getAllSections().then(setExistingSections);
+}, []);
+```
+
+`handleSubmit` bails out if that fetch hasn't resolved yet — correct,
+since submitting before it resolves would mean the duplicate check ran
+against an empty list. The submit button, though, had no `disabled` state
+tied to that at all; it just always looked clickable. A test that
+clicked it immediately after `render()` would sometimes pass anyway
+(IndexedDB reads are fast) and sometimes silently do nothing, because the
+click landed inside the guarded no-op window — a real race, not a test
+artifact, that a fast enough real device could hit too.
+
+The fix is one line, and it's the same fix in both directions — give the
+button a real, meaningful disabled state, which happens to also make the
+test's `waitFor(() => expect(button).toBeEnabled())` mean something:
+
+```tsx
+<button type="submit" className="btn btn-primary flex-1" disabled={existingSections === null}>
+```
+
+Two tests had been passing by luck (their `waitFor` was checking a
+condition — "enabled" — that was already permanently true, so it resolved
+instantly without actually waiting for the fetch). They failed the moment
+the full suite ran with different scheduling than the file did in
+isolation, which is exactly the "passes alone, fails in the suite" shape
+worth remembering from earlier in this project's own audits: a race
+that's rare enough to not show up until something else changes the
+timing around it.
+
+### Where the context header still had a blind spot
+
+Scan.tsx's header shows the section and quiz name — "CSE203-2 · Quiz 1"
+— always visible, so grading two sections back to back doesn't rely on
+memory. But Review.tsx renders as a `position: fixed` overlay that
+covers Scan's entire screen, header included (that's deliberate — see
+step 7's own account of why Review can't unmount the camera). The
+consequence: at the exact moment the instructor is looking at a script
+and deciding whether to tap Confirm, the one piece of context that would
+catch a wrong-section mistake was invisible.
+
+The fix is small once spotted — an optional prop and a bare CSS rule
+(`.eyebrow` used to only exist scoped to `.app-header .eyebrow`, so it
+needed its own unscoped declaration to render standalone inside Review's
+overlay) — but the bug itself is a reminder that "the header shows it"
+isn't the same claim as "the screen you're looking at when it matters
+shows it."
+
+Frontend suite: 245 → 282, three consecutive full `vitest run` passes
+confirming no flakiness left. Backend: untouched — this step is entirely
+a frontend concern, exactly as its own rule 2 required.
+
+### Phase C — closing what Phase B's own context header left open
+
+Phase B built the header that shows "which section am I in." Phase C is
+the three things underneath it: the identity check that actually fires
+(or doesn't) when a script is saved, the prompt that catches an old
+assessment reopened by mistake, and the filename that carries the
+identity into the file itself. All three are done as of the same day.
+
+### Scoping without a new index
+
+`findRecordsBySerial` used to query one IndexedDB index (`by-serial`) and
+return everything that matched, globally. Scoping it to one assessment
+didn't need a second, compound index — the records it returns already
+carry `assessmentId`, so a plain filter after the index lookup does it:
+
+```typescript
+export async function findRecordsBySerial(serial: string, assessmentId: string): Promise<StudentRecord[]> {
+  const db = await getDB();
+  const normalized = normalizeSerial(serial);
+  if (normalized === null) return [];
+  const matches = await db.getAllFromIndex('records', 'by-serial', normalized);
+  return matches.filter((r) => r.assessmentId === assessmentId);
+}
+```
+
+The interesting part isn't the code — it's the test that proves the fix
+didn't just move the bug sideways. A scoping change is easy to get half
+right: stop the false conflict, but also accidentally stop the real one.
+So `Review.test.tsx` pins both outcomes as separate cases — a record
+sharing a serial in a DIFFERENT assessment raises nothing, and the exact
+same setup with the record in the SAME assessment still raises the
+conflict banner:
+
+```typescript
+it('raises no conflict against a record with the same serial in a different assessment', async () => { ... });
+it('still raises the conflict against a record in the SAME assessment', async () => { ... });
+```
+
+Without the second test, a change that accidentally scoped too broadly
+(say, filtering by `studentId` instead of `assessmentId`, or forgetting
+the filter on one of the two functions) could pass the first test while
+quietly breaking the actual cross-check plan.md §2 calls the highest-
+value screen in the app.
+
+### A derived field instead of a new one
+
+Resume confirmation needs to know "was this assessment last touched
+before today." The tempting shortcut is a `lastActivityAt` field on
+`Assessment`, updated every time a record is saved. That's a second copy
+of information the database already has — every record already carries
+its own `capturedAt` — and a second copy is one more place for the two to
+quietly disagree, the same drift concern this whole step keeps avoiding
+elsewhere (idDigits living on the Section and not the Assessment, for the
+same reason).
+
+So it's derived instead, from data `Library.tsx` was already fetching to
+show each assessment's scanned count:
+
+```typescript
+export function lastActivityAt(capturedAtValues: string[]): string | null {
+  if (capturedAtValues.length === 0) return null;
+  return capturedAtValues.reduce((latest, v) => (v > latest ? v : latest));
+}
+```
+
+String comparison works here specifically because every `capturedAt` in
+this codebase comes from `new Date().toISOString()`, which always
+produces the same fixed-width UTC format — lexicographic order and
+chronological order agree for that one format. It would silently break
+the moment any code stored a differently-formatted timestamp.
+
+### A test that was wrong on this machine, correctly
+
+The comparison itself is deliberately "local calendar day," not "24 hours
+ago" — an assessment scanned at 11pm and reopened at 7am the next morning
+is a different session, even though less than 24 hours passed:
+
+```typescript
+export function needsResumeConfirmation(lastActivityAt: string | null, now: Date = new Date()): boolean {
+  if (lastActivityAt === null) return false;
+  const last = new Date(lastActivityAt);
+  return last.toDateString() !== now.toDateString();
+}
+```
+
+The first version of the test for "confirms an assessment last touched
+yesterday" used a hand-picked timestamp: `now` at `2026-09-09T15:00:00Z`,
+"yesterday" at `2026-09-08T23:59:00Z` — one minute before UTC midnight.
+It failed. Not because the function was wrong, but because the test
+machine's own local timezone is ahead of UTC: `23:59 UTC` on the 8th
+lands after local midnight, on the 9th — the SAME calendar day as `now`,
+by the exact rule the function is deliberately using. The fixture had
+picked a moment that was "yesterday" in UTC but "today" locally, in a
+function whose entire point is to compare locally.
+
+The fix wasn't to special-case the test's timezone — it was to stop
+hardcoding a timestamp near a UTC boundary at all, and derive every
+fixture from `now` with plain arithmetic instead:
+
+```typescript
+const DAY_MS = 24 * 60 * 60 * 1000;
+const twoDaysAgo = new Date(now.getTime() - 2 * DAY_MS);
+```
+
+Two days is far enough from any midnight boundary, in any timezone, that
+the test means the same thing everywhere it runs. This is worth
+remembering as a general shape: a date/time test that hardcodes a
+timestamp close to a day boundary is testing "does this pass in my
+timezone," not "is the function correct" — and the failure here was the
+test doing its job, not a flake to route around.
+
+### The filename, and what it's actually proving
+
+`exportFilename` changed from taking a quiz name to taking a `Section`
+and a quiz name, producing `CSE203-2_Quiz-1_2026-09-09.xlsx`. The
+temptation with a test for this is to call the function directly and
+check the string it returns — which would pass even if `Results.tsx`
+never actually used the return value. The test that was written instead
+goes through the real download path:
+
+```typescript
+const clickSpy = vi
+  .spyOn(HTMLAnchorElement.prototype, 'click')
+  .mockImplementation(function (this: HTMLAnchorElement) {
+    capturedFilename = this.download;
+  });
+```
+
+`triggerDownload` builds a real `<a>` element, sets its `download`
+attribute, and calls `.click()` on it. Intercepting `click()` and reading
+`this.download` at that exact moment captures what the browser would
+actually have offered to save the file as — proving the filename change
+reaches the one place it has to, not just that the function computes the
+right string in isolation.
+
+Frontend suite: 282 → 301, four consecutive full `vitest run` passes.
+Backend: untouched again — every substep in Phase C, like A and B before
+it, is entirely a frontend concern.
+
+### Phase D — the purge, and the two questions it had to answer without cheating
+
+Phase D is one feature — delete a whole semester's data — but building it
+honestly meant answering two questions the earlier phases had deliberately
+left open, rather than quietly picking convenient defaults.
+
+**Question one: when should the purge even be offered?** The tempting
+shortcut is "whenever the library has more than one semester with data" —
+computed fresh every time `Library.tsx` loads. That's simple, but it's
+also naggy: an instructor deliberately grading Fall and Spring side by
+side for a week would see the offer every single visit until they
+purged, whether they wanted to or not.
+
+The spec's own words point at something narrower: "offered when a section
+is created under a new semester label." That's an *event*, not a
+*state* — it should fire once, right after the moment a genuinely new
+semester's first section is saved, and never again on an unrelated later
+visit. Events don't fit naturally inside a component that fetches its own
+data on mount the way `Library.tsx` already does, so the detection has to
+happen one level up, in `App.tsx`, which is the only place that sees the
+actual save happen:
+
+```typescript
+onSave={async (section) => {
+  const isNewSection = editingSection === null;
+  const priorSections = isNewSection ? await getAllSections() : [];
+
+  await saveSection(section);
+
+  const isNewSemester =
+    isNewSection &&
+    priorSections.length > 0 &&
+    !priorSections.some((s) => s.semester === section.semester);
+
+  if (sectionFormReturnsTo === 'library' && isNewSemester) {
+    setPendingSemesterOffer(section.semester);
+    setScreen('library');
+  } else {
+    returnFromSectionForm();
+  }
+}}
+```
+
+Two details earn their own line. `editingSection === null` — this only
+fires for a genuine creation, never an edit, matching "creating" in the
+spec's own wording exactly rather than the broader "a section's semester
+field changed." And `priorSections.length > 0` — the very first section
+ever created introduces a "new" semester by definition, but there is
+nothing to purge yet, so it must not trigger anything.
+
+The prop this produces, `pendingSemesterOffer`, only means anything for
+one `Library` mount. Every OTHER way back to the library — Cancel, "All
+sections," a normal Edit-and-save — routes through functions that
+explicitly clear it first:
+
+```typescript
+function toLibrary() {
+  setPendingSemesterOffer(null);
+  setScreen('library');
+}
+```
+
+Without that, a stale `true` from three navigations ago could resurface
+the offer on a visit that has nothing to do with any new semester.
+
+**Question two: how do you compare semester labels without pretending you
+know the answer to a question this project already flagged as open?**
+Plan.md §18 names semester-label drift as an unresolved risk: `Fall 2026`,
+`fall 2026` and `F26` might all mean the same thing to the instructor and
+look like three different things to the app. The obvious move when
+building the purge would be to normalize labels before comparing them —
+lowercase, trim, maybe strip punctuation — so all three fold into one
+purge candidate. That would be quietly *deciding* the open question by
+picking the most convenient answer, right inside the one feature that
+permanently deletes data.
+
+The purge does the opposite on purpose:
+
+```typescript
+export function otherSemesters(sections: Section[], currentSemester: string): string[] {
+  return [...new Set(sections.map((s) => s.semester))].filter((s) => s !== currentSemester);
+}
+```
+
+Exact string equality. If a semester is split across two spellings, both
+spellings show up as their own separate purge candidate, with their own
+counts, their own Review button, and their own unexported-assessment
+check. The drift becomes visible — two small cards instead of one — right
+at the moment it would otherwise cause the most damage: about to delete
+something. The real question (should the library treat these as one
+semester day to day?) stays exactly as open as it was; the purge simply
+declines to guess an answer to it.
+
+### The block-then-confirm shape, reused rather than reinvented
+
+`PurgeReviewPanel` has two branches, and the choice of which one to show
+follows a pattern the codebase already had, in `Results.tsx`'s duplicate-
+export panel: a hard block wins over a soft confirm, always, and a block
+offers no way past it except fixing the underlying problem — here, that
+means exporting the missing work first:
+
+```tsx
+if (preview.blockedBy.length > 0) {
+  return (
+    <div className="stack-sm">
+      <p>Can't purge <strong>{preview.semester}</strong> — ...</p>
+      <ul>{preview.blockedBy.map(({ section, assessment }) => (
+        <li key={assessment.id}>{sectionDisplayLabel(section)} · {assessment.quizName}</li>
+      ))}</ul>
+      <div className="banner-actions">
+        <button onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+```
+
+No "purge anyway" button exists in this branch, on purpose — the same
+reasoning `Results.tsx` already applies to two scripts matching one
+student: a block that can be talked past by one more tap isn't really a
+block, and an unexported assessment is unrecovered work, not a detail to
+override.
+
+Frontend suite: 301 → 322, five consecutive full `vitest run` passes.
+Backend: untouched — the fourth and final phase of this step, like the
+three before it, never touched anything outside the frontend.
+
+### The follow-up (13.22) — closing the two things Phase D left open on purpose
+
+Phase D's purge (above) deliberately declined to answer two questions
+rather than guess at them: whether semester labels should be free text or
+a picker, and whether the app should open on the library or jump straight
+into the last active assessment. Both got answered directly by the user
+the same week, which is the difference between "unsettled" and "not yet
+asked" — the purge's exact-string comparison was never a stand-in for a
+decision, just a way to avoid needing one before the real answer existed.
+
+**The picker is three buttons and a number field, not a dropdown, and
+that's a real choice, not a default.** Three terms — Spring, Summer,
+Autumn — because that's the actual calendar this pilot institution runs,
+not a generic four-season assumption with an unused Winter sitting in it.
+`sections.ts` gained the whole round trip as pure functions, the same
+shape `formatSemesterLabel`'s own comment insists on:
+
+```typescript
+export function formatSemesterLabel(season: SemesterSeason, year: number): string {
+  return `${season} ${year}`;
+}
+
+const SEMESTER_LABEL_RE = /^(Spring|Summer|Autumn) (\d{4})$/;
+
+export function parseSemesterLabel(label: string): { season: SemesterSeason; year: number } | null {
+  const match = SEMESTER_LABEL_RE.exec(label.trim());
+  if (!match) return null;
+  return { season: match[1] as SemesterSeason, year: Number(match[2]) };
+}
+```
+
+`formatSemesterLabel` is the *only* place a season and a year become the
+plain string every other function in this module — `groupSections`,
+`otherSemesters`, `purgePreview` — already operates on. Nothing downstream
+of it had to change at all: the purge still compares by exact string, the
+grouping still keys off the raw label, because a picker-produced value is
+just a string that happens to always be well-formed now.
+
+**The interesting part is what happens when it isn't.** A section created
+before the picker existed has a `semester` like `"Fall 2026"` or `"F26"` —
+neither matches `SEMESTER_LABEL_RE`, so `parseSemesterLabel` returns
+`null`. `SectionForm.tsx` has to pre-fill the picker from *something* when
+editing that section, and "throw" or "leave it blank" are both worse than
+just picking a reasonable default:
+
+```tsx
+function initialSeason(editing: Section | null): SemesterSeason {
+  return (editing && parseSemesterLabel(editing.semester)?.season) ?? currentSemesterSeason();
+}
+function initialYear(editing: Section | null): number {
+  return (editing && parseSemesterLabel(editing.semester)?.year) ?? new Date().getFullYear();
+}
+```
+
+`currentSemesterSeason()` is today's own season — not "the section's
+season," which for `"F26"` this code has no reliable way to recover
+anyway. This is safe specifically *because* nothing about a section
+changes just by opening its edit form: the picker shows a plausible
+starting point, but the stored `semester` string stays exactly `"F26"`
+until the instructor actually taps Save. Worst case, they don't notice
+and re-save "Autumn 2026" over a label that meant something slightly
+different to them — one wrong tap to correct, not silent data loss, and
+covered by its own test (`SectionForm.test.tsx`, "falls back to the
+CURRENT season/year when editing a section with an unparseable
+semester") alongside the mirror case — a section the picker itself
+produced round-trips back through the picker exactly, pre-filling both
+the right button and the right year.
+
+**Why the purge's exact-string comparison didn't get "fixed" now that a
+picker exists.** It would be tempting to declare label drift solved and
+simplify `otherSemesters`/`purgePreview` back to something normalized,
+now that new sections can't produce a case-mismatched label. But the
+purge has to work over data that's *already there* — a section saved
+last month as `"fall 2026"` doesn't retroactively become `"Autumn 2026"`
+just because the form that created it now behaves differently. The exact-
+string comparison was always doing double duty: guarding against drift
+the picker now prevents going forward, and drift that already happened
+and needs to stay visible rather than get silently merged during a
+delete. Only the first job went away.
+
+**The second question — where does the app open — turned out to already
+be answered.** `App.tsx`'s default screen state and its final fallback
+render both already resolved to `Library` from Phase A onward; nothing
+needed to change in code. What changed was that plan.md §18's "left for
+a real session to judge" language could finally be replaced with an
+actual decision, once asked directly rather than inferred.
+
+Frontend suite: 322 → 333 (6 new `sections.ts` cases for the picker's
+format/parse/current-season functions, 5 new `SectionForm.test.tsx` cases
+for the picker UI itself and its two fallback/round-trip behaviors), three
+consecutive full `vitest run` passes. Backend: untouched, same as every
+phase of this step before it.
+
+### 13.23 — deleting one wrongly-created section
+
+A section can be created by mistake — a typo'd course code caught too
+late, a section made under the wrong semester before the picker existed
+to prevent that kind of thing. Before this, the only way to remove it was
+either the semester purge (13.18, which takes the whole semester with it)
+or "Reset everything" (which takes the whole device with it). Both work,
+and both are wildly disproportionate to deleting one section.
+
+The store-level primitive already existed — `db.ts`'s `deleteSection()`
+was built ahead of Phase D specifically so the purge could reuse it
+(13.1's own comment says so directly), and it already cascades correctly:
+
+```typescript
+export async function deleteSection(sectionId: string): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction(['sections', 'assessments', 'records'], 'readwrite');
+  const assessments = await tx.objectStore('assessments').getAll();
+  const toDelete = assessments.filter((a) => a.sectionId === sectionId);
+  for (const assessment of toDelete) {
+    const records = await tx.objectStore('records').index('by-assessment').getAllKeys(assessment.id);
+    for (const key of records) {
+      await tx.objectStore('records').delete(key);
+    }
+    await tx.objectStore('assessments').delete(assessment.id);
+  }
+  await tx.objectStore('sections').delete(sectionId);
+  await tx.done;
+}
+```
+
+So the actual work here isn't storage — it's exposing this one primitive
+through a UI that treats it with the same seriousness the semester purge
+already does. `sections.ts` gained `sectionDeletePreview`, which is
+`purgePreview` narrowed from "every section under a semester" to "one
+section":
+
+```typescript
+export function sectionDeletePreview(
+  section: Section,
+  assessments: Assessment[],
+  recordCounts: Record<string, number>,
+): SectionDeletePreview {
+  const sectionAssessments = assessments.filter((a) => a.sectionId === section.id);
+  const recordCount = sectionAssessments.reduce((sum, a) => sum + (recordCounts[a.id] ?? 0), 0);
+  const blockedBy = sectionAssessments.filter((a) => a.exportedAt === null);
+  return { section, assessmentCount: sectionAssessments.length, recordCount, blockedBy };
+}
+```
+
+The interesting design question wasn't the code — it was whether a
+single-section delete should carry the same unexported-assessment guard
+the semester purge has. The user's own stated case ("if someone cleared a
+section wrongly") is usually a section with nothing in it yet, where the
+guard never fires anyway. But "usually" isn't "always": a section can
+also be created correctly, quizzed for a while, and then deleted by
+mistake — and at that point it's exactly as unrecoverable as a semester
+purge hitting ungraded work. There's no principled reason a smaller
+blast radius should come with a weaker safety property, so
+`SectionDeleteReviewPanel` reuses `Library.tsx`'s existing block-then-
+confirm shape verbatim — an unexported assessment blocks the delete
+outright, named, Cancel only; otherwise a plain confirm stating exactly
+what would go, no undo:
+
+```tsx
+{deletingSection?.id === section.id && (
+  <SectionDeleteReviewPanel
+    preview={sectionDeletePreview(section, assessments, counts)}
+    onCancel={() => setDeletingSection(null)}
+    onConfirm={handleDeleteSection}
+  />
+)}
+```
+
+Nothing about `deleteSection()` itself changed — this section is entirely
+new UI wrapped around a primitive and a preview-computation pattern that
+already existed, which is exactly why it shipped same-day rather than
+needing its own migration or schema thought.
+
+6 new `Library.test.tsx` cases: an empty section deleting immediately
+once confirmed, the confirm step alone adding no deletion, Cancel leaving
+it untouched, the cascade actually reaching assessments and records, a
+sibling section surviving, and the unexported guard naming the blocking
+quiz with Cancel only. Frontend suite: 333 → 339, three consecutive full
+`vitest run` passes. Backend: untouched.
+
+### 13.24 — deleting one wrongly-added quiz, and typing to confirm
+
+Two related asks landed together: an assessment deserves the same
+targeted delete a section just got, and both deletes should make the
+instructor actually type the name of what they're removing rather than
+trust one tap on a button they may not have read.
+
+**The assessment half is almost entirely repetition, on purpose.**
+`db.ts` gained `deleteAssessment()`, which is `deleteSection()` with one
+layer of cascade removed — no section, no sibling assessments, just this
+quiz and its own records:
+
+```typescript
+export async function deleteAssessment(assessmentId: string): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction(['assessments', 'records'], 'readwrite');
+  const records = await tx.objectStore('records').index('by-assessment').getAllKeys(assessmentId);
+  for (const key of records) {
+    await tx.objectStore('records').delete(key);
+  }
+  await tx.objectStore('assessments').delete(assessmentId);
+  await tx.done;
+}
+```
+
+`sections.ts` gained `assessmentDeletePreview` to match — `sectionDelete
+Preview` narrowed one level further, same idea as `purgePreview` /
+`sectionDeletePreview` before it. Three functions now share one shape:
+semester, section, assessment, each one level narrower than the last,
+each answering the same question ("what would this delete, and is any
+of it real unrecovered work") at a smaller scope.
+
+**Building that third, narrowest one is what surfaced a bug in the two
+that already existed.** `sectionDeletePreview` and `purgePreview` both
+blocked on this condition:
+
+```typescript
+const blockedBy = sectionAssessments.filter((a) => a.exportedAt === null);
+```
+
+Read literally: block if the assessment has never been exported. That
+was fine as long as "never exported" and "has real work worth
+protecting" happened to line up — which they always had, until this
+step gave someone a reason to delete a quiz the moment after creating
+it. A brand-new assessment is *always* unexported; it was created ten
+seconds ago. Under the rule above, a section holding even one empty,
+just-created, wrongly-added assessment could never be deleted — the
+exact case 13.23 exists to handle, blocked by a guard meant to protect
+something else entirely.
+
+The guard's *reasoning* was correct — plan.md §18 is explicit that
+"deleting unrecovered work silently is the one outcome this feature must
+never produce" — it was just checking the wrong proxy for "unrecovered
+work." Unexported and empty is not unrecovered work; unexported and
+holding real records is. The fix is one small function, used everywhere
+the guard fires:
+
+```typescript
+function isBlocking(assessment: Assessment, recordCounts: Record<string, number>): boolean {
+  return assessment.exportedAt === null && (recordCounts[assessment.id] ?? 0) > 0;
+}
+```
+
+`purgePreview`, `sectionDeletePreview`, and `assessmentDeletePreview` all
+route through it now — one rule, three scopes, instead of one rule that
+happened to be wrong at two of the three. Worth noticing why this test
+had to be rewritten rather than just supplemented: `Library.test.tsx`'s
+own "blocks the purge on an unexported assessment" case had always built
+its fixture with zero records — passing by coincidence under the old
+rule, then silently stopping to test the guard at all under the new one
+if left unchanged. Updated to give that fixture a real record, and a new
+sibling test pins the other direction directly: an empty, unexported
+assessment does **not** block.
+
+**The typed-confirm half is a genuinely new UI pattern for this app**,
+introduced once, shared twice:
+
+```tsx
+function TypedDeleteConfirm({ expected, itemLabel, confirmLabel, onConfirm, onCancel }: TypedDeleteConfirmProps) {
+  const [typed, setTyped] = useState('');
+  const matches = typed.trim() === expected;
+
+  return (
+    <div className="stack-sm">
+      <label className="field">
+        <span className="field-label">
+          Type the {itemLabel}’s name, <strong>{expected}</strong>, to confirm
+        </span>
+        <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={expected} />
+      </label>
+      <div className="banner-actions">
+        <button className="btn btn-danger-solid btn-sm" disabled={!matches} onClick={onConfirm}>
+          {confirmLabel}
+        </button>
+        <button className="btn btn-secondary btn-sm" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+```
+
+`SectionDeleteReviewPanel` passes `expected={sectionDisplayLabel(...)}`
+("CSE100-1"); `AssessmentDeleteReviewPanel` passes `expected={quizName}`
+("Quiz 1"). Neither semester purge nor "Reset everything" got this —
+only the two flows actually asked for, so a full-device wipe still reads
+its own long warning paragraph rather than gaining a new field nobody
+requested for it. State (`typed`) lives inside the shared component, not
+the parent — each panel only mounts while its own `deletingSection` /
+`deletingAssessment` state is non-null, so a fresh mount (and therefore a
+cleared input) happens automatically every time a delete flow reopens,
+with no explicit reset needed.
+
+19 new tests: `db.test.ts` (+1, `deleteAssessment`'s own cascade),
+`sections.test.ts` (+9 — direct coverage for `sectionDeletePreview` and
+`assessmentDeletePreview`, which had only ever been tested indirectly
+through `Library.test.tsx` before, plus the empty-assessment boundary
+case for both), `Library.test.tsx` (+9 net — the disabled-until-typed
+gate itself, and the assessment-delete describe block mirroring
+section-delete's own tests). Frontend suite: 339 → 358, three
+consecutive full `vitest run` passes. Backend: untouched.

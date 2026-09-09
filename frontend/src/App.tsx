@@ -1,66 +1,166 @@
+// step.md step 13.7 (plan.md §18) — a real screen enum replaces
+// `config === null` as the router. Library is the new entry point;
+// Section/Assessment forms create the durable things Scan/Results now
+// read by reference (assessmentId) rather than by a single held config.
 import { lazy, Suspense, useState } from 'react';
+import AssessmentForm, { type NewAssessmentInput } from './AssessmentForm';
+import { getAllSections, saveAssessment, saveSection } from './db';
+import Library from './Library';
 import Scan from './Scan';
-import Setup from './Setup';
-import type { RosterUpload } from './roster';
-import type { QuizConfig } from './types';
+import { assessmentConfig } from './sections';
+import SectionForm from './SectionForm';
+import type { Assessment, Section } from './types';
 
 // Lazy: ExcelJS is the bulk of Results' own weight (step.md step 9.4) and
 // is only ever needed on this one, rarely-visited screen — splitting it
 // out keeps it off the PWA's main precache, which the constantly-used
-// Setup/Scan/Review loop shouldn't have to pay for on first load.
+// Library/Scan/Review loop shouldn't have to pay for on first load.
 const Results = lazy(() => import('./Results'));
 
-function App() {
-  const [config, setConfig] = useState<QuizConfig | null>(null);
-  // step.md Phase B (plan.md §17) — the workbook Setup parsed and
-  // confirmed, if the instructor chose that mode. Mirrors what step 12.14
-  // persisted to IndexedDB; Setup itself decides whether that's a fresh
-  // upload or a restored one and hands the result up through onStart/
-  // onViewResults either way, so App.tsx doesn't need to know which.
-  const [rosterUpload, setRosterUpload] = useState<RosterUpload | null>(null);
-  const [screen, setScreen] = useState<'scan' | 'results'>('scan');
+type Screen = 'library' | 'section' | 'assessment' | 'scan' | 'results';
 
-  if (!config) {
+function App() {
+  const [screen, setScreen] = useState<Screen>('library');
+  // null = creating a new section; a real Section = editing it in place.
+  const [editingSection, setEditingSection] = useState<Section | null>(null);
+  // The section a new assessment is being created under, or the section
+  // owning whichever assessment is currently active on Scan/Results.
+  const [activeSection, setActiveSection] = useState<Section | null>(null);
+  const [activeAssessment, setActiveAssessment] = useState<Assessment | null>(null);
+  // Where SectionForm's Save/Cancel returns to: Library normally, but
+  // Results' "Re-pick" (13.11) reopens the section's own edit screen for
+  // its upload UI and must land back on Results, not bounce to the
+  // library and lose the assessment that was open.
+  const [sectionFormReturnsTo, setSectionFormReturnsTo] = useState<'library' | 'results'>('library');
+  // Step.md 13.18 — set for exactly one Library mount, immediately after
+  // creating (never editing) a section whose semester didn't exist among
+  // any prior section. Library uses it to offer purging the OTHER
+  // semesters once, then it's gone: every OTHER route back to Library
+  // (toLibrary(), Cancel, "All sections") clears it, so the offer can
+  // never resurface on a later, unrelated visit.
+  const [pendingSemesterOffer, setPendingSemesterOffer] = useState<string | null>(null);
+
+  function toLibrary() {
+    setPendingSemesterOffer(null);
+    setScreen('library');
+  }
+
+  function returnFromSectionForm() {
+    setPendingSemesterOffer(null);
+    setScreen(sectionFormReturnsTo === 'results' ? 'results' : 'library');
+  }
+
+  if (screen === 'section') {
     return (
-      <Setup
-        onStart={(startedConfig, upload) => {
-          setConfig(startedConfig);
-          setRosterUpload(upload);
+      <SectionForm
+        editing={editingSection}
+        onSave={async (section) => {
+          // Read BEFORE saving — this is what "did this semester already
+          // exist" has to compare against. Only a genuine creation
+          // (never an edit) can introduce a "new" semester in the sense
+          // 13.18 means; editing an existing section's semester field is
+          // deliberately out of scope (see step.md's own note on why).
+          const isNewSection = editingSection === null;
+          const priorSections = isNewSection ? await getAllSections() : [];
+
+          await saveSection(section);
+          if (sectionFormReturnsTo === 'results') setActiveSection(section);
+
+          const isNewSemester =
+            isNewSection &&
+            priorSections.length > 0 && // nothing to purge if this is the very first section ever
+            !priorSections.some((s) => s.semester === section.semester);
+
+          if (sectionFormReturnsTo === 'library' && isNewSemester) {
+            setPendingSemesterOffer(section.semester);
+            setScreen('library');
+          } else {
+            returnFromSectionForm();
+          }
         }}
-        // Setup can send you straight to Results for records saved in an
-        // earlier session, without passing through the scan screen —
-        // carrying whatever roster step 12.14 restored, same as onStart.
-        onViewResults={(saved, upload) => {
-          setConfig(saved);
-          setRosterUpload(upload);
-          setScreen('results');
-        }}
+        onCancel={returnFromSectionForm}
       />
     );
   }
 
-  if (screen === 'results') {
+  if (screen === 'assessment' && activeSection) {
+    return (
+      <AssessmentForm
+        section={activeSection}
+        onSave={async (input: NewAssessmentInput) => {
+          const assessment: Assessment = {
+            id: crypto.randomUUID(),
+            sectionId: activeSection.id,
+            ...input,
+            createdAt: new Date().toISOString(),
+            exportedAt: null,
+          };
+          await saveAssessment(assessment);
+          setActiveAssessment(assessment);
+          setScreen('scan');
+        }}
+        onCancel={toLibrary}
+      />
+    );
+  }
+
+  if (screen === 'scan' && activeSection && activeAssessment) {
+    return (
+      <Scan
+        config={assessmentConfig(activeAssessment, activeSection)}
+        assessmentId={activeAssessment.id}
+        sectionLabel={`${activeSection.courseCode}-${activeSection.label}`}
+        roster={activeSection.roster ?? null}
+        onShowResults={() => setScreen('results')}
+        onExit={toLibrary}
+      />
+    );
+  }
+
+  if (screen === 'results' && activeSection && activeAssessment) {
     return (
       <Suspense fallback={null}>
         <Results
-          config={config}
-          rosterUpload={rosterUpload}
-          onBack={() => setScreen('scan')}
-          onReset={() => {
-            setConfig(null);
-            setRosterUpload(null);
-            setScreen('scan');
+          config={assessmentConfig(activeAssessment, activeSection)}
+          assessmentId={activeAssessment.id}
+          section={activeSection}
+          assessment={activeAssessment}
+          onAssessmentExported={(exportedAssessment) => setActiveAssessment(exportedAssessment)}
+          onSectionUpdated={(updatedSection) => setActiveSection(updatedSection)}
+          onEditSection={() => {
+            setEditingSection(activeSection);
+            setSectionFormReturnsTo('results');
+            setScreen('section');
           }}
+          onBack={() => setScreen('scan')}
+          onLibrary={toLibrary}
         />
       </Suspense>
     );
   }
 
   return (
-    <Scan
-      config={config}
-      roster={rosterUpload?.roster ?? null}
-      onShowResults={() => setScreen('results')}
+    <Library
+      pendingSemesterOffer={pendingSemesterOffer}
+      onNewSection={() => {
+        setEditingSection(null);
+        setSectionFormReturnsTo('library');
+        setScreen('section');
+      }}
+      onEditSection={(section) => {
+        setEditingSection(section);
+        setSectionFormReturnsTo('library');
+        setScreen('section');
+      }}
+      onNewAssessment={(section) => {
+        setActiveSection(section);
+        setScreen('assessment');
+      }}
+      onOpenAssessment={(section, assessment) => {
+        setActiveSection(section);
+        setActiveAssessment(assessment);
+        setScreen('scan');
+      }}
     />
   );
 }

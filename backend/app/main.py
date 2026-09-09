@@ -309,6 +309,7 @@ async def scan(
             questions=questions,
             total=total,
             low_confidence_fields=low_confidence_fields,
+            unmatched_fields=marks_result.unmatched_fields,
         )
 
 
@@ -387,6 +388,12 @@ async def harvest_endpoint(
                 confirmed_fields.total,
                 store,
                 source,
+                # N31 — only the ORIGINAL scan's flags matter here: what
+                # was actually decoded before the instructor touched
+                # anything. confirmed_fields.unmatchedFields is never
+                # sent by the frontend (Review.tsx only populates this on
+                # `original`) and is ignored even if it were.
+                frozenset(original_fields.unmatchedFields),
             )
         except Exception as e:  # noqa: BLE001 — see the comment above
             # Type and message only: never the exception's own repr, which

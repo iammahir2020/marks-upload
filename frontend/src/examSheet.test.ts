@@ -26,6 +26,7 @@ const roster: ParsedRoster = {
 function record(overrides: Partial<StudentRecord>): StudentRecord {
   return {
     id: crypto.randomUUID(),
+    assessmentId: 'test-assessment',
     studentId: '1722112',
     serial: '1',
     questions: [

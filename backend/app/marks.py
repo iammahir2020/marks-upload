@@ -43,6 +43,16 @@ class MarksResult(BaseModel):
     questions: list[float | None] = []
     total: float | None = None
     low_confidence_fields: list[str] = []
+    # issues.md N31/N33 — a STRICT SUBSET of low_confidence_fields: which of
+    # those fields had glyphs (ink) present but no legal value scored above
+    # the decode floor, as opposed to a genuinely blank cell. Only
+    # meaningful on the `cnn` path (CNNRecognizer.read_marks is the only
+    # implementation that ever populates it — see local.py); a blank list
+    # elsewhere means "not applicable", not "nothing was unreadable".
+    # Field names are "q1".."qN"/"total", the same vocabulary
+    # low_confidence_fields already uses — never "serial", which N32
+    # addresses separately and is unaffected by this.
+    unmatched_fields: list[str] = []
 
 
 def legal_values(max_mark: float) -> set[float]:

@@ -32,6 +32,7 @@ const okResult: ScanResult = {
   ],
   total: { q: 0, value: 7 },
   low_confidence_fields: [],
+  unmatched_fields: [],
 };
 
 beforeEach(() => {
@@ -41,7 +42,7 @@ beforeEach(() => {
 
 describe('Review — sum check (7.3)', () => {
   it('recomputes live as marks are edited, without needing a save', () => {
-    render(<Review result={okResult} config={config} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
 
     expect(screen.getByText(/Sum check: 7 vs printed 7 ✓/)).toBeInTheDocument();
 
@@ -54,7 +55,7 @@ describe('Review — sum check (7.3)', () => {
 
 describe('Review — legal value check (7.4)', () => {
   it('rejects an illegal edit and blocks Confirm until it is fixed', () => {
-    render(<Review result={okResult} config={config} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
 
     const q1 = screen.getByDisplayValue('4');
     fireEvent.change(q1, { target: { value: '5.25' } });
@@ -77,11 +78,12 @@ describe('Review — failed scan (7.6)', () => {
     questions: [],
     total: null,
     low_confidence_fields: [],
+    unmatched_fields: [],
   };
 
   it('lands on an editable screen with the reason shown, plus Retake and Enter manually', () => {
     const onRetake = vi.fn();
-    render(<Review result={failedResult} config={config} onRetake={onRetake} onSaved={vi.fn()} />);
+    render(<Review result={failedResult} config={config} assessmentId="test-assessment" onRetake={onRetake} onSaved={vi.fn()} />);
 
     expect(screen.getByText(/Scan failed: table_not_found/)).toBeInTheDocument();
     // two Retake buttons exist — one in the failure banner, one in the
@@ -99,7 +101,7 @@ describe('Review — failed scan (7.6)', () => {
   });
 
   it('Enter manually dismisses the banner without losing entered data', () => {
-    render(<Review result={failedResult} config={config} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    render(<Review result={failedResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Enter manually' }));
     expect(screen.queryByText(/Scan failed:/)).not.toBeInTheDocument();
   });
@@ -108,7 +110,7 @@ describe('Review — failed scan (7.6)', () => {
 describe('Review — save path', () => {
   it('saves a valid record to IndexedDB and calls onSaved', async () => {
     const onSaved = vi.fn();
-    render(<Review result={okResult} config={config} onRetake={vi.fn()} onSaved={onSaved} />);
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
 
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
 
@@ -127,7 +129,7 @@ describe('Review — save path', () => {
   it('blocks save and asks for identity when both fields are empty', async () => {
     const emptyResult: ScanResult = { ...okResult, student_id: null, serial: null };
     const onSaved = vi.fn();
-    render(<Review result={emptyResult} config={config} onRetake={vi.fn()} onSaved={onSaved} />);
+    render(<Review result={emptyResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
 
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
 
@@ -157,6 +159,7 @@ describe('Review — harvesting on confirm (step 3r.6c)', () => {
       <Review
         result={okResult}
         config={config}
+        assessmentId="test-assessment"
         imagePreviewUrl="blob:fake-preview"
         onRetake={vi.fn()}
         onSaved={onSaved}
@@ -182,8 +185,20 @@ describe('Review — harvesting on confirm (step 3r.6c)', () => {
     const original = JSON.parse(formData.get('original') as string);
     const confirmed = JSON.parse(formData.get('confirmed') as string);
 
-    expect(original).toEqual({ studentId: '1912345', serial: '07', questions: [4, 3], total: 7 });
-    expect(confirmed).toEqual({ studentId: '1912345', serial: '07', questions: [4, 4], total: 7 });
+    expect(original).toEqual({
+      studentId: '1912345',
+      serial: '07',
+      questions: [4, 3],
+      total: 7,
+      unmatchedFields: [], // issues.md N31 — okResult carries none
+    });
+    expect(confirmed).toEqual({
+      studentId: '1912345',
+      serial: '07',
+      questions: [4, 4],
+      total: 7,
+      unmatchedFields: [], // meaningless on this side — see api.ts's comment
+    });
 
     vi.unstubAllGlobals();
   });
@@ -193,7 +208,7 @@ describe('Review — harvesting on confirm (step 3r.6c)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const onSaved = vi.fn();
-    render(<Review result={okResult} config={config} onRetake={vi.fn()} onSaved={onSaved} />);
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
 
     await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
@@ -208,7 +223,7 @@ describe('Review — harvesting on confirm (step 3r.6c)', () => {
 describe('Review — Total field validation (issues.md #4)', () => {
   it('blocks Confirm and never stores NaN when Total is not a number', async () => {
     const onSaved = vi.fn();
-    render(<Review result={okResult} config={config} onRetake={vi.fn()} onSaved={onSaved} />);
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
 
     const totalInput = screen.getByDisplayValue('7') as HTMLInputElement;
     fireEvent.change(totalInput, { target: { value: 'abc' } });
@@ -223,7 +238,7 @@ describe('Review — Total field validation (issues.md #4)', () => {
 
   it('blocks a Total above totalMax', async () => {
     const onSaved = vi.fn();
-    render(<Review result={okResult} config={config} onRetake={vi.fn()} onSaved={onSaved} />);
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
     fireEvent.change(screen.getByDisplayValue('7'), { target: { value: '99' } });
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
     expect(onSaved).not.toHaveBeenCalled();
@@ -239,7 +254,7 @@ describe('Review — incomplete student ID (issues.md N5)', () => {
 
   it('refuses to save an ID that still contains an unread digit', async () => {
     const onSaved = vi.fn();
-    render(<Review result={flagged} config={config} onRetake={vi.fn()} onSaved={onSaved} />);
+    render(<Review result={flagged} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
 
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
 
@@ -250,7 +265,7 @@ describe('Review — incomplete student ID (issues.md N5)', () => {
 
   it('saves once the instructor completes the ID', async () => {
     const onSaved = vi.fn();
-    render(<Review result={flagged} config={config} onRetake={vi.fn()} onSaved={onSaved} />);
+    render(<Review result={flagged} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
 
     fireEvent.change(screen.getByDisplayValue('12?4567'), { target: { value: '1234567' } });
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
@@ -262,7 +277,7 @@ describe('Review — incomplete student ID (issues.md N5)', () => {
     // plan.md §10: one identity field is enough. The rule is "no PARTIAL
     // id", not "an id is mandatory".
     const onSaved = vi.fn();
-    render(<Review result={flagged} config={config} onRetake={vi.fn()} onSaved={onSaved} />);
+    render(<Review result={flagged} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
 
     fireEvent.change(screen.getByDisplayValue('12?4567'), { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
@@ -275,6 +290,7 @@ describe('Review — conflict panel goes stale on edit (issues.md #5)', () => {
   it('drops a pending conflict when the serial is corrected', async () => {
     await saveRecord({
       id: 'earlier',
+      assessmentId: 'test-assessment',
       studentId: '1999999',
       serial: '7',
       questions: [{ q: 1, value: 1 }, { q: 2, value: 1 }],
@@ -284,7 +300,7 @@ describe('Review — conflict panel goes stale on edit (issues.md #5)', () => {
     });
 
     const onSaved = vi.fn();
-    render(<Review result={okResult} config={config} onRetake={vi.fn()} onSaved={onSaved} />);
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
 
     // Same serial as the saved record, different ID -> warn.
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
@@ -308,10 +324,58 @@ describe('Review — conflict panel goes stale on edit (issues.md #5)', () => {
   });
 });
 
+// Step.md 13.15 (Phase C) — the actual bug this closes: a shared serial or
+// student ID across two different courses is normal, and the identity
+// cross-check (plan.md §2's highest-value check) must not fire across
+// that boundary. Same shape as the conflict test above, but the "earlier"
+// record belongs to a DIFFERENT assessment.
+describe('Review — the identity cross-check is scoped to one assessment (step.md 13.15)', () => {
+  it('raises no conflict against a record with the same serial in a different assessment', async () => {
+    await saveRecord({
+      id: 'other-course',
+      assessmentId: 'a-different-assessment', // e.g. CSE100, while this Review is CSE203
+      studentId: '1999999',
+      serial: '07', // same serial okResult reads, normalized the same way
+      questions: [{ q: 1, value: 1 }, { q: 2, value: 1 }],
+      total: 2,
+      confirmed: true,
+      capturedAt: new Date().toISOString(),
+    });
+
+    const onSaved = vi.fn();
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/conflicts with an existing record/)).not.toBeInTheDocument();
+  });
+
+  it('still raises the conflict against a record in the SAME assessment', async () => {
+    // Same setup as above, but this time the earlier record genuinely
+    // belongs to the assessment being reviewed — the warning must survive.
+    await saveRecord({
+      id: 'same-course',
+      assessmentId: 'test-assessment',
+      studentId: '1999999',
+      serial: '07',
+      questions: [{ q: 1, value: 1 }, { q: 2, value: 1 }],
+      total: 2,
+      confirmed: true,
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+    await screen.findByText(/conflicts with an existing record/);
+  });
+});
+
 describe('Review — serial validation (issues.md N21)', () => {
   it('refuses a non-numeric serial', async () => {
     const onSaved = vi.fn();
-    render(<Review result={okResult} config={config} onRetake={vi.fn()} onSaved={onSaved} />);
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
 
     fireEvent.change(screen.getByDisplayValue('07'), { target: { value: '7a' } });
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
@@ -323,7 +387,7 @@ describe('Review — serial validation (issues.md N21)', () => {
 
   it('still allows saving with the serial cleared, given an ID', async () => {
     const onSaved = vi.fn();
-    render(<Review result={okResult} config={config} onRetake={vi.fn()} onSaved={onSaved} />);
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
     fireEvent.change(screen.getByDisplayValue('07'), { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
     await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
@@ -344,20 +408,20 @@ const roster: ParsedRoster = {
 
 describe('Review — roster awareness (12.10/12.11)', () => {
   it('shows nothing extra when no roster is attached', () => {
-    render(<Review result={okResult} config={config} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.queryByText(/not on your class list/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Monem Tazwar')).not.toBeInTheDocument();
   });
 
   it('shows the matched student\'s name next to a recognized ID already on the roster', () => {
-    render(<Review result={okResult} config={config} roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.getByText('Monem Tazwar')).toBeInTheDocument();
     expect(screen.queryByText(/not on your class list/i)).not.toBeInTheDocument();
   });
 
   it('flags an ID matching nobody on the roster, with no suggestion when none is unique', () => {
     const result: ScanResult = { ...okResult, student_id: '9999999' };
-    render(<Review result={result} config={config} roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    render(<Review result={result} config={config} assessmentId="test-assessment" roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.getByText(/not on your class list/i)).toBeInTheDocument();
     expect(screen.queryByText(/did you mean/i)).not.toBeInTheDocument();
   });
@@ -365,7 +429,7 @@ describe('Review — roster awareness (12.10/12.11)', () => {
   it('offers a tap-to-accept suggestion for a single-digit misread, and never applies it automatically', () => {
     // 1912345 misread as 1912395 (one substituted digit)
     const result: ScanResult = { ...okResult, student_id: '1912395' };
-    render(<Review result={result} config={config} roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    render(<Review result={result} config={config} assessmentId="test-assessment" roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
 
     expect(screen.getByText(/not on your class list/i)).toBeInTheDocument();
     expect(screen.getByText(/did you mean/i)).toBeInTheDocument();
@@ -385,7 +449,7 @@ describe('Review — roster awareness (12.10/12.11)', () => {
       student_id: '191234?',
       low_confidence_fields: ['student_id'],
     };
-    render(<Review result={result} config={config} roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    render(<Review result={result} config={config} assessmentId="test-assessment" roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
 
     expect(screen.getByText(/did you mean/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /use this/i }));
@@ -394,7 +458,7 @@ describe('Review — roster awareness (12.10/12.11)', () => {
 
   it('never treats a partial read as an exact match even if it looks close', () => {
     const result: ScanResult = { ...okResult, student_id: '191234?' };
-    render(<Review result={result} config={config} roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    render(<Review result={result} config={config} assessmentId="test-assessment" roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
     // Flagged, not silently accepted as Monem Tazwar.
     expect(screen.queryByText('Monem Tazwar')).not.toBeInTheDocument();
     expect(screen.getByText(/not on your class list/i)).toBeInTheDocument();
@@ -402,11 +466,78 @@ describe('Review — roster awareness (12.10/12.11)', () => {
 
   it('updates the roster flag live as the ID field is corrected by hand', () => {
     const result: ScanResult = { ...okResult, student_id: '9999999' };
-    render(<Review result={result} config={config} roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
+    render(<Review result={result} config={config} assessmentId="test-assessment" roster={roster} onRetake={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.getByText(/not on your class list/i)).toBeInTheDocument();
 
     fireEvent.change(screen.getByDisplayValue('9999999'), { target: { value: '2130643' } });
     expect(screen.queryByText(/not on your class list/i)).not.toBeInTheDocument();
     expect(screen.getByText('Salman Noor')).toBeInTheDocument();
+  });
+});
+
+describe('Review — an unmatched mark is explained, not just blank (issues.md N33)', () => {
+  const result: ScanResult = {
+    ...okResult,
+    questions: [
+      { q: 1, value: null }, // ink present, no legal value matched
+      { q: 2, value: 3 },
+    ],
+    total: { q: 0, value: null },
+    low_confidence_fields: ['q1', 'total'],
+    unmatched_fields: ['q1', 'total'],
+  };
+
+  it('shows a specific message on the flagged field instead of an unexplained blank', () => {
+    render(<Review result={result} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+
+    expect(screen.getAllByText(/couldn't match this to a legal value/i)).toHaveLength(2);
+  });
+
+  it('says nothing about a field that is merely blank, not unmatched', () => {
+    // Q2 is fine, and low_confidence_fields/unmatched_fields agree it's
+    // not flagged at all — the message must not appear for it.
+    render(<Review result={result} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    const q2 = screen.getByDisplayValue('3').closest('.field');
+    expect(q2).not.toHaveTextContent(/couldn't match this to a legal value/i);
+  });
+
+  it('clears the message the moment the instructor types anything, whether legal or not', () => {
+    render(<Review result={result} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    const q1Container = screen.getAllByText(/couldn't match this to a legal value/i)[0].closest('.field')!;
+    const q1Input = q1Container.querySelector('input')!;
+
+    fireEvent.change(q1Input, { target: { value: '4' } }); // a real, legal value from the script
+    expect(screen.queryAllByText(/couldn't match this to a legal value/i)).toHaveLength(1); // total's remains
+  });
+
+  it('never blocks Confirm on its own — only an actual illegal value does', () => {
+    // A blank field is valid-but-unverified (plan.md §10), same rule as
+    // every other optional field; this message is informational only.
+    render(<Review result={result} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /Confirm & next/ })).not.toBeDisabled();
+  });
+});
+
+// Step.md 13.13 — Review renders as a fixed overlay covering Scan.tsx's
+// own header, so the section context has to be shown here too, not just
+// on the screen underneath it.
+describe('Review — section context (step.md 13.13)', () => {
+  it('shows the section label when provided', () => {
+    render(
+      <Review
+        result={okResult}
+        config={config}
+        assessmentId="test-assessment"
+        sectionLabel="CSE203-2 · Quiz 1"
+        onRetake={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('CSE203-2 · Quiz 1')).toBeInTheDocument();
+  });
+
+  it('renders nothing extra when no section label is given', () => {
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(document.querySelector('.eyebrow')).not.toBeInTheDocument();
   });
 });

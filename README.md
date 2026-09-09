@@ -12,6 +12,25 @@ The backend runs on the instructor's own laptop and the phone reaches it
 over the local network; session state lives in the browser's IndexedDB
 until it's exported.
 
+Two of those bounds have since been picked up deliberately. Hosting was
+added as an optional demo (step 11 — the app is live, and the laptop
+workflow is still the supported path), and **"one quiz session" is now
+one semester**: step 13 / plan.md §18 replaces the single-session store
+with sections and assessments, so a faculty member teaching several
+sections can grade all of them without one destroying another. **All
+four phases are built (2026-09-10)** — a second quiz genuinely no longer
+overwrites the first, a section's class list is attached once and reused
+by every quiz in it with staleness made visible (a provenance line +
+Re-pick) rather than assumed away, scanning into the wrong section is
+guarded three ways (a persistent context header, a confirmation before
+resuming an assessment last touched before today, and duplicate
+detection scoped to the assessment), and a semester ends with a real,
+scoped purge — offered only when a new semester's first section is
+created, blocked outright while any assessment hasn't been exported, and
+comparing semester labels by exact string so drift never gets silently
+folded into one purge decision. A server-side database and multi-user
+auth stay deliberately out.
+
 ## How it works
 
 ```
@@ -134,13 +153,13 @@ assuming any component is finished: this project holds a strict
 up and passing tests are still honestly marked *in progress* because
 their real-world verification bar hasn't been cleared.
 
-In broad strokes, as of 2026-09-07:
+In broad strokes, as of 2026-09-10:
 
-- **Working end to end.** Setup → camera capture → upload queue → review
-  → save → results → Excel export all run, against both recognizer paths.
-  Backend: **246 pytest tests passing**. Frontend: **238 vitest tests
-  passing**. Passing suites are not the same as a defect-free app — see
-  the known-issues bullet below.
+- **Working end to end.** Library → section/assessment setup → camera
+  capture → upload queue → review → save → results → Excel export all
+  run, against both recognizer paths. Backend: **259 pytest tests
+  passing**. Frontend: **358 vitest tests passing**. Passing suites are
+  not the same as a defect-free app — see the known-issues bullet below.
 - **Verified against real photos.** 30 test images including an 18-photo
   batch from an actual class, which exposed and got fixes for two real
   detection bugs (a neighbouring script's ID row, visible at the frame
@@ -174,6 +193,47 @@ In broad strokes, as of 2026-09-07:
   shipping, not left latent. See [plan.md §17](plan.md) and step.md's step
   12. What's left is real-phone verification of the file picker and
   download, which needs the user's own participation.
+- **Multi-course, multi-section persistence (step 13) — ALL FOUR PHASES
+  DONE, 2026-09-10.** A faculty member teaching several sections (the
+  real case: one CSE100, one CSE200, two CSE203) can now grade any of
+  them, in any order, without one destroying another — `Setup.tsx` is
+  retired outright, replaced by a `Library` screen (semester → course →
+  sections → assessments) plus separate Section and Assessment forms. A
+  class list is attached once per section rather than re-uploaded every
+  quiz, and every workbook export shows which copy of the file it's
+  writing into with a **Re-pick** option, re-caching what it just wrote
+  so a later quiz in the same section builds on an earlier one's sheet
+  instead of silently losing it — verified end to end by actually
+  exporting two quizzes into one section and reloading the real
+  downloaded bytes. Grading into the wrong section is guarded three ways:
+  a persistent context header on every screen (including Review's own
+  overlay, which otherwise hides it), a confirmation before resuming an
+  assessment last touched before today, and duplicate detection scoped to
+  the assessment so a shared serial between two courses no longer raises
+  a false conflict. The plain download is now named
+  `CSE203-2_Quiz-1_2026-09-09.xlsx`. And a semester ends with a real,
+  scoped purge — offered only when a section is created under a
+  genuinely new semester label (never a timer, never automatic), blocked
+  outright while any assessment in that semester hasn't been exported
+  yet (named individually), and comparing semester labels by exact
+  string rather than normalizing them, so a typo'd variant like
+  "fall 2026" shows up as its own separate purge candidate instead of
+  being silently folded into "Fall 2026." The old full "Reset everything"
+  wipe is untouched, staying as the blunt escape hatch alongside the new
+  scoped purge. **A same-day follow-up (13.22)** turned the semester
+  field into a Spring/Summer/Autumn-plus-year picker instead of free
+  text — closing the label-drift risk above for all new data — and
+  confirmed the app opens on the library. **13.23** added a per-section
+  **Delete section** button, for removing one mis-created section without
+  purging a whole semester or wiping the device — reusing the same
+  cascade delete and block-then-confirm shape the semester purge already
+  had. **13.24** added the matching **Delete quiz** button for one
+  wrongly-added assessment, and made both delete flows require *typing*
+  the section or quiz name back before the confirm button even enables —
+  building it surfaced a real gap (issues.md N36) where the delete guard
+  would have made a section with even one brand-new assessment permanently
+  undeletable, fixed the same day. See [plan.md §18](plan.md) and step.md's
+  step 13.
 - **Not finished.** Step 10 (full rehearsal) hasn't started. The test set
   is still short of its own target for awkward conditions. The CNN track's
   remaining work — fine-tuning on harvested handwriting, and a real
@@ -182,14 +242,29 @@ In broad strokes, as of 2026-09-07:
   now that the CNN is the default, not less: it is the only thing that
   would validate the choice on marks and serial rather than on the ID.
 - **Known issues are tracked**, not silently carried:
-  [issues.md](issues.md) is the open-defect register. 49 findings across two
-  audits plus two found while deploying; **38 fixed** on 2026-08-31, including both HIGH ones and every
-  finding that touches the default `cnn` path. **8 remain open** — four Low deploy/infra items, plus four
-  from the first live grading session (two High), which are the ones to
-  work on next. Backend and frontend suites went 148/79 →
-  **246/119** across the audits, and both passed before the audits too,
-  which is why a full read-through found 44 things they did not. Frontend
-  has since grown to **238** with step 12's roster round trip (all four phases, plus five fixes from live phone testing).
+  [issues.md](issues.md) is the open-defect register. 51 findings across two
+  audits, plus the first live grading session, one deploy-time find, and
+  two found while building later features (N35, N36);
+  **46 fixed**, including both HIGH ones from the desk audits and, as of
+  2026-09-09, both HIGH ones the live session found too (**N31**:
+  harvesting mislabelled a crop when the instructor worked around an
+  out-of-range mark; **N32**: a confident serial digit was discarded
+  along with an uncertain sibling — 11 of 17 real serials survived where
+  14 of 17 were correct at raw argmax). **N35** (2026-09-10): a mark
+  written with a leading zero ("03", "05") could never decode on the
+  default `cnn` path — the decoder only ever scored a legal value's
+  un-padded digit rendering, so no candidate at any length could match.
+  **N36** (2026-09-10): the section/semester delete guards blocked on
+  "not yet exported" alone, which would have made a section holding even
+  one brand-new, wrongly-added assessment permanently undeletable — found
+  and fixed while building the per-assessment delete feature that would
+  have shipped broken by it. **5 remain open** — four Low
+  deploy/infra items, plus one Medium (N34, live detection failures can't
+  be debugged) left open **by explicit choice**: asked to pick a fix
+  direction, the answer was to defer it rather than build any of the
+  options. Backend and frontend suites went 148/79 →
+  **259/358**, and both passed before the audits too, which is why a full
+  read-through found 46 things they did not.
 - **No whole script is stored anywhere.** A scan is processed in a
   per-request temp directory and discarded. The one exception used to be
   `backend/debug_uploads/`, a temporary step-6 phone-debugging capture that
@@ -241,7 +316,7 @@ marks-upload/
 │   │   ├── accuracy.py · marks_accuracy.py          # accuracy harnesses against testset/
 │   │   ├── inspect_preprocess.py                    # visual check of preprocessing output
 │   │   └── checkpoints/digit_cnn.onnx               # the trained model actually used at runtime
-│   ├── tests/               # 246 pytest tests; Gemini always mocked from fixtures/, never live
+│   ├── tests/               # 256 pytest tests; Gemini always mocked from fixtures/, never live
 │   ├── detect.py            # CLI harness: run detection on one image, write debug overlays
 │   ├── batch_detect.py      # Same, across the whole testset in one run
 │   ├── id_ocr_accuracy.py   # Tesseract ID-accuracy harness
@@ -255,13 +330,21 @@ marks-upload/
 ├── frontend/
 │   ├── vite.config.ts       # PWA, HTTPS via basic-ssl with LAN IPs, LAN binding, vitest config
 │   └── src/
-│       ├── App.tsx          # Screen state machine — no router: Setup -> Scan -> Results
-│       ├── Setup.tsx        # Quiz config + a "How this works" explainer
+│       ├── App.tsx          # Screen enum (step 13) — Library -> Section/Assessment forms
+│       │                    # -> Scan -> Results; no router
+│       ├── Library.tsx      # Step 13 — entry point: semester -> course -> sections ->
+│       │                    # assessments; also "How this works" + "Reset everything"
+│       ├── SectionForm.tsx  # Step 13 — course/label/ID digits, plus the optional
+│       │                    # class-list workbook upload (a section-level property now);
+│       │                    # semester is a Spring/Summer/Autumn + year picker (13.22)
+│       ├── AssessmentForm.tsx # Step 13 — one quiz's name/question count/maxes
+│       ├── sections.ts      # Step 13 — pure grouping/sorting/labelling, no IndexedDB;
+│       │                    # 13.22 — the semester picker's format/parse helpers
 │       ├── Scan.tsx         # Camera, framing guide, upload queue; hosts Review as an overlay
 │       ├── Review.tsx       # Confirm/edit screen — identity fields first and largest
-│       ├── Results.tsx      # Results table, inline editing, Excel export, "Reset everything"
+│       ├── Results.tsx      # Results table, inline editing, Excel export
 │       ├── api.ts           # scanImage() and harvestScan() clients
-│       ├── db.ts            # IndexedDB session store (idb) + resetAll()
+│       ├── db.ts            # IndexedDB store (idb) — sections/assessments/records + resetAll()
 │       ├── scanQueue.ts     # Upload-queue reducer + nextToReview()
 │       ├── validateConfig.ts · validateMarks.ts · results.ts   # Pure, unit-tested logic
 │       ├── roster.ts        # Step 12 — class-list parsing: header matching, the
@@ -272,8 +355,8 @@ marks-upload/
 │       │                    # thrown rules, collision detection, the actual sheet writer
 │       ├── rosterMatch.ts   # Step 12 — live "is this ID on the list" matching, plus a
 │       │                    # single-candidate suggestion offered only when it's unique
-│       ├── types.ts         # Mirrors backend/app/models.py
-│       └── *.test.ts(x)     # 238 vitest tests
+│       ├── types.ts         # Mirrors backend/app/models.py; Section/Assessment (step 13)
+│       └── *.test.ts(x)     # 358 vitest tests
 │
 ├── testset/                 # 30 labelled test photographs
 │   ├── images/               # 2 originals, 7 phone captures, 18 from a real class, 3 synthetic
@@ -552,8 +635,8 @@ request succeeded. API Gateway sidesteps Function URL auth entirely. See
 ### Tests
 
 ```bash
-cd backend && source venv/bin/activate && pytest   # 246 tests, fully offline
-cd frontend && npx vitest run                      # 238 tests (npx vitest for watch mode)
+cd backend && source venv/bin/activate && pytest   # 256 tests, fully offline
+cd frontend && npx vitest run                      # 358 tests (npx vitest for watch mode)
 cd frontend && npm run lint                        # oxlint
 cd frontend && npm run build
 ```
@@ -697,9 +780,42 @@ reasoning.
 
 ## Deliberately not built
 
-Client-side detection with OpenCV.js · a server-side database or
-multi-quiz history · multi-user auth · a template generator (the grid is
-a Docs table pasted by hand, on purpose).
+Client-side detection with OpenCV.js · a **server-side** database ·
+multi-user auth · a template generator (the grid is a Docs table pasted
+by hand, on purpose) · an override for a mark above a question's printed
+max (raised 2026-09-09, not yet specced — see below).
+
+**Local multi-quiz history came off this list on 2026-09-09.** It used to
+read "a server-side database or multi-quiz history" as one item; they are
+two. Keeping a semester of quizzes in the browser's own IndexedDB needs no
+server, no account and no new privacy surface beyond the device the marks
+are already on — and without it, a faculty member teaching four sections
+must delete one section's marks to grade the next. Specced as step 13 /
+plan.md §18 (sections and assessments, the class list attached to the
+section, a prompted end-of-semester purge). **All four phases are built
+(2026-09-10)**: sections and assessments replace the single-value config
+store, a class list is attached once per section and reused by every
+quiz in it, every workbook export shows which copy of the file it's
+writing into with a Re-pick option, grading into the wrong section is
+guarded by a persistent context header, a confirmation when resuming an
+older assessment, and duplicate detection scoped to the assessment, and
+a semester ends with a real, scoped, prompted purge — never automatic,
+blocked outright while any assessment hasn't been exported, comparing
+semester labels by exact string so a typo'd variant is never silently
+folded into the wrong purge. A server-side database and multi-user auth
+stay deferred for the original reason.
+
+**A deliberate override for a mark above a question's printed max —
+raised 2026-09-09, not yet specced or built.** Today a mark outside
+`[0, max]` can't be saved at all: it's rejected on both client and server,
+by design, so a misread or a wrong printed max always ends up a flagged
+blank rather than a silently-stored wrong number. What's missing is a way
+for the instructor to genuinely mean it — a real bonus mark that legitimately
+exceeds the max. Right now the only way to record one is to hand-edit the
+exported `.xlsx` afterward, outside the app entirely. See [plan.md §13](plan.md)
+for the two directions being weighed (a per-question tolerance vs. an
+explicit per-field override) and the open question of what the sum check
+compares against once one question can legitimately exceed its own max.
 
 **Roster import is no longer on this list.** It was deferred "to avoid
 file-upload complexity" until it became clear the roster already exists —
