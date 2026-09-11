@@ -52,6 +52,17 @@ interface LibraryProps {
   // means no offer to show at all. See App.tsx's own comment on how this
   // stays a genuine one-shot rather than resurfacing on a later visit.
   pendingSemesterOffer?: string | null;
+  // Step.md 14.4/14.9 — the landing page's own "way back": a returning
+  // instructor never sees it again unprompted, but the explanation must
+  // stay reachable for the moment it's actually wanted (showing a
+  // colleague what this is). Lives as an always-visible "About" button in
+  // the header (14.9) — it used to be a link inside the "How this works"
+  // disclosure below, which collapses itself the moment a first section
+  // exists, making it undiscoverable in exactly the state most real usage
+  // is in. Optional so every existing render call and test stays valid
+  // without passing a callback that isn't relevant to what they're
+  // testing.
+  onShowLanding?: () => void;
   onNewSection: () => void;
   onEditSection: (section: Section) => void;
   onNewAssessment: (section: Section) => void;
@@ -80,6 +91,7 @@ const HOW_IT_WORKS = [
 
 export default function Library({
   pendingSemesterOffer = null,
+  onShowLanding,
   onNewSection,
   onEditSection,
   onNewAssessment,
@@ -215,9 +227,22 @@ export default function Library({
           <span className="eyebrow">Script Mark Scanner</span>
           <h1>Your sections</h1>
         </div>
-        <button className="btn btn-primary btn-sm" onClick={onNewSection}>
-          + New section
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {/* Step.md 14.4/14.9 — always visible, not tucked inside the
+              collapsed "How this works" disclosure below (which closes
+              itself the moment a first section exists, per its own
+              `open={sections.length === 0}`). Found from real use: a
+              way back that only exists while collapsed is, for practical
+              purposes, no way back at all. */}
+          {onShowLanding && (
+            <button type="button" className="btn btn-secondary btn-sm" onClick={onShowLanding}>
+              About
+            </button>
+          )}
+          <button className="btn btn-primary btn-sm" onClick={onNewSection}>
+            + New section
+          </button>
+        </div>
       </div>
 
       {/* Step.md 13.14 — the one confirmation this screen adds a tap for,

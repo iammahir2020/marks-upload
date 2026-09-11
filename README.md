@@ -158,7 +158,7 @@ In broad strokes, as of 2026-09-10:
 - **Working end to end.** Library → section/assessment setup → camera
   capture → upload queue → review → save → results → Excel export all
   run, against both recognizer paths. Backend: **259 pytest tests
-  passing**. Frontend: **358 vitest tests passing**. Passing suites are
+  passing**. Frontend: **383 vitest tests passing**. Passing suites are
   not the same as a defect-free app — see the known-issues bullet below.
 - **Verified against real photos.** 30 test images including an 18-photo
   batch from an actual class, which exposed and got fixes for two real
@@ -234,6 +234,21 @@ In broad strokes, as of 2026-09-10:
   would have made a section with even one brand-new assessment permanently
   undeletable, fixed the same day. See [plan.md §18](plan.md) and step.md's
   step 13.
+- **A landing page (step 14) is specced and Phase A is built, 2026-09-10.**
+  The link used to open straight into "Your sections", a screen that
+  assumes the reader already knows why they'd want a section — this adds
+  the story before the tool, dark and mobile-first (Raycast's structure,
+  not its palette), pre-rendered at build time rather than server-rendered
+  once Phase B lands, specifically so it stays fast on a flaky connection
+  without putting a Lambda cold start in front of the first paint. **Phase
+  A** (the seven-section page, its own scoped dark tokens, and first-visit
+  entry/exit via a `localStorage` flag — never shown again once dismissed,
+  with a way back from Library's "How this works") is done and
+  client-rendered. **Phases B (static-first delivery: zero runtime JS,
+  prerendered HTML) and C (the animated scan) are not built yet** — the
+  current build is intentionally heavier than the eventual budget, since
+  Phase A still ships the page as an ordinary screen in the bundle. See
+  [plan.md §19](plan.md) and step.md's step 14.
 - **Not finished.** Step 10 (full rehearsal) hasn't started. The test set
   is still short of its own target for awkward conditions. The CNN track's
   remaining work — fine-tuning on harvested handwriting, and a real
@@ -263,7 +278,7 @@ In broad strokes, as of 2026-09-10:
   be debugged) left open **by explicit choice**: asked to pick a fix
   direction, the answer was to defer it rather than build any of the
   options. Backend and frontend suites went 148/79 →
-  **259/358**, and both passed before the audits too, which is why a full
+  **259/383**, and both passed before the audits too, which is why a full
   read-through found 46 things they did not.
 - **No whole script is stored anywhere.** A scan is processed in a
   per-request temp directory and discarded. The one exception used to be
@@ -316,7 +331,7 @@ marks-upload/
 │   │   ├── accuracy.py · marks_accuracy.py          # accuracy harnesses against testset/
 │   │   ├── inspect_preprocess.py                    # visual check of preprocessing output
 │   │   └── checkpoints/digit_cnn.onnx               # the trained model actually used at runtime
-│   ├── tests/               # 256 pytest tests; Gemini always mocked from fixtures/, never live
+│   ├── tests/               # 259 pytest tests; Gemini always mocked from fixtures/, never live
 │   ├── detect.py            # CLI harness: run detection on one image, write debug overlays
 │   ├── batch_detect.py      # Same, across the whole testset in one run
 │   ├── id_ocr_accuracy.py   # Tesseract ID-accuracy harness
@@ -356,7 +371,15 @@ marks-upload/
 │       ├── rosterMatch.ts   # Step 12 — live "is this ID on the list" matching, plus a
 │       │                    # single-candidate suggestion offered only when it's unique
 │       ├── types.ts         # Mirrors backend/app/models.py; Section/Assessment (step 13)
-│       └── *.test.ts(x)     # 358 vitest tests
+│       ├── Landing.tsx      # Step 14 (Phase A) — the landing page: seven sections,
+│       │                    # purely presentational, no hooks (renderToStaticMarkup-ready)
+│       ├── ScanGraphic.tsx  # Step 14 — the hero/how-it-works visual; a static
+│       │                    # illustration for now, built so Phase C can animate it
+│       ├── landing.css      # Step 14 — the landing page's own dark palette, scoped
+│       │                    # under `.landing` only, never leaking into :root
+│       ├── landing.ts       # Step 14 — hasSeenLanding/markLandingSeen, a single
+│       │                    # localStorage key (sync, unlike the IndexedDB meta store)
+│       └── *.test.ts(x)     # 383 vitest tests
 │
 ├── testset/                 # 30 labelled test photographs
 │   ├── images/               # 2 originals, 7 phone captures, 18 from a real class, 3 synthetic
@@ -635,8 +658,8 @@ request succeeded. API Gateway sidesteps Function URL auth entirely. See
 ### Tests
 
 ```bash
-cd backend && source venv/bin/activate && pytest   # 256 tests, fully offline
-cd frontend && npx vitest run                      # 358 tests (npx vitest for watch mode)
+cd backend && source venv/bin/activate && pytest   # 259 tests, fully offline
+cd frontend && npx vitest run                      # 383 tests (npx vitest for watch mode)
 cd frontend && npm run lint                        # oxlint
 cd frontend && npm run build
 ```

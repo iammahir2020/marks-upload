@@ -106,15 +106,29 @@ function sanitizeFilenamePart(raw: string): string {
 // Step.md 13.16 (Phase C) — the plain download used to be named from the
 // quiz alone ("Quiz 1.xlsx"), so a semester of exports across several
 // sections landed in one Drive folder as "Quiz 1.xlsx", "Quiz 1 (1).xlsx",
-// "Quiz 1 (2).xlsx" with nothing to tell them apart. Section and date now
-// carry the identity: "CSE203-2_Quiz-1_2026-09-09.xlsx". Spaces become
-// hyphens within a part (so "Quiz 1" -> "Quiz-1") while underscores
-// separate the three parts, matching the exact shape named in plan.md §18.
+// "Quiz 1 (2).xlsx" with nothing to tell them apart. Course code, section,
+// quiz name and export date now carry the identity, each its own
+// underscore-separated part: "CSE203_2_Quiz-1_10_09_2026.xlsx". The date
+// is DD_MM_YYYY specifically (not ISO) at the user's request.
+//
+// This is also what the workbook-marksheet export path (finishWorkbookExport,
+// below) downloads as now, not the instructor's original file name — that
+// used to download AS `section.workbook.fileName` unchanged, so every export
+// of that path produced the exact same download name and the browser kept
+// appending "(1)", "(2)", "(3)"... rather than ever overwriting. Reusing this
+// same identity-carrying name fixes that the same way it already worked for
+// the plain download; `section.workbook.fileName` itself is untouched — it's
+// still the cached copy's own metadata, shown in the "from <fileName>" line
+// below and unrelated to what a browser saves a download as.
 function exportFilename(section: Section, quizName: string): string {
-  const sectionPart = sanitizeFilenamePart(`${section.courseCode}-${section.label}`).replace(/\s+/g, '-');
+  const coursePart = sanitizeFilenamePart(section.courseCode).replace(/\s+/g, '-');
+  const sectionPart = sanitizeFilenamePart(section.label).replace(/\s+/g, '-');
   const quizPart = sanitizeFilenamePart(quizName).replace(/\s+/g, '-').slice(0, 80);
-  const datePart = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  return `${sectionPart || 'section'}_${quizPart || 'quiz'}_${datePart}.xlsx`;
+  const now = new Date();
+  const dd = String(now.getDate()).padStart(2, '0');
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const datePart = `${dd}_${mm}_${now.getFullYear()}`;
+  return `${coursePart || 'course'}_${sectionPart || 'section'}_${quizPart || 'quiz'}_${datePart}.xlsx`;
 }
 
 interface ResultsProps {
@@ -283,10 +297,12 @@ export default function Results({
       writeTotalsColumn(pending.workbook, section.roster, finalName, config.totalMax, pending.result);
     }
     const buffer = await pending.workbook.xlsx.writeBuffer();
-    // The updated copy of the instructor's own file — same filename, so it
-    // reads as "the same file, now with this quiz added" rather than a
-    // new, separately-named artifact to keep track of.
-    triggerDownload(buffer, section.workbook.fileName);
+    // Named the same way the plain download is (course_section_quiz_date),
+    // not as `section.workbook.fileName` — see exportFilename's own comment
+    // on why reusing the instructor's original file name here made every
+    // re-export of this path collide with the last one in the browser's
+    // downloads, appending "(1)", "(2)", "(3)"... indefinitely.
+    triggerDownload(buffer, exportFilename(section, config.quizName));
 
     // Step.md 13.12 — re-cache. What was just written becomes the
     // section's new stored copy, so a later quiz in this section builds

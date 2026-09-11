@@ -236,8 +236,9 @@ describe('Results — export (9.4)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Download Excel' }));
     await waitFor(() => expect(capturedFilename).toBeDefined());
 
-    const today = new Date().toISOString().slice(0, 10);
-    expect(capturedFilename).toBe(`CSE203-2_Quiz-1_${today}.xlsx`);
+    const now = new Date();
+    const today = `${String(now.getDate()).padStart(2, '0')}_${String(now.getMonth() + 1).padStart(2, '0')}_${now.getFullYear()}`;
+    expect(capturedFilename).toBe(`CSE203_2_Quiz-1_${today}.xlsx`);
 
     clickSpy.mockRestore();
     restore();
@@ -434,6 +435,38 @@ describe('Results — class-list workbook export (12.5-12.8)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /continue/i }));
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
+    restore();
+  });
+
+  // The bug this fixes: downloading this path AS `section.workbook.fileName`
+  // ("roster.xlsx") every time meant every export of the same section
+  // collided with the last one in the browser's downloads, which silently
+  // renames to "roster (1).xlsx", "roster (2).xlsx"... rather than ever
+  // overwriting. The download now carries the same course/section/quiz/date
+  // identity the plain "Download Excel" button already used (step.md 13.16).
+  it('names the class-marksheet download by identity, not the instructor’s original file name', async () => {
+    const section = await sectionWithRoster();
+    await saveRecord(makeRecord({}));
+    const restore = mockDownload();
+    let capturedFilename: string | undefined;
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        capturedFilename = this.download;
+      });
+
+    renderResults({ section, config: { ...config, quizName: 'Quiz 1' } });
+
+    fireEvent.click(await screen.findByRole('button', { name: /export into class marksheet/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /continue/i }));
+    await waitFor(() => expect(capturedFilename).toBeDefined());
+
+    const now = new Date();
+    const today = `${String(now.getDate()).padStart(2, '0')}_${String(now.getMonth() + 1).padStart(2, '0')}_${now.getFullYear()}`;
+    expect(capturedFilename).toBe(`CSE211L_1_Quiz-1_${today}.xlsx`);
+    expect(capturedFilename).not.toBe('roster.xlsx');
+
+    clickSpy.mockRestore();
     restore();
   });
 

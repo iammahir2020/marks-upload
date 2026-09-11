@@ -7401,3 +7401,823 @@ case for both), `Library.test.tsx` (+9 net — the disabled-until-typed
 gate itself, and the assessment-delete describe block mirroring
 section-delete's own tests). Frontend suite: 339 → 358, three
 consecutive full `vitest run` passes. Backend: untouched.
+
+## Step 14 — Landing page (all three phases code-done; real-device verification still needed)
+
+**Honestly labelled**: all three phases are code-done — the page exists,
+reads correctly, can be reached and left, ships prerendered with zero
+runtime JS of its own, and now animates the "How it works" section
+through five scroll-linked states. What's genuinely not done yet is
+checking any of that animation's timing and layout on a real phone —
+jsdom can't simulate scrolling or scroll-driven CSS animations at all, so
+that verification is still outstanding, exactly as the spec itself says
+it must be checked.
+
+### The problem this solves, and the one thing worth understanding first
+
+Every screen before this one assumes the reader already knows why
+they'd want a section. `Library.tsx`'s "Your sections" is a genuinely
+good screen for that reader — but the very first thing anyone sees when
+they open the link is someone who doesn't yet know that. Step 14 exists
+to answer three questions in order, before the tool ever asks anyone to
+do anything: what is this, how does it work, what does it refuse to do.
+
+### Why the tokens live in their own file, and why they can't touch `:root`
+
+`landing.css` is deliberately a separate file from `index.css`, and
+every custom property in it is declared under `.landing`, never on
+`:root`:
+
+```css
+.landing {
+  color-scheme: dark;
+  --lp-bg: #0f0f0d; /* == index.css's dark --background */
+  --lp-surface: #181815; /* == index.css's dark --surface */
+  ...
+}
+```
+
+The reason isn't tidiness. `index.css` already has a `--background` that
+means something specific — the app's *current* theme, light or dark,
+depending on the reader's OS setting. If `landing.css` had redefined
+`--background` at `:root`, it would have silently changed what every
+other screen in the app renders with, the moment `Landing.tsx` mounted.
+Scoping under `.landing` makes that structurally impossible: nothing
+outside a `.landing` subtree can see an `--lp-*` value, by CSS's own
+cascade rules, not by a rule anyone has to remember to follow.
+
+The actual color values were chosen to match, though — `--lp-bg` equals
+the app's *own* dark `--background` value, copied by hand rather than
+invented. The landing page is dark unconditionally (decision 2), the app
+is dark only sometimes; making the landing page's dark look identical to
+the app's own dark, rather than a different dark, is what makes the
+hand-off from one to the other feel like one product instead of two.
+
+### The button problem that wasn't in the spec
+
+Buttons on this page needed to reuse `.btn`/`.btn-primary` — rebuilding
+pill-button geometry from scratch for one page would be exactly the kind
+of premature duplication this project avoids everywhere else. But
+`.btn-primary` in `index.css` is:
+
+```css
+.btn-primary {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+```
+
+`--primary` is theme-aware. On a reader's light-mode system, that
+resolves to the light teal, not the dark one — wrong on a page that's
+supposed to be dark no matter what the reader's OS thinks. The fix isn't
+to stop using `.btn-primary`; it's to let `.btn` supply everything that
+isn't color (the 44px hit target, the pill shape, the hover/active
+transitions) and override *only* color, scoped the same way the tokens
+are:
+
+```css
+.landing .btn-primary {
+  background: var(--lp-primary);
+  color: var(--lp-primary-foreground);
+}
+```
+
+One button system, two color sources depending on which subtree you're
+standing in. The alternative — a whole parallel `.lp-btn-primary` class
+with its own copy of the geometry — would have worked too, and would
+have been the first place this page's buttons quietly drifted from the
+app's own the next time someone tuned a hover state in one file and
+forgot the other.
+
+### Why the entry check is `localStorage`, not the database everything else uses
+
+This app already has a place it remembers things across visits — the
+`meta` IndexedDB store, which is where `getSourceId()` lives. It would
+have been natural to reach for that here too. It's wrong for this one
+specific question, and the reason is worth sitting with: IndexedDB reads
+are asynchronous. If `App.tsx` decided which screen to show first by
+awaiting an IndexedDB read, the sequence would be: render nothing (or
+render the landing page) → the read resolves → maybe re-render into the
+library. On a slow device that's a visible flash — the landing page
+appearing and then vanishing a beat later, which is a worse experience
+than either committing to it or skipping it outright.
+
+`localStorage.getItem` is synchronous. `App.tsx` can call it *inside*
+`useState`'s initializer, before the very first render happens:
+
+```typescript
+const [screen, setScreen] = useState<Screen>(() => (hasSeenLanding() ? 'library' : 'landing'));
+```
+
+That's the entire mechanism. No effect, no loading state, no flash —
+because there's no async gap for a flash to happen in.
+
+### Fail toward the safe side, not toward a crash
+
+`landing.ts`'s two functions both wrap their storage call in `try/catch`:
+
+```typescript
+export function hasSeenLanding(): boolean {
+  try {
+    return localStorage.getItem(LANDING_SEEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+```
+
+`localStorage` isn't guaranteed to just work. Safari in private browsing
+mode doesn't disable it — it sets the quota to zero, so every write
+throws `QuotaExceededError`, and some embedded webviews block the API
+outright and throw on the first touch. Whichever function is asked, the
+failure mode is chosen deliberately: `hasSeenLanding` fails toward
+`false`, meaning *worst case, a returning visitor sees the landing page
+again* — mildly annoying, never broken. `markLandingSeen` fails toward
+doing nothing — the flag just doesn't get set, same outcome. Neither
+failure can crash the transition into the app, which is the one thing
+that would actually be bad here.
+
+### Why the way back is optional, not required
+
+`Library.tsx`'s `onShowLanding` prop is typed `?: () => void`, not
+`: () => void`. That's not laziness — every existing call site and every
+existing test in `Library.test.tsx` had no reason to know this feature
+exists, and making the prop required would have meant touching all of
+them just to pass a callback irrelevant to what they're actually
+testing. The button itself is conditional on the prop being there:
+
+```tsx
+{onShowLanding && (
+  <button type="button" className="btn btn-quiet btn-sm" onClick={onShowLanding}>
+    Read the full story
+  </button>
+)}
+```
+
+`App.tsx` is the one place that actually cares, and it's the one place
+that passes it.
+
+### `ScanGraphic` is built for the animation it doesn't have yet
+
+The hero visual ships in Phase A as a static SVG — an ID row, four mark
+cells, one of them a small flag instead of a number. It could have been
+one flat `<path>` drawn to look right and nothing more. It isn't: the ID
+digits, each mark cell, and the flagged cell are separate SVG groups,
+each with its own transform, specifically so that when Phase C adds
+scroll-linked CSS to animate through the five states in plan.md §19, it
+can target these existing groups directly instead of redrawing the whole
+graphic from scratch. Building the static version and the animated
+version as two unrelated efforts would have meant designing the same
+grid twice.
+
+Frontend suite: 358 → 383 (`landing.ts` 6, `Landing.tsx` 13, `App.tsx` 4,
+`Library.tsx` 2). Three consecutive full `vitest run` passes stable.
+`npm run build`, the TypeScript project check and the AI-tell scanner all
+clean. Backend untouched — no API change, no new dependency, exactly as
+this step's own rule 1 requires.
+
+**What Phase A did NOT yet do, on purpose**: the built bundle actually
+grew (CSS +3.6KB, main JS +7.6KB raw), because `Landing.tsx` still shipped
+as an ordinary screen inside the normal React tree, eagerly imported like
+every other screen. §19's weight budget — under ~10KB gzipped for a
+complete first paint — was a claim about the *prerendered, zero-runtime-
+JS* shape Phase B produces, not about that intermediate state. Phase B is
+what actually delivers it, and this section is about how.
+
+### Phase B — the page becomes bytes of HTML, and Landing.tsx becomes a build-time input
+
+The goal, stated plainly: someone who opens the link on a cold connection
+should get the whole landing page in the SAME round trip that fetches
+`index.html` — no waiting on 244KB of JS to download, parse, and mount
+React before anything appears. And a returning instructor's visit should
+cost nothing extra: the page they actually want is behind that HTML the
+instant it loads, with no landing-page code shipped at all to get in the
+way.
+
+**Reusing Vite instead of reaching for a new tool.** The obvious way to
+turn a React component into an HTML string is `react-dom/server`'s
+`renderToStaticMarkup` — already a dependency, no new package needed. The
+less obvious problem: that function needs plain JavaScript, and
+`Landing.tsx` is JSX plus TypeScript plus a CSS import. Something has to
+transform it first. Rather than adding a second toolchain (`tsx`,
+`esbuild` called directly, a hand-written loader), `scripts/prerender-
+landing.mjs` calls Vite's own `build()` function — the exact same
+bundler already doing this transform for the real app — in SSR mode,
+pointed at one tiny new file:
+
+```typescript
+// src/prerenderEntry.tsx
+export function renderLandingMarkup(): string {
+  return renderToStaticMarkup(<Landing onOpenApp={() => {}} />);
+}
+export { APP_VISIBLE_CLASS, LANDING_SEEN_KEY };
+```
+
+Vite bundles this to plain `.mjs`, its CSS import silently dropped (an
+SSR build has no browser to hand a stylesheet to, so it just no-ops) —
+which turns out to be exactly what's wanted, since `landing.css` gets
+read separately, as raw text, to become this page's *critical* CSS
+rather than part of the app's bundled stylesheet. The Node script then
+imports that bundle and calls the one function it needs. No new
+dependency anywhere in this chain — the rule step.md sets for this step
+holds because Vite was already there to reuse.
+
+**What gets stitched into `dist/index.html`, and where.** Three things,
+all inside the document Vite already built, none of them touching
+`#root`:
+
+```html
+<style id="lp-critical-css">/* landing.css's full text */</style>
+<script id="lp-bootstrap">/* ~15 lines, shown below */</script>
+...
+<div id="landing-root"><div class="landing">...</div></div>
+<div id="root"></div>
+```
+
+The landing markup sits as a sibling of `#root`, not inside it — React
+never mounts into `#landing-root`, never touches it, never re-renders it.
+It is just HTML the browser parses and paints, the same as any other tag
+on the page.
+
+**The bootstrap script is the only JS this page ships**, and it's short
+enough to read in full:
+
+```javascript
+(function () {
+  var KEY = "msLandingSeen", CLS = "ms-app-visible", html = document.documentElement;
+  try { if (localStorage.getItem(KEY) === '1') html.classList.add(CLS); }
+  catch (e) { html.classList.add(CLS); }
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest && e.target.closest('[data-open-app]');
+    if (!t) return;
+    try { localStorage.setItem(KEY, '1'); } catch (e2) {}
+    html.classList.add(CLS);
+  });
+})();
+```
+
+Two things worth noticing about it. First, it fails toward *showing the
+app*, not toward a blank page — if `localStorage` throws (Safari private
+browsing, some embedded webviews), the `catch` branch still adds the
+visible class, on the theory that an instructor who's already used the
+app once should never get stuck behind a landing page they can't dismiss
+just because storage misbehaved. Second, the click handler is attached to
+`document` itself, using `closest('[data-open-app]')` — event
+delegation, not a listener on each button. That matters because this
+script runs from `<head>`, before the buttons in `<body>` exist yet; a
+direct `querySelectorAll(...).forEach(el => el.addEventListener(...))`
+would have found nothing. Delegating to `document` sidesteps the whole
+question of *when* the buttons show up.
+
+**The CSS trick that avoids fighting the app's own layout.** The obvious
+way to show/hide `#root` is two rules with opposite `display` values:
+
+```css
+html.ms-app-visible #root { display: block; }
+html:not(.ms-app-visible) #root { display: none; }
+```
+
+The first line is a bug waiting to ship. `index.css` already declares
+`#root { display: flex; flex-direction: column; }` — the app's real
+top-level layout. A same-specificity `#root { display: block }`
+overriding rule can lose to it in some orderings and win in others
+depending on which stylesheet loads last, and if it wins, it silently
+flattens the app's flex layout the moment the visible class is added.
+`landing.css` only declares the *hide* rule:
+
+```css
+html:not(.ms-app-visible) #root { display: none; }
+```
+
+When the class is present, this selector simply doesn't match — nothing
+here says anything about what `#root`'s display should be, so
+`index.css`'s own `flex` rule is the only one left standing. Hiding
+something explicitly, and staying silent about what showing it means, is
+the way to add a visibility toggle without ever having an opinion about
+a layout that already belongs to someone else.
+
+**The "way back" doesn't need a client-rendered `<Landing>` any more.**
+Phase A's `Library.tsx` → `App.tsx` → `<Landing>` round trip depended on
+React owning a `'landing'` screen. Since Phase B moves the landing markup
+outside `#root` and leaves it sitting in the DOM permanently (just
+hidden), there's nothing to re-render to go back — only a class to
+remove:
+
+```typescript
+// landing.ts
+export function showLandingOverlay(): void {
+  document.documentElement.classList.remove(APP_VISIBLE_CLASS);
+}
+```
+
+`Library.tsx` itself didn't need to change at all — its `onShowLanding`
+prop was already just `() => void`, and `App.tsx` now passes
+`showLandingOverlay` directly instead of a screen-switching closure. The
+same static markup the bootstrap script showed on the very first visit is
+what reappears; nothing new gets built, imported, or rendered for it.
+
+**What this retired.** `App.tsx`'s `Screen` union drops `'landing'`
+entirely — the app now always starts on the library, because the
+pre-load decision isn't React's job any more. Phase A's
+`hasSeenLanding`/`markLandingSeen` functions go with it: nothing calls
+them, since the bootstrap script above *is* that check now, written as
+plain JS because it has to exist before there's a bundle to import
+TypeScript from. What stays is `LANDING_SEEN_KEY` and `APP_VISIBLE_CLASS`
+— re-exported through `prerenderEntry.tsx` so the Node script embeds the
+exact same literals the rest of the app would use, rather than a second,
+hand-typed copy that could quietly drift.
+
+**Guarding the failure mode this step itself names.** plan.md §19 calls
+out the obvious risk directly: a prerender step can silently stop
+injecting anything, and every *component*-level test would keep passing,
+because `Landing.tsx` itself never changed. `prerender.test.ts` is built
+specifically to not be fooled by that — it runs the real `npm run build`
+(the one expensive test in this suite, on purpose) and then reads the
+actual `dist/index.html` it produced, checking that the markup, the
+bootstrap script, and the critical CSS are really there, keyed to the
+real `LANDING_SEEN_KEY`/`APP_VISIBLE_CLASS` values rather than hardcoded
+strings that could drift from them unnoticed. The same file measures the
+weight budget the identical way — gzip-compressing the actual injected
+markup plus CSS plus script, sliced out of the real build output, not a
+number anyone typed in and hoped stayed true.
+
+**The numbers**. Before Phase B, Phase A's build had grown the main CSS
+to 14.05KB/3.59KB gzip and the main JS to 252.26KB/77.70KB gzip. After
+Phase B, both are back down near their pre-step-14 baseline (10.42KB/
+2.89KB CSS, 244.95KB/75.74KB JS) — `landing.css` and `Landing.tsx` no
+longer sit in the app's own import graph at all, so nothing bundles them
+in. The actual first-paint cost — the injected markup, critical CSS, and
+bootstrap script together, gzip-measured — comes to roughly 5.7KB,
+comfortably under the ~10KB budget. Frontend suite: 383 → 385 (net: two
+Phase-A App.test.tsx cases and two landing.test.ts cases retired along
+with the client-rendered landing screen they tested; five new
+`prerender.test.ts` cases and one new `landing.test.ts` drift-guard case
+added). `npm run build`, `npx vitest run`, and the AI-tell scanner all
+clean; backend `pytest` re-run as a sanity check (259, unaffected — no
+backend changes, per this step's own rule 1).
+
+### Phase C — the scan animation, and why "code done" isn't the same as "done"
+
+Phase C's job is the fourth section of §19's story: not just claiming
+"the table is found and straightened" and "each cell is read," but
+*showing* it happening, as the reader scrolls. Five states, one pinned
+graphic, driven entirely by scroll position — no JavaScript computing
+anything, because §19 rules that out for weight up front.
+
+**Reusing the app's own step list instead of inventing a new one.**
+`ScanAnimation.tsx` takes the exact same `HOW_IT_WORKS` array
+`Landing.tsx` already had, and renders its captions with the exact same
+`.lp-step`/`.lp-list` markup Phase A already used for that section:
+
+```tsx
+<ol className="lp-list lp-scan-captions">
+  {steps.map((step, i) => (
+    <li key={step.title} className="lp-step">
+      <span className="lp-step-number" aria-hidden="true">{i + 1}</span>
+      <span className="lp-step-text">
+        <strong>{step.title}</strong>
+        <span className="lp-body">{step.detail}</span>
+      </span>
+    </li>
+  ))}
+</ol>
+```
+
+The payoff shows up somewhere unexpected: `Landing.test.tsx` had a
+pre-existing assertion counting exactly five `<li class="lp-step">`
+elements. Because the captions are the *same* markup, not a redesigned
+one, that test kept passing without being touched at all — a small,
+concrete case of "don't invent a second way to do something the codebase
+already does."
+
+**Why the illustration is `aria-hidden`.** At any given scroll position,
+the SVG is genuinely *between* two of its five states — a screen reader
+has no good way to describe "40% faded from cells-separated into
+digits-resolved." Rather than attempt that, the whole pin is hidden from
+assistive tech:
+
+```tsx
+<div className="lp-scan-pin" aria-hidden="true">
+  <svg viewBox="0 0 360 232" ...>...</svg>
+</div>
+```
+
+This isn't a shortcut around accessibility — it's the correct call
+because the *captions right next to it* already say, in plain text
+exactly what each state means ("Anything uncertain is flagged, never
+guessed"). Hiding a decorative illustration whose content is fully
+covered elsewhere in real text is the standard pattern, not a gap.
+
+**The CSS mechanism, and the trap it has to avoid.** Scroll-driven CSS
+animation works by naming a timeline on the tall wrapper, then pointing
+each state's own `animation-timeline` at it:
+
+```css
+.lp-scan-scroller {
+  view-timeline-name: --scan-progress;
+  view-timeline-axis: block;
+}
+.scan-state {
+  animation-timeline: --scan-progress;
+  ...
+}
+```
+
+The wrapper doesn't need a manually-picked height like `400vh` — its
+natural height is just however tall its own children (the pin, the
+captions) make it, and the browser tracks how *that whole box* moves
+through the viewport as the page scrolls. Each state then gets its own
+`@keyframes` spreading five overlapping opacity windows across that one
+0–100% timeline, so exactly one state (or a brief crossfade between two)
+is visible at any scroll position.
+
+**The layout trap, found by reasoning about the CSS, not by seeing it
+break.** The phone layout stacks the pin above the captions in a column;
+the wide layout puts them side by side in a row. A naive version of the
+row layout would write just `flex-direction: row` and stop there — and
+that would silently break the pinning. Flexbox's default
+`align-items: stretch` makes every item in a row match the tallest
+item's height. The captions column is tall on purpose (each caption
+needs real scroll room); if the pin were stretched to match it, it would
+become just as tall as the captions — and `position: sticky` has nothing
+left to do, because a sticky element only "sticks" by staying put while
+its *own* box is shorter than the space it has to move around in. The
+fix is one line:
+
+```css
+@media (min-width: 64em) {
+  .lp-scan-scroller {
+    flex-direction: row;
+    align-items: flex-start; /* keeps the pin its own natural height */
+  }
+}
+```
+
+This is the kind of bug that's easy to miss because it doesn't produce an
+error, a warning, or even obviously wrong-looking output in a quick
+glance — the sticky element just quietly stops sticking, and everything
+still "renders." It was caught here by working through what `stretch`
+actually does to a short item beside a tall one, not by seeing it happen
+on a real screen — which is exactly why this step's Done-when bar still
+requires an actual device check before trusting the pin behaves as
+described.
+
+**Progressive enhancement doing double duty for two different
+requirements.** 14.8's rule is "a reader who's asked for less motion gets
+the final state, statically." Separately, some real browsers (older
+Firefox, Safari before version 26) don't support `animation-timeline` at
+all yet. Rather than write two fallbacks, one guard handles both:
+
+```css
+.scan-state { opacity: 0; }
+.scan-state-5 { opacity: 1; }
+
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    /* the real crossfade lives here */
+  }
+}
+```
+
+Outside that `@supports`/`@media` pair — whether because the browser
+can't do scroll-driven animation, or because the reader has asked for
+less motion, or both — every state defaults to invisible except state 5,
+the settled export view. That default isn't a special "fallback mode"
+built separately from the main design; it's just what the CSS says before
+the enhancement is layered on, which is the actual definition of
+progressive enhancement working correctly.
+
+**Extending the grid without touching the hero's own copy.** §19 says the
+phone-reduced grid needs "the ID row, the serial, and three or four
+question columns" — but Phase A's `ScanGraphic.tsx` (the hero's static
+peek) never had a serial row; it only shows the ID row and four marks.
+Rather than retrofit the hero graphic to match Phase C's requirement
+(risking regressions in an already-shipped, already-tested static
+illustration for no real benefit — the hero doesn't need to demonstrate
+the serial field), `ScanAnimation.tsx` defines its own serial row,
+independent of `ScanGraphic.tsx`. The two components share a visual
+language — same card, same cell style, same flagged-mark treatment — but
+are two separate drawings, because they are answering two different
+questions: one is a two-second peek above the fold, the other is a
+five-state walkthrough.
+
+**What "done" doesn't mean here.** Every test that runs in this repo's
+suite passes: the five states exist with real content, the reduced-motion
+fallback is wired to the actual class names it needs to be wired to, the
+built `dist/index.html` genuinely contains all five states. None of that
+can check whether the crossfade *feels* right while actually scrolling a
+real phone, whether the pin ever visually overlaps its own caption at
+320px, or whether an underpowered Android on 3G renders this smoothly.
+jsdom has no scrollbar and no rendering engine — it can confirm the CSS
+is well-formed and targets the right elements, not that scrolling through
+it looks like five *stages*, rather than a flicker. That gap is named
+directly in plan.md §19 and step.md's own Test section, and it's why this
+step's write-up says "code done," not "done."
+
+### 14.9 — two bugs that every automated test missed, because of what they were actually testing
+
+Reported directly, in one sentence: "when we move past the landing page
+we cannot go there anymore." Two separate, real bugs turned out to be
+behind it, and the reason neither had been caught yet is worth sitting
+with, because it's a specific, nameable gap rather than bad luck.
+
+**What every test up to this point actually checked.**
+`Landing.test.tsx` renders `<Landing>` directly with Testing Library —
+it never touches `index.html` at all. `prerender.test.ts` runs a real
+`npm run build` and reads the real `dist/index.html` — but only the
+*build* output. Between those two, there's a third way this app actually
+gets used that nothing was checking: `npm run dev` (what `./dev.sh`
+starts), which serves `index.html` from source, with none of the
+build-time steps applied. Phase B's whole design — prerendering the
+landing page at build time — means "at build time" is a real, narrow
+window, and nothing before 14.9 asked what happens outside it.
+
+**Bug 1, traced to that exact gap.** `scripts/prerender-landing.mjs`
+only ever runs as part of `npm run build`. `vite dev` never calls it, so
+the dev server's `index.html` never got `#landing-root`, the bootstrap
+`<script>`, or the critical CSS — nothing. Combined with Phase B having
+removed `App.tsx`'s client-rendered `'landing'` screen (the whole point
+of 14.6: ship zero runtime JS for this page), there was no fallback
+either. The practical effect: open `npm run dev` fresh, and the landing
+page simply never appears, not once, regardless of `localStorage`.
+
+The fix reuses the exact same injection code for both paths, rather than
+writing a second implementation that could quietly drift from the first:
+
+```javascript
+// vite.config.ts
+export function landingShellDevPlugin(): Plugin {
+  return {
+    name: 'landing-shell-dev',
+    apply: 'serve', // never runs during `vite build`
+    async transformIndexHtml(html, ctx) {
+      const mod = await ctx.server!.ssrLoadModule('/src/prerenderEntry.tsx')
+      const landingHtml = mod.renderLandingMarkup()
+      const landingCss = await readFile(/* .../landing.css */, 'utf8')
+      return injectLandingShell(html, {
+        landingHtml, landingCss,
+        landingSeenKey: mod.LANDING_SEEN_KEY,
+        appVisibleClass: mod.APP_VISIBLE_CLASS,
+      })
+    },
+  }
+}
+```
+
+`server.ssrLoadModule` is the part worth noticing: it's Vite's own,
+already-supported way to run a piece of application source (JSX, TS,
+imports and all) through the exact same transform pipeline the dev
+server uses for everything else — which is why this cost no new
+dependency and no second build tool. `injectLandingShell` itself moved
+out of `prerender-landing.mjs` into a new shared `scripts/landing-shell.mjs`,
+so the dev plugin and the real build call the identical function. Two
+copies of "how to inject the landing shell" would have been exactly the
+kind of thing that quietly drifts apart the next time either one gets
+edited — the same reasoning this project already applies to
+`QuizConfig`'s bounds existing in two languages (`app/models.py` and
+`validateConfig.ts`, pinned together by a test that reads both files).
+
+**Bug 2, once the shell actually existed.** `Library.tsx`'s way back to
+the landing page was a button inside:
+
+```tsx
+<details className="disclosure" open={sections.length === 0}>
+  <summary>How this works</summary>
+  ...
+  <button onClick={onShowLanding}>Read the full story</button>
+</details>
+```
+
+`open={sections.length === 0}` was written for a different purpose
+entirely (show the "how this works" explainer by default to a first-time
+user, collapse it once there's real data) — but it means the disclosure,
+and everything inside it, is collapsed the moment a single section
+exists. For any Library actually being used for real grading, that's
+always. The button existed, worked correctly when clicked, and was
+functionally invisible. Moved to an always-visible "About" button
+alongside "+ New section" in the header, which is never inside anything
+collapsible.
+
+**Why neither showed up sooner.** Both are real instances of a pattern
+this project has hit before (its own words, from step 14's mobile-first
+rules: "three desktop-fine/phone-broken layouts already"): a thing that
+is provably correct at the unit level — the component renders, the build
+output contains the right markup — can still be functionally absent in
+the one context nobody happened to open. `prerender.test.ts` proved the
+*build* worked; nothing proved *dev mode* did, because dev mode isn't
+what any existing test exercises. `Library.test.tsx` proved the button
+called `onShowLanding` when clicked; nothing proved it was still in the
+document once real data existed, because the original test rendered an
+empty library. The fix for both, structurally, was the same: write the
+test that actually exercises the missing context — a real Vite dev
+server in middleware mode (`landingShellDev.test.ts`), and a Library
+pre-loaded with a saved section (`Library.test.tsx`'s new case) — rather
+than trusting that passing tests in a different context implied these
+also passed.
+
+Frontend suite: 394 → 397. Verified by hand two ways: curling the actual
+`vite dev` server's served HTML directly, and rebuilding
+`./local-stack.sh`'s real production frontend (with its required
+`VITE_API_BASE` reapplied) and confirming the same markup there too.
+
+### Bug 3 — a one-line CSS rule that broke `position: sticky` for the whole app, hiding in plain sight since Phase A
+
+Reported with screenshots: scrolling through "How it works," the pinned
+graphic showed up correctly next to step 1, then vanished for steps 2
+through 5 — no graphic, just a huge blank gap where it should have
+stayed pinned beside each caption. That symptom (works once, then
+silently stops) is exactly what a broken `position: sticky` looks like,
+and it turned out `.lp-topbar` — the "Open the app" bar that's supposed
+to stay pinned at the top *at every scroll position*, decision 1 from
+the very first day of this step — had the identical problem, just
+harder to notice because a topbar quietly failing to stick reads as "the
+page doesn't have a topbar," not as an obvious visual gap.
+
+**The CSS rule that caused it is one most people would never think twice
+about:**
+
+```css
+body {
+  overflow-x: hidden;
+}
+```
+
+This exists for a completely reasonable, unrelated reason: guaranteeing
+no horizontal scrollbar ever appears, which step 14's own mobile-first
+rules require at 320px. The trap is in what the browser does when you
+set only ONE of `overflow-x`/`overflow-y`: per the CSS Overflow spec, if
+one axis is anything other than `visible` and the other is left at its
+default `visible`, the browser is required to change the OTHER axis's
+*computed* value to `auto` too. So `overflow-x: hidden` silently becomes,
+as far as layout is concerned, `overflow-x: hidden; overflow-y: auto`.
+Nobody wrote that second half — the browser adds it.
+
+**Why that breaks `position: sticky` even though nothing ever actually
+scrolls inside `body`.** A sticky element sticks relative to its nearest
+ancestor that's a "scroll container" — and having a non-`visible`
+overflow value is *itself* what makes something a scroll container, in
+the browser's eyes, whether or not it ever actually needs to scroll.
+`body` never has its own separate scrollbar in this app (the whole page
+just scrolls normally), but the moment its computed `overflow-y` became
+`auto`, it started acting as *if* it might, and every sticky descendant
+now sticks relative to `body`'s own box instead of the real, visible
+viewport. Since `body`'s box is exactly as tall as all its content
+(nothing constrains its height), there's no actual "scrolling" happening
+inside it from the browser's point of view — which meant the sticky
+elements just... didn't stick. They behaved like ordinary, non-sticky
+elements, scrolling away with everything around them.
+
+`.landing` had the exact same line, for the exact same
+belt-and-suspenders reason, which meant the bug applied twice over to
+anything on the landing page.
+
+**Proving it, rather than trusting the theory.** jsdom — what every
+other test in this repo runs against — doesn't have a layout engine at
+all. It can't compute `getComputedStyle`'s real values the way a browser
+does, and it doesn't know what `position: sticky` even means visually.
+So this had to be checked with an actual browser. Playwright happened to
+already be cached on this machine (a `~/.cache/ms-playwright` directory
+from unrelated prior use), which made it possible to drive real Chromium
+headlessly:
+
+```javascript
+const pin = document.querySelector('.lp-scan-pin');
+console.log(pin.getBoundingClientRect().top, window.scrollY);
+```
+
+Before the fix, scrolling 800px moved `pin`'s `top` from `0.25` to
+`-799.75` — moving in exact lockstep with the scroll, proof it wasn't
+sticking at all. After swapping in the fix below, `top` held steady at
+`80` (its actual `top: 80px` CSS value) through 2000px of real scrolling.
+That's the difference between "this should work" and "this does work" —
+and it's exactly the gap step 14's own Test section names when it says
+real-device verification, not jsdom, is where layout claims actually get
+checked.
+
+**The fix, and why it's not just "remove the line."** Simply deleting
+`overflow-x: hidden` would bring back the original problem it was
+solving — a real horizontal-scroll risk at 320px, one of this project's
+own hard rules. The fix keeps the clipping behavior but avoids the
+axis-coupling that breaks sticky:
+
+```css
+body {
+  overflow: clip visible;
+}
+```
+
+`overflow: clip` clips content the same way `hidden` does, but — unlike
+`hidden` — it never gets paired with an implicit `auto` on the other
+axis, because `clip` isn't a scrolling value at all; there's nothing for
+the browser to couple. Writing `visible` for the Y axis explicitly, even
+though it's already the default, makes that immune to any future
+sibling rule accidentally changing it. `overflow: clip` needs a
+reasonably modern browser (Chrome 90+, Firefox 97+, Safari 16+) — well
+behind what this same page already assumes for its scroll-driven
+animation CSS (Safari 26).
+
+**The part that generalizes beyond this one page.** `index.css`'s
+`.data-table thead th` — the Results screen's sticky column header, a
+real feature described in this project's own design-system notes — sits
+directly under `body` with nothing else providing a separate scroll
+container. Since it depends on the exact same `body` rule this bug was
+in, it was very likely never actually sticking either, on any real
+device, for as long as it's existed — simply because nothing before now
+had a reason to scroll through a long Results table on a real browser
+and notice. Fixing the rule at `body` fixes that too, for free, without
+touching `Results.tsx` at all.
+
+### Bug 4 (14.10) — technically correct, and still broken: why "the CSS works" wasn't the same question as "does this work on a phone"
+
+The very next report, with screenshots: on a real phone, the pinned
+graphic showed up correctly next to the first caption — then just
+disappeared for every caption after it. Long stretches of plain black
+where the graphic should have stayed pinned. Given 14.9 had just fixed
+`position: sticky` for the whole page, the obvious first guess was that
+the same bug had resurfaced somewhere. It hadn't.
+
+**Checking the obvious guess first, properly, with a real phone
+viewport.** Rather than assume, this got the same Playwright treatment
+14.9 used — this time with Playwright's built-in `devices['iPhone 13']`
+profile, which sets the real viewport size (390×844), pixel ratio, and
+touch flags a phone actually reports. Reading the pin's position and the
+five states' opacity values across a real scroll on that viewport showed
+something specific: `position: sticky` *was* holding correctly (the
+pin's `top` offset stayed put exactly like the desktop check confirmed),
+and the five states *were* crossfading in the right order, on schedule.
+The mechanism 14.9 fixed was working. Something else was wrong.
+
+**What a screenshot shows that a position readout doesn't.** Only after
+confirming the mechanics did looking at an actual rendered screenshot
+make the real problem obvious: `.lp-scan-captions .lp-step { min-height:
+55vh }` — giving each caption enough scroll room to sit under the pin
+for a while — makes complete sense in the two-column desktop layout,
+where the *other* column is that tall anyway because it holds a tall
+graphic. On a phone, there's only one column. A caption that's two or
+three sentences long, sitting inside a box more than half the *screen's
+own height*, leaves most of that box empty. Multiply by five captions
+and the "How it works" section becomes several consecutive screens of
+almost nothing — which reads as "this is broken" long before a reader
+gets far enough to notice it's actually still scrolling somewhere.
+
+This is worth sitting with as its own lesson, separate from 14.9's:
+**a component can be provably correct at the mechanism level and still
+fail at the experience level**, and nothing that checks the mechanism —
+reading `getComputedStyle`, asserting a class is applied, confirming an
+opacity value — will ever catch the second kind of failure. Only looking
+at what it actually produces does.
+
+**The fix takes the permission it was given, but doesn't take the
+cheapest version of it.** Told plainly that dropping the captions on
+phone was an acceptable option if needed, the actual fix keeps them —
+just not as scroll-driven, screen-tall spacers:
+
+```css
+/* phone: a plain, self-looping animation, no scroll dependency */
+@media (prefers-reduced-motion: no-preference) {
+  .scan-state {
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    animation-duration: 10s;
+    opacity: 0;
+  }
+  .scan-state-1 { animation-name: scanState1; }
+  /* ...same five keyframes the scroll-linked version already defines */
+}
+```
+
+No `@supports` check, no `animation-timeline` at all — a plain looping
+`animation` runs on the browser's default clock, which has worked
+everywhere for over a decade. That's a deliberate choice, not just a
+simpler one: it sidesteps the whole question of whether a specific real
+phone's browser supports scroll-driven animations as robustly as
+desktop Chrome does, rather than trying to answer it. The captions
+underneath just become an ordinary compact list — the same
+`.lp-step`/`.lp-list` markup used everywhere else in this app, with no
+special spacing rule applied on phone at all.
+
+**Why the captions stayed, rather than being cut.** `ScanAnimation`'s
+graphic is `aria-hidden="true"` — deliberately, since a screen reader
+has no good way to describe an illustration that's mid-crossfade between
+two of five states at any given moment. The captions are what actually
+carry this section's content in accessible text. Removing them on phone
+to fix a layout bug would have solved that bug by introducing a
+different one: a phone user relying on a screen reader would reach "How
+it works" and find nothing there at all. The option to drop them
+outright was offered directly and deliberately not taken, once that
+trade became clear.
+
+**Confirming the fix the same way the bug was found.** Re-ran the same
+Playwright check against the same iPhone 13 profile: the five states now
+cycle on their own, with no scrolling, over about ten seconds; the whole
+"How it works" section's height dropped from roughly 2197px to 914px —
+not a small tweak, closer to a third of its former size — and a
+full-page screenshot showed the section finally reading at the same
+visual density as the rest of the page around it. Then re-ran the
+*original* desktop check too, to make sure fixing phone hadn't quietly
+broken the thing 14.9 had just gotten working: the scroll-linked
+crossfade and the sticky pin both still behaved exactly as before,
+because the wide-screen CSS rules were untouched — only gated more
+precisely (`@supports (...) and (min-width: 64em) and
+(prefers-reduced-motion: no-preference)`) so they only apply where a
+second column actually exists to make the scroll-runway make sense.

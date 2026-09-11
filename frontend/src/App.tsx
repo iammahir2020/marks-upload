@@ -5,6 +5,7 @@
 import { lazy, Suspense, useState } from 'react';
 import AssessmentForm, { type NewAssessmentInput } from './AssessmentForm';
 import { getAllSections, saveAssessment, saveSection } from './db';
+import { showLandingOverlay } from './landing';
 import Library from './Library';
 import Scan from './Scan';
 import { assessmentConfig } from './sections';
@@ -20,6 +21,11 @@ const Results = lazy(() => import('./Results'));
 type Screen = 'library' | 'section' | 'assessment' | 'scan' | 'results';
 
 function App() {
+  // Step.md 14.6 — the landing page is no longer a screen React ever
+  // renders. The decision of whether a cold visit shows it lives entirely
+  // in the static shell `scripts/prerender-landing.mjs` builds (a class
+  // on <html>, set before this bundle even exists); by the time this
+  // component mounts, the app's own first screen is always the library.
   const [screen, setScreen] = useState<Screen>('library');
   // null = creating a new section; a real Section = editing it in place.
   const [editingSection, setEditingSection] = useState<Section | null>(null);
@@ -142,6 +148,7 @@ function App() {
   return (
     <Library
       pendingSemesterOffer={pendingSemesterOffer}
+      onShowLanding={showLandingOverlay}
       onNewSection={() => {
         setEditingSection(null);
         setSectionFormReturnsTo('library');

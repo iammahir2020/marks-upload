@@ -1,0 +1,621 @@
+/* step.md 14.1 (plan.md §19) — the landing page's own dark palette,
+   layout rhythm and type ramp. Everything here is scoped under the
+   `.landing` selector, NEVER declared on `:root` — the app's own
+   theming (`index.css`'s `prefers-color-scheme: dark` block) must stay
+   completely unaffected by this file existing.
+
+   Unconditionally dark, by decision (§19, decision 2) — NOT
+   `prefers-color-scheme`-aware the way the app itself is. A reader on a
+   light-mode system still sees a dark landing page; that is deliberate,
+   not a bug.
+
+   The four-step surface ladder below extends the app's own warm dark
+   values (index.css's dark block: #0f0f0d / #181815 / #201f1b) with one
+   new, deeper canvas step beneath them — reused verbatim, not
+   reinvented, so the landing page and the app it hands off to share one
+   temperature. Depth comes ONLY from this ladder plus hairline borders;
+   no drop shadows anywhere in this file (Raycast's structural rule,
+   plan.md §19's "What is borrowed"). */
+
+.landing {
+  color-scheme: dark;
+
+  --lp-canvas: #0a0a08; /* the sticky top bar only — sits above the page */
+  --lp-bg: #0f0f0d; /* == index.css's dark --background */
+  --lp-surface: #181815; /* == index.css's dark --surface */
+  --lp-surface-2: #201f1b; /* == index.css's dark --surface-2 */
+
+  --lp-foreground: #f2f1ea; /* == index.css's dark --foreground */
+  --lp-muted-foreground: #a3a194; /* == index.css's dark --muted-foreground */
+  --lp-faint: #6f6d61; /* one step past muted — captions, step numbers */
+
+  --lp-border: #2d2c26; /* == index.css's dark --border */
+  --lp-border-soft: rgba(242, 241, 234, 0.08);
+
+  --lp-primary: #47a897; /* == index.css's dark --primary */
+  --lp-primary-hover: #5cbaa9;
+  --lp-primary-foreground: #06201b;
+  --lp-primary-wash: #163531;
+
+  --lp-warning: #fbbf24; /* the flagged-digit state in the scan animation */
+
+  /* Fluid type, rooted at the phone size (plan.md §19's "Mobile-first"
+     section) — clamp() between a 375px and a 1440px viewport, so it
+     scales continuously and never jumps at a breakpoint. Not the app's
+     own h1/h2 sizes: those are correct for a screen held one-handed
+     during grading and far too small for a page arguing something. */
+  --lp-display-1: clamp(2rem, 1.3rem + 3vw, 4rem); /* hero: ~32px -> 64px */
+  --lp-display-2: clamp(1.75rem, 1.5rem + 1.1vw, 2.5rem); /* section heads: ~28px -> 40px */
+  --lp-lead: clamp(1.0625rem, 1rem + 0.3vw, 1.25rem); /* sub/lead copy: ~17px -> 20px */
+
+  /* Section rhythm, authored from the phone up (plan.md §19): 48px base,
+     growing via min-width queries below — never a desktop number shrunk
+     down. */
+  --lp-section-y: 48px;
+  --lp-section-x: 20px;
+
+  background: var(--lp-bg);
+  color: var(--lp-foreground);
+  font-family: var(--sans);
+
+  /* #root already uses 100svh for the same iOS-Safari reason (plan.md
+     §19's mobile-first rules): the address bar changes viewport height
+     mid-scroll, and nothing here may depend on the value that changes. */
+  min-height: 100svh;
+  /* `overflow: clip visible`, not `overflow-x: hidden` — see index.css's
+     own comment on `body`. `hidden` here computes `overflow-y: auto` too,
+     which makes `.landing` a scroll container and confines EVERY
+     `position: sticky` descendant (the topbar, the scan animation's pin)
+     to sticking within `.landing`'s own box instead of the real
+     viewport — which in practice means they never stick at all, since
+     `.landing` never actually scrolls independently of the page. Found by
+     a real screenshot: the pin only ever appeared beside the first "How
+     it works" step, then just scrolled away with everything else. */
+  overflow: clip visible; /* belt-and-suspenders alongside body's own rule */
+}
+
+@media (min-width: 48em) {
+  /* 768px */
+  .landing {
+    --lp-section-y: 64px;
+    --lp-section-x: 32px;
+  }
+}
+
+@media (min-width: 64em) {
+  /* 1024px */
+  .landing {
+    --lp-section-y: 96px;
+    --lp-section-x: 48px;
+  }
+}
+
+/* --- Structure --- */
+
+.lp-section {
+  padding: var(--lp-section-y) var(--lp-section-x);
+}
+
+.lp-section-inner {
+  max-width: 72rem;
+  margin: 0 auto;
+}
+
+.lp-prose {
+  max-width: 40rem;
+}
+
+/* --- Pinned top bar (decision 1: visible at every scroll position) ---
+   Sticky, not fixed: same visual result for a single scrolling page,
+   without fixed's extra top-padding bookkeeping on the section below
+   it. One compact row, deliberately not a tall marketing header — on a
+   phone the header is competing with the reader's own screen space for
+   the thing they actually came to see. It must never grow on scroll. */
+.lp-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 56px;
+  padding: 0 16px;
+  background: var(--lp-canvas);
+  border-bottom: 1px solid var(--lp-border);
+}
+
+.lp-topbar-name {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--lp-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Hero ---
+   Phone (base): headline, one line of sub, CTA — the animation peeks
+   from the bottom edge rather than fitting. All four cannot fit on a
+   390x844 screen without making every one of them small (plan.md §19).
+   Wide (min-width up): two columns, everything above the fold together. */
+.lp-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.lp-hero-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.lp-hero-visual {
+  /* The peek: a bounded height that shows the top of the graphic and
+     invites a scroll, rather than trying to contain it. */
+  height: 220px;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--lp-border);
+  background: var(--lp-surface);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+@media (min-width: 64em) {
+  .lp-hero {
+    flex-direction: row;
+    align-items: center;
+    gap: 48px;
+  }
+
+  .lp-hero-copy {
+    flex: 1 1 50%;
+  }
+
+  .lp-hero-visual {
+    flex: 1 1 50%;
+    height: 420px;
+    align-items: center;
+  }
+}
+
+/* --- Typography --- */
+
+.lp-h1 {
+  font-size: var(--lp-display-1);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.lp-h2 {
+  font-size: var(--lp-display-2);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  margin: 0 0 12px;
+}
+
+.lp-lead {
+  font-size: var(--lp-lead);
+  line-height: 1.5;
+  color: var(--lp-muted-foreground);
+  margin: 0;
+}
+
+.lp-eyebrow {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--lp-faint);
+  margin: 0 0 8px;
+}
+
+.lp-body {
+  font-size: 1rem;
+  line-height: 1.65;
+  color: var(--lp-muted-foreground);
+  margin: 0;
+}
+
+/* --- Cards and lists (hairline borders, no shadows) --- */
+
+.lp-card {
+  background: var(--lp-surface);
+  border: 1px solid var(--lp-border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+}
+
+.lp-card + .lp-card {
+  margin-top: 12px;
+}
+
+.lp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lp-step {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.lp-step-number {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 9999px;
+  border: 1px solid var(--lp-border);
+  background: var(--lp-surface-2);
+  color: var(--lp-foreground);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.lp-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 4px;
+}
+
+.lp-step-text strong {
+  color: var(--lp-foreground);
+  font-weight: 600;
+}
+
+/* Step 1's reference drawing of the printed grid structure (GridTemplateFigure) —
+   the one caption that names a physical thing the instructor has to have
+   already done, so it gets a picture of that thing rather than staying text-only. */
+.lp-step-visual {
+  display: block;
+  margin-top: 8px;
+  padding: 12px;
+  max-width: 320px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--lp-border);
+  background: var(--lp-surface);
+}
+
+/* --- The scan animation (step.md 14.7/14.8/14.10, plan.md §19's "How
+   it works") ---
+
+   Phone (base): NOT scroll-linked at all, on purpose (14.10). The
+   original design pinned the graphic and gave each caption a 55vh
+   scroll-runway to sit under it for a while — reasonable in principle,
+   but real testing (screenshots, then a real mobile-viewport Playwright
+   check) showed two compounding problems: `position: sticky` inside a
+   tall single-column flow is far more sensitive to exactly how much
+   room surrounds it than the row layout below, and five almost-empty
+   55vh-tall spacers reads as "broken" (a wall of black) long before it
+   reads as "scroll to see more." Rather than keep chasing that layout on
+   narrow screens, the graphic here just plays on its own, in place, on
+   a normal time-based CSS loop — no scroll-timeline, no `@supports`
+   feature check needed, since a plain looping `animation` has worked in
+   every browser for over a decade. The five captions stay in the
+   document as an ordinary compact list below it (not one per giant
+   spacer) — the graphic is `aria-hidden`, so removing them outright
+   would leave this section's actual explanation nowhere for a screen
+   reader, which is a worse trade than the awkward spacing being fixed.
+
+   Wide (min-width up): unchanged from before — the conventional
+   two-column scrollytelling form, graphic pinned and scroll-crossfaded
+   against tall caption spacers. `align-items: flex-start` is load-
+   bearing here — without it, a flex row stretches the (short) pin to
+   match the (much taller) captions column's height, which breaks
+   `position: sticky` entirely (a stickied element needs room to move
+   within a container taller than itself while staying a fixed size). */
+.lp-scan-scroller {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.lp-scan-pin {
+  height: 45vh;
+  min-height: 200px;
+  max-height: 320px; /* a bounded, modest card now that nothing scroll-pins it on phone */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--lp-border);
+  background: var(--lp-surface);
+  overflow: hidden;
+}
+
+@media (min-width: 64em) {
+  .lp-scan-scroller {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 48px;
+  }
+
+  .lp-scan-pin {
+    position: sticky;
+    top: 80px; /* clears the 56px sticky top bar plus a little breathing room */
+    height: 70vh;
+    max-height: none;
+    flex: 0 0 42%;
+  }
+
+  .lp-scan-captions {
+    flex: 1 1 auto;
+  }
+}
+
+/* Real scroll-runway for the captions only applies where the scroll-
+   crossfade below actually runs: wide AND supported AND motion allowed.
+   Anywhere else (phone; a wide-but-unsupported old browser) the
+   captions stay ordinary .lp-step-sized list items, since nothing is
+   scroll-scrubbing them and 70vh of near-empty space would be the exact
+   "wall of black" problem 14.10 fixed on phone, reintroduced on desktop. */
+@supports (animation-timeline: view()) {
+  @media (min-width: 64em) and (prefers-reduced-motion: no-preference) {
+    .lp-scan-captions .lp-step {
+      min-height: 70vh;
+    }
+  }
+}
+
+/* The five states default to the settled export view, statically — the
+   `prefers-reduced-motion: reduce` fallback (14.8, non-negotiable, ships
+   in this same phase) AND the fallback for a browser that doesn't
+   support looping CSS animations at all (essentially none do, but this
+   stays the base case regardless). Progressive enhancement: real
+   content exists and is legible with zero animation of any kind before
+   anything below is layered on. */
+.scan-state {
+  opacity: 0;
+}
+
+.scan-state-5 {
+  opacity: 1;
+}
+
+/* Base enhancement, ALL sizes: a plain, self-contained, infinitely
+   looping time-based crossfade through the same five keyframes the
+   scroll-linked version uses (14.10) — reused, not duplicated, so the
+   two versions of "what state comes when" can't drift apart. No
+   `@supports` needed: a normal `animation` with no `animation-timeline`
+   runs on the default document timeline, which is universal. This is
+   also what a wide-but-unsupported browser falls back to, below. */
+@media (prefers-reduced-motion: no-preference) {
+  .scan-state {
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    animation-fill-mode: both;
+    animation-duration: 10s;
+    opacity: 0;
+  }
+
+  .scan-state-1 {
+    animation-name: scanState1;
+  }
+  .scan-state-2 {
+    animation-name: scanState2;
+  }
+  .scan-state-3 {
+    animation-name: scanState3;
+  }
+  .scan-state-4 {
+    animation-name: scanState4;
+  }
+  .scan-state-5 {
+    animation-name: scanState5;
+  }
+}
+
+/* Wide enhancement: where the browser actually supports scroll-driven
+   animations, override the loop above with the real scroll-crossfade —
+   same keyframes, same class-to-name mapping, just re-timed onto the
+   scroll position instead of the clock. */
+@supports (animation-timeline: view()) {
+  @media (min-width: 64em) and (prefers-reduced-motion: no-preference) {
+    .lp-scan-scroller {
+      view-timeline-name: --scan-progress;
+      view-timeline-axis: block;
+    }
+
+    .scan-state {
+      animation-duration: 1ms; /* the timeline drives real progress; a
+                                   duration is still required for the
+                                   animation to be considered running */
+      animation-iteration-count: 1;
+      animation-timeline: --scan-progress;
+    }
+  }
+}
+
+/* Approximate crossfade windows across the pin's full "cover" scroll
+   range (0% = the section starts entering the viewport, 100% = it has
+   fully exited) — states 1 and 5 deliberately get the shortest windows,
+   at the very edges of that range, since those correspond to the brief
+   entry/exit glimpse either side of the section actually being pinned;
+   the fully-pinned middle is where states 2–4 live. Exact percentages
+   are a first pass — plan.md §19 and this step's own test section both
+   name real-device scrolling, not jsdom, as where this is actually
+   verified. */
+@keyframes scanState1 {
+  0% {
+    opacity: 1;
+  }
+  16% {
+    opacity: 1;
+  }
+  22% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes scanState2 {
+  0% {
+    opacity: 0;
+  }
+  18% {
+    opacity: 0;
+  }
+  24% {
+    opacity: 1;
+  }
+  38% {
+    opacity: 1;
+  }
+  44% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes scanState3 {
+  0% {
+    opacity: 0;
+  }
+  40% {
+    opacity: 0;
+  }
+  46% {
+    opacity: 1;
+  }
+  58% {
+    opacity: 1;
+  }
+  64% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes scanState4 {
+  0% {
+    opacity: 0;
+  }
+  60% {
+    opacity: 0;
+  }
+  66% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  86% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes scanState5 {
+  0% {
+    opacity: 0;
+  }
+  82% {
+    opacity: 0;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* --- Stat row (the problem section's real numbers) --- */
+
+.lp-stat {
+  font-size: var(--lp-display-2);
+  font-weight: 600;
+  color: var(--lp-foreground);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* --- Close section --- */
+
+.lp-close {
+  text-align: center;
+}
+
+.lp-close .lp-prose {
+  margin: 0 auto 24px;
+}
+
+/* --- Button color overrides, scoped to this page only ---
+   .btn/.btn-primary/.btn-secondary/.btn-sm (index.css) supply the pill
+   geometry, hit-target sizing and hover/active/disabled mechanics —
+   reused unchanged. Only color is overridden here, because those
+   classes read the app's theme-aware --primary/--surface/etc., which on
+   a light-mode system would resolve to LIGHT colors — wrong on a page
+   that is dark unconditionally. */
+.landing .btn-primary {
+  background: var(--lp-primary);
+  color: var(--lp-primary-foreground);
+}
+
+.landing .btn-primary:hover:not(:disabled) {
+  background: var(--lp-primary-hover);
+}
+
+.landing .btn-secondary {
+  background: var(--lp-surface-2);
+  color: var(--lp-foreground);
+  border-color: var(--lp-border);
+}
+
+.landing .btn-secondary:hover:not(:disabled) {
+  background: var(--lp-surface);
+}
+
+.landing .btn:focus-visible {
+  outline-color: var(--lp-primary);
+}
+
+/* step.md 14.6 (plan.md §19) — the static-shell visibility toggle. Not a
+   landing TOKEN like everything above (nothing here is `--lp-*`); this is
+   the mechanism itself, kept in this file only because
+   `scripts/prerender-landing.mjs` inlines this whole file as the page's
+   critical CSS. The `html.ms-app-visible` class name has to match
+   `landing.ts`'s APP_VISIBLE_CLASS literally — a `<style>` block can't
+   import a TS constant — so landing.test.ts reads this file's text and
+   pins the two copies together.
+
+   `:not(.ms-app-visible)` rather than redeclaring `display` on the
+   visible side deliberately — #root's real display value belongs to
+   index.css (a flex column, step.md step 5), and duplicating it here
+   with a higher-specificity selector would silently pin it to `block`
+   the moment the class was added. */
+#landing-root {
+  display: block;
+}
+
+html.ms-app-visible #landing-root {
+  display: none;
+}
+
+html:not(.ms-app-visible) #root {
+  display: none;
+}

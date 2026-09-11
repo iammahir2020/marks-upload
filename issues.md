@@ -1,6 +1,6 @@
 # Issues
 
-Two audits, recorded together.
+Three audits, recorded together.
 
 **Audit 1 (2026-08-27)** — `code-review` (backend + frontend, targeted
 directly at `backend/` and `frontend/` since the default diff-based mode
@@ -51,6 +51,23 @@ publicly-reachable ones — are still open.**
 The audit-1 "Security review — clean" verdict is **superseded**: N1 is a
 HIGH, verified, arbitrary-file-write on a now-publicly-deployed endpoint.
 
+**Audit 3 (2026-09-10)** — a full-repo security audit requested directly
+by the user, not tied to a step boundary. Rather than re-read files audit
+2 already covered, it targeted audit 2's own **"what this audit did NOT
+cover"** list (below) plus the entire step 14 landing-page/build-tooling
+codebase, written this same session and never opened by anyone before.
+Two parallel sub-audits, one per area, each instructed to trace every
+candidate finding through the actual code before reporting it and to say
+"nothing found" rather than pad the report — the same discipline the
+first two audits held themselves to. One candidate from the sub-audits
+(a suspected world-readable TLS private key in `gen_dev_cert.py`) was
+independently re-verified by actually generating a certificate with this
+machine's OpenSSL and checking the resulting file's permissions — it came
+back `600` regardless of umask (modern OpenSSL chmods private keys itself,
+independent of the process umask), so that candidate was **discarded as a
+false positive** rather than recorded. One finding survived verification:
+**N37**, below.
+
 Findings were verified by running the code, not taken on a tool's word.
 Where a finding was proven by execution it says so.
 
@@ -58,16 +75,20 @@ Where a finding was proven by execution it says so.
 
 ## At a glance
 
-51 findings: 43 from the two audits, plus N29 found while mapping backend
+52 findings: 43 from the two audits, plus N29 found while mapping backend
 findings to their frontend counterparts, N30 found while deploying,
 **N31-N34 found in the first live grading session**, **N35 found
-while checking a user-raised question about the marks decoder**, and
-**N36 found while building the per-assessment delete feature**.
-**43 fixed, 2 partly fixed, 1 accepted, 5 open.** Grouped by state rather than by number, so the
+while checking a user-raised question about the marks decoder**,
+**N36 found while building the per-assessment delete feature**, and
+**N37 found in a 2026-09-10 full-repo audit** that specifically targeted
+audit 2's own "not read at all" list plus the brand-new step 14 landing-
+page code — see that audit's own write-up below.
+**43 fixed, 2 partly fixed, 1 accepted, 6 open.** Grouped by state rather than by number, so the
 actionable set is the first thing on the page. Search the `#` to jump to a
 finding's full entry in Part A or Part B below.
 
-Six rounds of fixes total, the last on 2026-09-10:
+Seven rounds of fixes, plus one new audit pass that found something rather
+than closing it, the last on 2026-09-10:
 
 1. **Frontend pass** — the 12 addressable without touching the backend,
    plus 4 doc/drift items. Cleared all four broken invariants.
@@ -101,19 +122,40 @@ Six rounds of fixes total, the last on 2026-09-10:
    (always unexported) would have made the section it lived in
    permanently undeletable the moment step 13.24 shipped a way to delete
    one. Found and fixed the same day, before it ever shipped broken.
+8. **Full-repo audit (2026-09-10)**, prompted by a direct request rather
+   than a step boundary — targeted specifically at audit 2's own "not read
+   at all" list (`local-stack.sh` beyond its first 50 lines, `aws/
+   MONITORING.md`, the standalone backend harnesses, several frontend
+   bootstrap files) plus the entire step 14 landing-page/build-tooling
+   codebase, none of which any prior pass had ever opened. One new
+   finding: **N37**, MinIO's S3 API and admin console published to the
+   whole LAN with hardcoded credentials in `local-stack.sh` — real, but
+   dev/test-tooling-only. Everything else read in this pass — the step
+   14 code (`landing.ts`, `landing.css`, `Landing.tsx`, `ScanGraphic.tsx`,
+   `ScanAnimation.tsx`, `prerenderEntry.tsx`,
+   `scripts/prerender-landing.mjs`), the CNN training/accuracy scripts,
+   `gen_dev_cert.py` (its private key file was suspected world-readable;
+   verified by actually generating one, and modern OpenSSL already
+   chmods it 600 regardless of umask — not a finding), and the remaining
+   frontend bootstrap files — showed nothing meeting this project's own
+   bar for a real, exploitable finding. See this pass's own "what it did
+   and didn't cover" note after N37 below.
 
 What is left — **every open finding is Low, except N34 (Med, deferred by
-explicit choice)**:
+explicit choice) and N37 (Med, dev-tooling, just found)**:
 
 - **N34**, deferred — this finding always needed a decision, not just
   code (retaining a failing photo means new server-side retention and its
   own disclosure). Asked to choose on 2026-09-09, the user chose to defer
   entirely rather than commit to a fix direction.
+- **N37**, open — found 2026-09-10, not yet fixed. A one-line change
+  (bind MinIO's two ports to `127.0.0.1` instead of every interface).
 - **4 are deploy/infra**, recognizer-independent — N11, N15, N22, N23, all
   Low and none blocking.
 
 Everything the two desk audits found on the `cnn` path is closed; what is
-open now is one deferred-by-choice finding and infra.
+open now is two deferred/just-found findings (one by choice, one brand
+new) and infra.
 - **0 are frontend, 0 are dormant, and nothing High remains open
   anywhere.**
 
@@ -1160,6 +1202,78 @@ answers "where do the recognizers disagree" without recording anybody's ID.
 If the raw values are genuinely needed, route them through
 `observability._scrub` and say so.
 
+### N37. `local-stack.sh` publishes MinIO's S3 API and console to the whole LAN, with hardcoded weak credentials
+
+**Status: OPEN — found 2026-09-10 (full-repo audit, step 14 landing page work), never previously reviewed.** Audit 2 (2026-08-31) explicitly listed `local-stack.sh` as read only for its first 50 lines, "a meaningful gap" in its own words. This finding is in the part that wasn't read.
+
+**Files:** [local-stack.sh:37-38](local-stack.sh#L37-L38) (credentials), [local-stack.sh:82-85](local-stack.sh#L82-L85) (`docker run`), [local-stack.sh:164](local-stack.sh#L164) (the script's own printed instructions)
+
+```bash
+MINIO_USER=localdev
+MINIO_PASS=localdev123
+...
+docker run -d --name marks-minio --network "$NET" -p 9000:9000 -p 9001:9001 \
+  -v "$VOLUME:/data" \
+  -e "MINIO_ROOT_USER=$MINIO_USER" -e "MINIO_ROOT_PASSWORD=$MINIO_PASS" \
+  quay.io/minio/minio server /data --console-address ":9001" >/dev/null
+```
+
+`docker run -p 9000:9000 -p 9001:9001`, with no host IP given, binds both
+the MinIO S3 API and its admin console to **every interface**, not just
+`127.0.0.1` — Docker's documented default when a bind address is omitted.
+Nothing on the host actually needs that: the script's own `minio_aws()`
+helper (the only thing that talks to MinIO from outside a container)
+connects via `http://127.0.0.1:9000`, and the backend container reaches
+MinIO over the internal `marks-minio:9000` Docker network name, never
+through the published port at all — the script's own comment at line 73-75
+says as much, explaining why *only* the console used to be published and
+why that was wrong (bucket creation failed from the host). The script's own
+printed output even tells the developer to visit `http://localhost:9001` —
+every documented, intended access path is loopback-only. The actual bind is
+LAN-wide, wider than anything the script itself uses.
+
+This is exactly the same category of gap as N1: a resource that is
+supposed to be reachable only from `127.0.0.1` is reachable from anywhere
+that can route to the host, because nothing pins the bind address. The
+difference is what's behind it — this is dev/test tooling, `local-stack.sh`
+never runs in the deployed Lambda shape, and the credentials are gitignored
+nowhere near it (they're literal strings in a tracked script, so "secret"
+is generous — anyone who can read this file already has them).
+
+**Exploit scenario:** `local-stack.sh`'s own stated purpose (its header
+comment and `up()`'s printed instructions) is to run the deployed shape
+locally and then "open the frontend on your phone" over the LAN to run a
+real scan — i.e., the script is specifically designed to be used while a
+second device shares the laptop's WiFi. Campus WiFi, shared office
+networks, and most home networks all put every connected device on one
+broadcast domain by default. Anyone else on that same network during a
+`./local-stack.sh up` session can browse to `http://<LAN_IP>:9001`, log in
+with `localdev`/`localdev123` (this file, committed and readable by anyone
+with repo access), and read, write or delete every object in the
+`marks-crops` bucket — which is exactly where real harvested handwriting
+crops land during that dry run (`crops()`'s own `s3 ls` target). This
+directly undercuts the deliberate, otherwise-careful work elsewhere in the
+project to keep harvested crops unlinkable and per-source-tagged (11.0.2,
+the crop-ordering and mtime fixes): none of that unlinkability matters if
+the bucket holding them is open to the LAN with a hardcoded password.
+
+**Severity:** MEDIUM. Never reaches the deployed Lambda shape (the AWS
+path uses a real S3 bucket with IAM credentials, not MinIO), and exploiting
+it needs an adversary already positioned on the same local network during
+a specific, short-lived local dry-run session — but that is precisely the
+scenario the script exists to invite (phone-on-same-WiFi), the credentials
+are trivially discoverable (committed, hardcoded), and the data at risk is
+the real training corpus the rest of the codebase treats with real care.
+
+**Fix direction:** bind both ports to loopback only —
+`-p 127.0.0.1:9000:9000 -p 127.0.0.1:9001:9001` — which satisfies every
+documented use in the script (the host helper and the printed
+`localhost:9001` instructions) without changing behavior for anyone using
+it as intended. If LAN access to the console is ever wanted for a specific
+reason, generate a random password per run (`openssl rand -base64 18`, one
+line) rather than a hardcoded one, and say in the printed output that it's
+now intentionally LAN-reachable.
+
 ---
 
 ## LOW
@@ -1873,7 +1987,7 @@ Same doc-drift family as **N10** and **N20**, listed separately because
 
 ---
 
-## What this audit did NOT cover
+## What audit 2 did NOT cover
 
 Stated so the absence of findings in these areas is not read as a clean
 bill of health.
@@ -1920,6 +2034,60 @@ production infrastructure and probing it is their call, not mine.
 
 ---
 
+## Audit 3 (2026-09-10) — scope and coverage
+
+Deliberately did not re-read anything audit 2 already covered (its "files
+read in full" list above). Scoped to exactly two things: audit 2's own
+"not read at all" list, and the step 14 landing-page/build-tooling code
+written this same session, which no audit had ever seen.
+
+**Read in full this pass, closing audit 2's gap:** `local-stack.sh` (all
+of it, not just the first 50 lines), `aws/MONITORING.md`,
+`backend/detect.py`, `backend/batch_detect.py`, `backend/id_ocr_accuracy.py`,
+`backend/harvest_real_photos.py`, `backend/generate_collection_sheet.py`,
+`backend/gen_dev_cert.py`, `backend/cnn/accuracy.py`,
+`backend/cnn/marks_accuracy.py`, `backend/cnn/train.py`,
+`backend/cnn/model.py`, `backend/cnn/inspect_preprocess.py`,
+`frontend/vite.config.ts`, `frontend/src/index.css`,
+`frontend/src/main.tsx`, `frontend/src/setupTests.ts`.
+
+**Read in full, never in scope for any prior audit (written this
+session):** `frontend/src/landing.ts`, `frontend/src/landing.css`,
+`frontend/src/Landing.tsx`, `frontend/src/ScanGraphic.tsx`,
+`frontend/src/ScanAnimation.tsx`, `frontend/src/prerenderEntry.tsx`,
+`frontend/scripts/prerender-landing.mjs`, `frontend/src/prerender.test.ts`,
+the diffs to `frontend/src/App.tsx` and `frontend/src/Library.tsx` for the
+landing page's entry/exit wiring, and the relevant bits of
+`frontend/package.json` and `frontend/tsconfig.app.json`.
+
+**Also spot-checked:** the backend diff behind N31/N32/N33/N35/N36 (already
+recorded as fixed; re-read here to confirm the fixes themselves introduce
+nothing new — `unmatchedFields` is bounded (`max_length=MAX_QUESTIONS + 1`)
+and only ever used for `in`-membership checks against a fixed vocabulary,
+never in a file path or subprocess call).
+
+**Not covered by this pass, and still not covered by any audit:** the
+step 12/13 frontend additions — `roster.ts`, `examSheet.ts`,
+`workbookExport.ts`, `rosterMatch.ts`, `sections.ts`, `Library.tsx`,
+`SectionForm.tsx`, `AssessmentForm.tsx`, and `db.ts`'s v5 migration and
+delete cascades. Deliberately deprioritized rather than forgotten: every
+one of these runs entirely client-side, on the instructor's own device,
+against files and IndexedDB data the instructor themselves provided — no
+network trust boundary is crossed, unlike the backend's public `/api/*`
+endpoints, which is where every HIGH finding in this file (N1, N2, N31,
+N32) has lived. A parsing bug in `roster.ts` against a malformed `.xlsx`
+would be a bug in the instructor's own tab, not an attack surface. If a
+future audit has reason to think otherwise (e.g., a hosted multi-user
+version), this is the list to start from.
+
+**Also not done:** dynamic testing of `local-stack.sh`'s actual MinIO
+exposure (N37) against a real second device on the same network — the
+finding is verified by reading the `docker run` flags and Docker's
+documented bind-address default, not by an actual port scan from another
+machine.
+
+---
+
 ## Suggested order of work
 
 Nothing here is required for the laptop pilot to keep working, but four
@@ -1941,5 +2109,8 @@ items gate anything else:
    and the exported file. These are the ones that produce a *wrong mark in
    a real gradebook*, which is the failure this project's invariants exist
    to prevent.
+4. **N37** — one line (`-p 127.0.0.1:9000:9000 -p 127.0.0.1:9001:9001`) in
+   `local-stack.sh`, before the next `./local-stack.sh up` session run on
+   shared WiFi.
 
 Everything else is genuine but survivable.

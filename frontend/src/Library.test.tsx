@@ -51,6 +51,7 @@ function makeRecord(assessmentId: string, overrides: Partial<StudentRecord> = {}
 function renderLibrary(overrides: { pendingSemesterOffer?: string | null } = {}) {
   const props = {
     pendingSemesterOffer: overrides.pendingSemesterOffer ?? null,
+    onShowLanding: vi.fn(),
     onNewSection: vi.fn(),
     onEditSection: vi.fn(),
     onNewAssessment: vi.fn(),
@@ -245,6 +246,39 @@ describe('Library — data-collection disclosure', () => {
     expect(note).toBeInTheDocument();
     expect(note.closest('details')).toBeNull();
     expect(screen.getAllByText(/never sent anywhere/i).length).toBeGreaterThan(0);
+  });
+
+  // Step.md 14.4/14.9 — the landing page's "way back". App.test.tsx
+  // covers the full round trip through App's own routing; this covers
+  // Library's own half of the contract in isolation: the link is offered
+  // and calls through when the caller provides it, Library never assumes
+  // it will be provided at all, and — 14.9's own fix — it stays visible
+  // once sections exist rather than living inside the "How this works"
+  // disclosure, which collapses itself the moment `sections.length > 0`.
+  it('"About" calls onShowLanding when provided', async () => {
+    const { onShowLanding } = renderLibrary();
+    fireEvent.click(await screen.findByRole('button', { name: /^about$/i }));
+    expect(onShowLanding).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays visible once a section exists, unlike the collapsible disclosure below it', async () => {
+    await saveSection(makeSection());
+    renderLibrary();
+    await screen.findByText('CSE203-1');
+    expect(screen.getByRole('button', { name: /^about$/i })).toBeInTheDocument();
+  });
+
+  it('offers no way back at all when onShowLanding is not provided', async () => {
+    render(
+      <Library
+        onNewSection={vi.fn()}
+        onEditSection={vi.fn()}
+        onNewAssessment={vi.fn()}
+        onOpenAssessment={vi.fn()}
+      />,
+    );
+    await screen.findByText(/no sections yet/i);
+    expect(screen.queryByRole('button', { name: /^about$/i })).not.toBeInTheDocument();
   });
 });
 

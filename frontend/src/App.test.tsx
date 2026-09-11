@@ -12,10 +12,13 @@ import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it } from 'vitest';
 import App from './App';
 import { saveSection } from './db';
+import { APP_VISIBLE_CLASS } from './landing';
 import type { Section } from './types';
 
 beforeEach(() => {
   indexedDB = new IDBFactory();
+  localStorage.clear();
+  document.documentElement.classList.remove(APP_VISIBLE_CLASS);
 });
 
 function makeSection(overrides: Partial<Section> = {}): Section {
@@ -108,5 +111,31 @@ describe('App — the semester-purge offer only fires on a genuinely new semeste
 
     await screen.findByText('CSE100');
     expect(screen.queryByText(/new semester/i)).not.toBeInTheDocument();
+  });
+});
+
+// Step.md 14.6 — since Phase B, the landing page is no longer a screen
+// React ever renders (that decision moved into the static shell
+// `scripts/prerender-landing.mjs` builds, and is tested against the real
+// build output in prerender.test.ts, not here — jsdom never sees that
+// shell's markup, only this component tree). What's left as real App.tsx
+// logic: the app always starts on the library, and "About" still has to
+// do SOMETHING — reveal the static markup already sitting in the DOM, by
+// clearing the class the shell's bootstrap script set.
+describe('App — the way back to the landing page (step.md 14.6/14.9)', () => {
+  it('always starts on the library screen, regardless of localStorage', async () => {
+    render(<App />);
+
+    expect(await screen.findByText('Your sections')).toBeInTheDocument();
+  });
+
+  it('"About" clears the app-visible class, revealing the static landing shell', async () => {
+    document.documentElement.classList.add(APP_VISIBLE_CLASS);
+    render(<App />);
+    await screen.findByText('Your sections');
+
+    fireEvent.click(await screen.findByRole('button', { name: /^about$/i }));
+
+    expect(document.documentElement.classList.contains(APP_VISIBLE_CLASS)).toBe(false);
   });
 });

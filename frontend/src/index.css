@@ -96,8 +96,19 @@ body {
   flex-direction: column;
 }
 
+/* `overflow-x: hidden` alone silently computes `overflow-y: auto` too (the
+   CSS Overflow spec couples the two axes whenever exactly one is
+   `visible`) — which makes `body` a scroll container, and ANY scroll-
+   container ancestor between a `position: sticky` element and the real
+   viewport confines its stickiness to that ancestor's own box instead.
+   `.data-table thead th`'s sticky header (and, before this fix,
+   `.lp-topbar`/`.lp-scan-pin` in landing.css) never actually stuck to
+   anything as a result — found while chasing exactly that symptom on the
+   landing page. `overflow: clip visible` clips the same horizontal
+   overflow without ever computing to a non-`visible` value on the other
+   axis, so it can't trigger the coupling. */
 body {
-  overflow-x: hidden;
+  overflow: clip visible;
 }
 
 h1,

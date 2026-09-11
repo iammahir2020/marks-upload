@@ -209,9 +209,20 @@ if [ -d "$HERE/frontend/node_modules" ]; then
   # backend at all.
   PREFLIGHT_DIST="$HERE/frontend/.preflight-dist"
   rm -rf "$PREFLIGHT_DIST"
+  # NOT `npm run build -- --outDir ...`: "build" is `tsc -b && vite build &&
+  # node scripts/prerender-landing.mjs`, three commands chained with `&&`,
+  # and npm appends trailing `--` args to the very END of that string — so
+  # they land on the prerender script (which ignores them), never on `vite
+  # build`. That silently sent every "isolated" preflight build straight
+  # into the REAL dist/, which is exactly the bug this outDir trick exists
+  # to prevent. Running the three steps directly threads .preflight-dist
+  # through both commands that actually need to know about it.
   if ( cd "$HERE/frontend" \
+       && VITE_API_BASE="https://preflight.invalid" npx tsc -b \
        && VITE_API_BASE="https://preflight.invalid" \
-          npm run build -- --outDir .preflight-dist --emptyOutDir >/dev/null 2>&1 ); then
+          npx vite build --outDir .preflight-dist --emptyOutDir \
+       && node scripts/prerender-landing.mjs .preflight-dist \
+     ) >/dev/null 2>&1; then
     DIST_KB="$(du -sk "$PREFLIGHT_DIST" | cut -f1)"
     pass "production build succeeds (${DIST_KB} KB)"
     # VITE_* is inlined at build time; if the override does not appear in

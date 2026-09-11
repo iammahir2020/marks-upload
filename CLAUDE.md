@@ -52,11 +52,11 @@ source of truth.
 
 | File | What it is |
 |---|---|
-| [plan.md](plan.md) | Architecture, data models, screens, API contract, resolved decisions. §19 (2026-09-10) specs the landing page: static-first, prerendered, zero runtime JS, dark, Raycast's structure but not its skin — **specced, not built** |
-| [step.md](step.md) | Execution plan — steps 0–14, each with a *Before you start*, substeps, a test, and a *Done when* bar. **Step 14 (landing page) is specced 2026-09-10 and NOT built** — see plan.md §19 for its rationale, including why it is pre-rendered at build time rather than server-rendered. Steps 0–10 match plan §14; step 11 (hosted demo), step 12 (class-list workbook round trip) and step 13 (multi-course, multi-section persistence) are later, deliberate extensions beyond plan §13's MVP scope, each running in independently-shippable phases — three for 11, four for 12, four for 13. **All four phases of step 12 are done** (2026-09-07: roster upload/parsing/identification at Setup, writing the exam sheet back into the instructor's own file, roster-aware review/results, and pre-export coverage/duplicate-blocking/an opt-in totals column/IndexedDB persistence — each verified against the real 16-student marksheet, not only synthetic shapes); it reverses three of plan §15/§2/§13's recorded decisions on purpose, amended in 12.0. What remains is real-phone verification of the file picker and download, needing the user's own participation. **Step 13's all four phases are done (2026-09-10)**: the DB v5 schema/migration, `Library.tsx`/`SectionForm.tsx`/`AssessmentForm.tsx` replacing `Setup.tsx` (deleted), the roster moved onto the Section, every "don't grade into the wrong section" protection (context header, resume confirmation, assessment-scoped duplicate detection, an identity-carrying filename), and the real scoped semester purge — offered only when a section is created under a genuinely new semester label, blocked outright while any assessment in that semester has never been exported, comparing semester labels by exact string so drift (`Fall 2026` vs `fall 2026`) is surfaced as two purge candidates rather than silently merged. It reverses 12.1's fresh-upload-per-quiz rule on purpose, replacing it with a provenance line + Re-pick + re-cache rather than quietly editing the old sentence, and 12.1 now carries an amendment note saying so. **A same-day follow-up (13.22, 2026-09-10)** replaced the free-text semester field with a Spring/Summer/Autumn-plus-year picker and confirmed the app opens on the library — the two things step 13 had originally left open. Ends with the Progress table. |
+| [plan.md](plan.md) | Architecture, data models, screens, API contract, resolved decisions. §19 (2026-09-10) specs the landing page: static-first, prerendered, zero runtime JS, dark, Raycast's structure but not its skin — **all three phases (content, static-first prerendered delivery, the scroll-linked scan animation) built 2026-09-10; real-device verification of the animation's timing and phone layout still needed** |
+| [step.md](step.md) | Execution plan — steps 0–14, each with a *Before you start*, substeps, a test, and a *Done when* bar. **Step 14 (landing page) has all three phases code-done (2026-09-10)** — content, tokens, entry/exit; real static-first delivery, prerendered at build time via `scripts/prerender-landing.mjs` with zero runtime JS of its own; and the five-state scroll-linked scan animation (`ScanAnimation.tsx`) with its reduced-motion/unsupported-browser fallback — at ~7.9KB gzip first paint against §19's ~10KB budget. **14.9 (2026-09-10) fixed two real bugs found by actually using it**: `vite dev` (the everyday `./dev.sh` workflow) never served the landing page's static shell at all, since the prerender injection only ran on `vite build` — fixed with a dev-mode Vite plugin using the same injection code as the build script, now shared via `scripts/landing-shell.mjs`. Separately, the "way back" link was undiscoverable, tucked inside a `<details>` that collapses the moment a first section exists — moved to an always-visible "About" button in `Library.tsx`'s header. **What's left is real-device verification**, which the spec itself names as the only way to check the crossfade timing and phone layout jsdom can't simulate; see plan.md §19 for the rationale, including why it is pre-rendered at build time rather than server-rendered. Steps 0–10 match plan §14; step 11 (hosted demo), step 12 (class-list workbook round trip) and step 13 (multi-course, multi-section persistence) are later, deliberate extensions beyond plan §13's MVP scope, each running in independently-shippable phases — three for 11, four for 12, four for 13. **All four phases of step 12 are done** (2026-09-07: roster upload/parsing/identification at Setup, writing the exam sheet back into the instructor's own file, roster-aware review/results, and pre-export coverage/duplicate-blocking/an opt-in totals column/IndexedDB persistence — each verified against the real 16-student marksheet, not only synthetic shapes); it reverses three of plan §15/§2/§13's recorded decisions on purpose, amended in 12.0. What remains is real-phone verification of the file picker and download, needing the user's own participation. **Step 13's all four phases are done (2026-09-10)**: the DB v5 schema/migration, `Library.tsx`/`SectionForm.tsx`/`AssessmentForm.tsx` replacing `Setup.tsx` (deleted), the roster moved onto the Section, every "don't grade into the wrong section" protection (context header, resume confirmation, assessment-scoped duplicate detection, an identity-carrying filename), and the real scoped semester purge — offered only when a section is created under a genuinely new semester label, blocked outright while any assessment in that semester has never been exported, comparing semester labels by exact string so drift (`Fall 2026` vs `fall 2026`) is surfaced as two purge candidates rather than silently merged. It reverses 12.1's fresh-upload-per-quiz rule on purpose, replacing it with a provenance line + Re-pick + re-cache rather than quietly editing the old sentence, and 12.1 now carries an amendment note saying so. **A same-day follow-up (13.22, 2026-09-10)** replaced the free-text semester field with a Spring/Summer/Autumn-plus-year picker and confirmed the app opens on the library — the two things step 13 had originally left open. Ends with the Progress table. |
 | [stack-reference.md](stack-reference.md) | Library-level notes from Context7: exact calls, starting parameter values, known traps |
 | [learn.md](learn.md) | Plain-language walkthrough of what each finished step's code actually does, for learning alongside the build. Updated after each step — see "How to work here." |
-| [issues.md](issues.md) | **The open-defect register — read it before trusting any screen or endpoint.** Two audits: 2026-08-27 (15 findings) and a full re-read on 2026-08-31 (28 more, N1–N28), plus a first live grading session (N31–N34), N35 found while checking a direct user question, and N36 found while building the per-assessment delete feature. **46 of 51 are now fixed** — frontend (12), pair (11, closing both HIGH findings: N1 path traversal, N2 unbounded config), hot-path (**N4**, where a blank ID cell was producing a confident fabricated digit — demonstrated, not inferred, plus N18), cnn-path (N16, N17, N24, 15), dormant (4, cleared *ahead of* step 3r.6's comparison run), a **2026-09-09 live-session pass** closing **N31** and **N32**, both HIGH, plus **N33** — `decode_serial` now returns '?' per uncertain position instead of blanking the whole field (mirrors `read_id`), and harvesting refuses a crop the original scan couldn't match to a legal value regardless of what the instructor typed to get past Confirm — **N35 (2026-09-10)**, where a leading-zero mark ("03", "05") could never decode on the default `cnn` path because the decoder only ever scored a legal value's un-padded digit rendering — and **N36 (2026-09-10)**, where the section/semester delete guards blocked on `exportedAt === null` alone, which would have made a section holding even one brand-new (and therefore always-unexported) assessment permanently undeletable. **5 remain open**: **N34** (Med) was deliberately left unbuilt — asked to choose a fix direction, the user chose to defer it entirely — plus four Low deploy/infra items. Everything the desk audits found on the `cnn` path is closed, and three of the four live-session findings are too; N34 is open by choice, not by omission. Suites went 148/79 → **259/358**. It also carries an explicit "what this audit did NOT cover" section naming the files never opened. |
+| [issues.md](issues.md) | **The open-defect register — read it before trusting any screen or endpoint.** Three audits: 2026-08-27 (15 findings), a full re-read on 2026-08-31 (28 more, N1–N28), and a 2026-09-10 full-repo pass (N37) that specifically targeted the second audit's own "not read at all" list plus the entire step 14 landing-page/build-tooling codebase — see below for both, plus a first live grading session (N31–N34), N35 found while checking a direct user question, and N36 found while building the per-assessment delete feature. **46 of 52 are now fixed** — frontend (12), pair (11, closing both HIGH findings: N1 path traversal, N2 unbounded config), hot-path (**N4**, where a blank ID cell was producing a confident fabricated digit — demonstrated, not inferred, plus N18), cnn-path (N16, N17, N24, 15), dormant (4, cleared *ahead of* step 3r.6's comparison run), a **2026-09-09 live-session pass** closing **N31** and **N32**, both HIGH, plus **N33** — `decode_serial` now returns '?' per uncertain position instead of blanking the whole field (mirrors `read_id`), and harvesting refuses a crop the original scan couldn't match to a legal value regardless of what the instructor typed to get past Confirm — **N35 (2026-09-10)**, where a leading-zero mark ("03", "05") could never decode on the default `cnn` path because the decoder only ever scored a legal value's un-padded digit rendering — and **N36 (2026-09-10)**, where the section/semester delete guards blocked on `exportedAt === null` alone, which would have made a section holding even one brand-new (and therefore always-unexported) assessment permanently undeletable. **6 remain open**: **N34** (Med) was deliberately left unbuilt — asked to choose a fix direction, the user chose to defer it entirely; **N37** (Med, found 2026-09-10) is `local-stack.sh` publishing MinIO's S3 API and console to the whole LAN with hardcoded credentials, a one-line fix (bind both ports to `127.0.0.1`) not yet applied — plus four Low deploy/infra items. Everything the desk audits found on the `cnn` path is closed, and three of the four live-session findings are too; N34 is open by choice, N37 by not yet being fixed. Suites went 148/79 → **259/358** (N37 is a shell-script finding, not covered by either suite). It also carries explicit "what audit N did NOT cover" sections naming the files never opened, updated after each audit. |
 | `marks-grid-template.docx` | The grid the instructor pastes into the question paper |
 
 Commands below are the ones the specs call for. Once a step has actually
@@ -537,7 +537,27 @@ marks-upload/
 │       ├── data/                #  gitignored — EMNIST download (~2GB), regenerated by train.py
 │       └── checkpoints/         #  gitignored *.pt; digit_cnn.onnx (~1.8MB) is the real deliverable
 └── frontend/
-    ├── vite.config.ts          # PWA + basicSsl (not mkcert — see Commands) + Vitest config
+    ├── vite.config.ts          # PWA + basicSsl (not mkcert — see Commands) + Vitest config.
+    │                           # Step 14.9 — landingShellDevPlugin (apply: 'serve') injects the
+    │                           # SAME static landing shell into `vite dev`'s served index.html
+    │                           # that scripts/prerender-landing.mjs injects into a real build,
+    │                           # via server.ssrLoadModule('/src/prerenderEntry.tsx') — Vite's own
+    │                           # supported way to run app source through its dev transform
+    │                           # pipeline, no second toolchain. Exported so
+    │                           # landingShellDev.test.ts can drive it through a real dev server
+    │                           # in middleware mode; before this, `./dev.sh` never served the
+    │                           # landing page at all, on any visit
+    ├── scripts/
+    │   ├── landing-shell.mjs   # step 14.9 — buildBootstrapScript/injectLandingShell, factored
+    │   │                       # out of prerender-landing.mjs so the dev plugin above and the
+    │   │                       # real build inject byte-identical markup, never two copies that
+    │   │                       # can drift; landing-shell.d.mts is its hand-written companion
+    │   │                       # (tsconfig.node.json has no allowJs, so a plain .mjs import from
+    │   │                       # vite.config.ts needs a declaration file)
+    │   └── prerender-landing.mjs  # step 14.5/14.6 — now a thin wrapper: bundles
+    │                           # prerenderEntry.tsx via Vite's own SSR build, calls
+    │                           # renderLandingMarkup(), and hands the result to
+    │                           # landing-shell.mjs's injectLandingShell()
     └── src/
         ├── types.ts            # QuizConfig, StudentRecord — mirrors app/models.py
         ├── db.ts               # IndexedDB (idb) — step 5.2, now DB v5 (step 13):
@@ -638,7 +658,12 @@ marks-upload/
         │                       # shape, one level narrower), and the shared
         │                       # TypedDeleteConfirm both delete panels now use — the
         │                       # confirm button stays disabled until the section/quiz
-        │                       # name is typed back exactly
+        │                       # name is typed back exactly; step 14.9 — the landing
+        │                       # page's "About" way-back button lives in the always-
+        │                       # visible .app-header now, not inside the "How this
+        │                       # works" <details>, which collapses itself the instant
+        │                       # sections.length > 0 and made the original placement
+        │                       # undiscoverable for any Library with real data in it
         ├── SectionForm.tsx     # step 13.5/13.9 — create/edit a Section: course code,
         │                       # label, semester (step 13.22 — a Spring/Summer/Autumn
         │                       # button group + a year NumField, not free text; an
@@ -682,6 +707,85 @@ marks-upload/
         │                       # "CSE203-2_Quiz-1_2026-09-09.xlsx"; step 13.20 — stamps
         │                       # exportedAt on both export paths. "Reset everything" moved
         │                       # to Library.tsx (step 13)
+        ├── landing.ts          # step 14.4/14.6 (plan.md §19) — LANDING_SEEN_KEY and
+        │                       # APP_VISIBLE_CLASS, re-exported through prerenderEntry.tsx so
+        │                       # the build-time prerender script and the app embed the exact
+        │                       # same literals; showLandingOverlay() (Library's "way back")
+        │                       # just clears APP_VISIBLE_CLASS, revealing the static landing
+        │                       # markup that's been sitting in the DOM the whole visit. Phase
+        │                       # A's hasSeenLanding/markLandingSeen are RETIRED — nothing calls
+        │                       # them now that scripts/prerender-landing.mjs's inline bootstrap
+        │                       # script (plain JS, embedded in dist/index.html) is that check
+        ├── landing.css         # step 14.1/14.6/14.7/14.8/14.9/14.10 — the landing page's own dark palette, scoped
+        │                       # entirely under `.landing` (nothing on :root, so the app's
+        │                       # own theming is provably unaffected); a 4-step surface ladder
+        │                       # reusing the app's dark values verbatim plus one deeper
+        │                       # --lp-canvas step; fluid clamp() type ramp rooted at the phone
+        │                       # size; section rhythm 48px base -> 64/96 via min-width;
+        │                       # .landing .btn-primary etc. override only COLOR on the shared
+        │                       # .btn system, since it otherwise reads the app's theme-aware
+        │                       # tokens, wrong on a page that's dark unconditionally. Since
+        │                       # Phase B, also the static-shell visibility toggle (14.6):
+        │                       # `html:not(.ms-app-visible) #root{display:none}` — deliberately
+        │                       # never a display:block/flex rule for the visible case, since
+        │                       # index.css already owns #root's real flex layout and a same-
+        │                       # specificity override would have clobbered it. This file is no
+        │                       # longer bundled into the app's own CSS at all (nothing in the
+        │                       # client import graph reaches it post-Phase-B) — it's read as
+        │                       # raw text by scripts/prerender-landing.mjs instead, becoming
+        │                       # dist/index.html's inlined critical CSS. Also carries the scan
+        │                       # animation's CSS (14.7/14.8/14.10): `body`/`.landing` use
+        │                       # `overflow: clip visible`, NOT `overflow-x: hidden` (14.9 — the
+        │                       # latter silently computes `overflow-y: auto` too, which breaks
+        │                       # every `position: sticky` descendant, including this section's
+        │                       # own pin and the topbar, since Phase A). Phone (base) plays the
+        │                       # five states as a plain, self-looping, time-based `animation`
+        │                       # (10s, infinite, no `@supports` needed — it runs on the default
+        │                       # document timeline) with captions kept as an ordinary compact
+        │                       # list below it, NOT scroll-driven (14.10 — a single narrow
+        │                       # column has no room for the 55vh-per-caption scroll-runway the
+        │                       # crossfade needs, which read as broken even though the
+        │                       # underlying sticky/crossfade mechanism was technically correct).
+        │                       # Wide (`min-width: 64em`) overrides to the real scroll-linked
+        │                       # crossfade via `.lp-scan-scroller`'s view-timeline-name/-axis and
+        │                       # five `@keyframes scanStateN` blocks, gated behind
+        │                       # `@supports (animation-timeline: view()) and
+        │                       # (prefers-reduced-motion: no-preference)` — outside that guard
+        │                       # (any narrower viewport, an unsupported browser, or reduced
+        │                       # motion) every `.scan-state` defaults to `opacity:0` except
+        │                       # `.scan-state-5`, so the worst case is always the settled export
+        │                       # view, statically (14.8 ships in the same change as 14.7)
+        ├── ScanGraphic.tsx     # step 14.2 — the HERO's static peek only: a settled marks grid
+        │                       # (ID row, four marks, one flagged), unanimated by design even
+        │                       # after Phase C, since the hero is a peek above the fold, not
+        │                       # the scrollytelling section
+        ├── ScanAnimation.tsx   # step 14.7/14.8 (plan.md §19) — the "How it works" section's
+        │                       # actual scroll-linked animation: one shared viewBox, five
+        │                       # <g class="scan-state-N"> groups (photographed/rotated,
+        │                       # straightened/detected, cells separated, digits resolved with
+        │                       # Q3 flagged, the export as a mini spreadsheet row) crossfading
+        │                       # via opacity so there's no layout shift between them; unlike
+        │                       # ScanGraphic, includes a SERIAL row (§19's phone-reduced grid
+        │                       # needs one). The pin is aria-hidden — the captions beside/
+        │                       # beneath it (reusing .lp-step/.lp-list unchanged) already carry
+        │                       # the same content as real text. Purely presentational, no
+        │                       # hooks, for the same renderToStaticMarkup reason as Landing.tsx
+        ├── Landing.tsx         # step 14.2/14.3 — the landing page itself (plan.md §19's
+        │                       # seven sections); purely presentational, no hooks, since
+        │                       # prerenderEntry.tsx runs it through renderToStaticMarkup in
+        │                       # Node; every factual claim pinned by its own Landing.test.tsx
+        │                       # case. Since Phase B (14.6), a BUILD-TIME INPUT ONLY — nothing
+        │                       # in the shipped app imports it any more (App.tsx dropped its
+        │                       # 'landing' screen), so it ships no runtime chunk. The three
+        │                       # data-open-app attributes are what let the static markup's own
+        │                       # buttons work with zero JS of their own — onClick={onOpenApp}
+        │                       # never serializes into static HTML and exists only for
+        │                       # Landing.test.tsx's component-level tests
+        ├── prerenderEntry.tsx  # step 14.5 — the ONLY module scripts/prerender-landing.mjs
+        │                       # imports: renderLandingMarkup() (renderToStaticMarkup, actually
+        │                       # run) plus a re-export of landing.ts's two shared constants, so
+        │                       # the Node script embeds the same literals rather than a second,
+        │                       # hand-typed copy that could drift
         └── App.tsx             # step 13.7 — a real screen enum (library/section/assessment/
                                  # scan/results) replaces `config === null` as the router;
                                  # threads Section/Assessment down to Scan/Review/Results via
@@ -689,8 +793,22 @@ marks-upload/
                                  # SectionForm save handler reads every prior section's
                                  # semester BEFORE saving, and only for a genuine creation
                                  # (never an edit), to decide whether to hand Library a
-                                 # one-shot pendingSemesterOffer
+                                 # one-shot pendingSemesterOffer. Step 14.6 RETIRED the
+                                 # 'landing' Screen entirely — the app always starts on the
+                                 # library now, since the pre-load landing decision moved into
+                                 # the static shell scripts/prerender-landing.mjs builds; Library's
+                                 # onShowLanding prop (unchanged) is now wired straight to
+                                 # landing.ts's showLandingOverlay()
 ```
+
+`frontend/scripts/prerender-landing.mjs` (step 14.5/14.6, not under `src/`
+since it's a Node build script, not app code that Vite ever bundles for
+the browser) runs after `vite build`, wired into `npm run build`. It
+bundles `prerenderEntry.tsx` to plain JS via Vite's own SSR build mode —
+reusing the bundler already doing this exact JSX/TS transform for the
+real app is what keeps this step's "no new dependency" rule intact — then
+injects the rendered markup, `landing.css`'s raw text, and a ~15-line
+inline bootstrap script into the real `dist/index.html`, outside `#root`.
 
 ## Commands
 
@@ -800,7 +918,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --ssl-keyfile certs/key.pem --ssl-c
 # Frontend — HTTPS and LAN binding are on by default via vite.config.ts,
 # no --host flag needed
 cd frontend && npm run dev
-cd frontend && npx vitest run   # 358 tests as of step 13.24's per-assessment delete, 2026-09-10
+cd frontend && npx vitest run   # 397 tests as of step 14.10 (dev-mode landing shell, "About" button, the overflow/sticky fix, and the phone scan animation fix), 2026-09-10
                                 # (use `npm run build` to typecheck — see the tsc caveat below); or `npx vitest` for watch mode
 cd frontend && npm run build
 ```
@@ -1140,6 +1258,43 @@ all-blank result as if it were a normal scan.
   streamless `<video>` node behind (frozen preview, `Capture` silently
   no-oping). Fixed by rendering `Review` as a `position: fixed` overlay
   instead, so `<video>` stays mounted the whole time — see learn.md step 7.
+- **Don't set `overflow-x` without also setting `overflow-y` (or vice
+  versa) on anything that's an ancestor of a `position: sticky` element.**
+  `body`'s and `.landing`'s `overflow-x: hidden` (there to guarantee no
+  horizontal scroll at 320px) each silently computed `overflow-y: auto`
+  too — the CSS Overflow spec couples the two axes whenever exactly one is
+  non-`visible` — which turns the element into a scroll container, and any
+  scroll-container ancestor between a sticky element and the real viewport
+  confines its stickiness to a box that, here, never itself scrolls. The
+  practical effect: `.lp-topbar` (the pinned CTA, decision 1's own core
+  requirement) and step 14.7's scan-animation pin never stuck to anything,
+  since Phase A — and the real app's own `.data-table thead th` sticky
+  Results header almost certainly hasn't either, on any real device,
+  since nothing before this could have caught it (jsdom renders no layout
+  at all). Found from a user screenshot (step 14.9), fixed with
+  `overflow: clip visible` instead of `overflow-x: hidden` in both
+  places — `clip` clips the same overflow without ever computing a
+  non-`visible` value on the other axis. Verified with a real Playwright/
+  Chromium browser, not jsdom: before the fix, sticky elements' positions
+  drifted in lockstep with `window.scrollY`; after, they held their `top`
+  offset through 2000px of real scrolling.
+- **Don't force a scroll-linked, multi-caption scrollytelling layout into
+  a single narrow column.** Step 14.7's phone layout gave a pinned
+  graphic's five captions `min-height: 55vh` each so the pin would have
+  scroll-runway to crossfade against — correct in a two-column desktop
+  layout, where a second column is genuinely that tall anyway, but on
+  one narrow column it meant several full screens of near-empty black
+  space per caption. The crossfade and the sticky pin were both, by
+  every measurement, working *correctly* — that's what made this one
+  easy to miss by inspecting the CSS alone, and why it had to be caught
+  with an actual iPhone-sized Playwright viewport (step 14.10) rather
+  than assumed fixed once 14.9's sticky bug was gone. Technically-correct
+  behavior surrounded by that much dead space still reads as broken. The
+  fix wasn't more tuning — it was recognizing phone doesn't have room for
+  scrollytelling at all, and falling back to a plain, self-looping,
+  non-scroll-driven animation there instead, with the captions kept as
+  an ordinary compact list (not removed — the graphic is `aria-hidden`,
+  so the captions are the section's only text for a screen reader).
 
 ## Deferred — don't build these
 
