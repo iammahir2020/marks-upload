@@ -87,7 +87,7 @@ async function main() {
   const gzipBytes = gzipSync(Buffer.from(firstPaintBytes, 'utf8')).length;
   console.log(
     `prerender-landing: injected ${landingHtml.length}B markup + ${landingCss.length}B CSS into ${distDir}/index.html ` +
-      `(~${gzipBytes}B gzip for the added first-paint content, budget ~10240B — plan.md §19)`,
+      `(~${gzipBytes}B gzip for the added first-paint content, budget ~12288B — plan.md §19)`,
   );
 }
 

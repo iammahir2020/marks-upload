@@ -83,7 +83,7 @@ while checking a user-raised question about the marks decoder**,
 **N37 found in a 2026-09-10 full-repo audit** that specifically targeted
 audit 2's own "not read at all" list plus the brand-new step 14 landing-
 page code — see that audit's own write-up below.
-**43 fixed, 2 partly fixed, 1 accepted, 6 open.** Grouped by state rather than by number, so the
+**44 fixed, 2 partly fixed, 1 accepted, 5 open.** Grouped by state rather than by number, so the
 actionable set is the first thing on the page. Search the `#` to jump to a
 finding's full entry in Part A or Part B below.
 
@@ -142,20 +142,19 @@ than closing it, the last on 2026-09-10:
    and didn't cover" note after N37 below.
 
 What is left — **every open finding is Low, except N34 (Med, deferred by
-explicit choice) and N37 (Med, dev-tooling, just found)**:
+explicit choice)**. **N37 (Med, dev-tooling) is fixed** (2026-09-12): MinIO's
+two ports now bind to `127.0.0.1` only ([local-stack.sh:82](local-stack.sh#L82)),
+not every interface:
 
 - **N34**, deferred — this finding always needed a decision, not just
   code (retaining a failing photo means new server-side retention and its
   own disclosure). Asked to choose on 2026-09-09, the user chose to defer
   entirely rather than commit to a fix direction.
-- **N37**, open — found 2026-09-10, not yet fixed. A one-line change
-  (bind MinIO's two ports to `127.0.0.1` instead of every interface).
 - **4 are deploy/infra**, recognizer-independent — N11, N15, N22, N23, all
   Low and none blocking.
 
 Everything the two desk audits found on the `cnn` path is closed; what is
-open now is two deferred/just-found findings (one by choice, one brand
-new) and infra.
+open now is one deferred-by-choice finding and infra.
 - **0 are frontend, 0 are dormant, and nothing High remains open
   anywhere.**
 
@@ -1204,7 +1203,7 @@ If the raw values are genuinely needed, route them through
 
 ### N37. `local-stack.sh` publishes MinIO's S3 API and console to the whole LAN, with hardcoded weak credentials
 
-**Status: OPEN — found 2026-09-10 (full-repo audit, step 14 landing page work), never previously reviewed.** Audit 2 (2026-08-31) explicitly listed `local-stack.sh` as read only for its first 50 lines, "a meaningful gap" in its own words. This finding is in the part that wasn't read.
+**Status: FIXED (2026-09-12).** Found 2026-09-10 (full-repo audit, step 14 landing page work), never previously reviewed — audit 2 (2026-08-31) explicitly listed `local-stack.sh` as read only for its first 50 lines, "a meaningful gap" in its own words, and this finding was in the part that wasn't read. Fixed by binding both published MinIO ports to `127.0.0.1` explicitly (`-p 127.0.0.1:9000:9000 -p 127.0.0.1:9001:9001`), exactly the one-line change this entry's own "Suggested order of work" item 4 named — nothing else in the script talks to MinIO through the published ports at all (see below), so this closes the LAN exposure with no behavior change to the script's actual, documented use.
 
 **Files:** [local-stack.sh:37-38](local-stack.sh#L37-L38) (credentials), [local-stack.sh:82-85](local-stack.sh#L82-L85) (`docker run`), [local-stack.sh:164](local-stack.sh#L164) (the script's own printed instructions)
 

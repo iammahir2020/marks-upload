@@ -564,6 +564,40 @@
   margin: 0 auto 24px;
 }
 
+/* The share QR code (QrCode.tsx) — a plain white card, not a --lp-*
+   surface: a QR code needs real light/dark contrast and a light quiet
+   zone to scan reliably, so it deliberately breaks from this page's dark
+   palette rather than trying to theme it. The frame around it stays
+   consistent with the rest of the page (hairline border, no shadow —
+   same rule .lp-card follows). */
+.lp-share {
+  margin-top: 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.lp-qr-frame {
+  display: inline-flex;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--lp-border);
+  padding: 10px;
+  background: #fff;
+}
+
+.lp-share-link {
+  color: var(--lp-muted-foreground);
+  font-size: 0.875rem;
+  text-decoration: underline;
+  text-decoration-color: var(--lp-border);
+  text-underline-offset: 3px;
+}
+
+.lp-share-link:hover {
+  color: var(--lp-foreground);
+}
+
 /* --- Button color overrides, scoped to this page only ---
    .btn/.btn-primary/.btn-secondary/.btn-sm (index.css) supply the pill
    geometry, hit-target sizing and hover/active/disabled mechanics —

@@ -33,3 +33,12 @@ export const APP_VISIBLE_CLASS = 'ms-app-visible';
 export function showLandingOverlay(): void {
   document.documentElement.classList.remove(APP_VISIBLE_CLASS);
 }
+
+// The app's own deployed URL — encoded as a QR code on the landing
+// page's close section (`QrCode.tsx`) so it can be shared by showing the
+// screen to a colleague rather than reading the address out or typing it
+// into a message. Point this at wherever `./deploy.sh frontend` last
+// published to; this is deliberately the one copy of this string in
+// frontend code (README.md/deploy.sh's copies are for the deploy tooling
+// itself, not the app).
+export const DEPLOYED_APP_URL = 'https://d2n2meq17rr1oi.cloudfront.net';

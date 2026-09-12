@@ -86,6 +86,22 @@ describe('Landing — the pinned CTA (decision 1: visible at every scroll positi
   });
 });
 
+describe('Landing — sharing via QR code', () => {
+  it('shows a QR code that links to the deployed app', () => {
+    renderLanding();
+    const qr = screen.getByRole('img', { name: /qr code linking to https/i });
+    expect(qr).toBeInTheDocument();
+  });
+
+  it('also shows the same link as plain, readable text', () => {
+    renderLanding();
+    const qr = screen.getByRole('img', { name: /qr code linking to (https\S+)/i });
+    const url = qr.getAttribute('aria-label')!.replace(/^QR code linking to /, '');
+    const link = screen.getByRole('link', { name: url.replace(/^https?:\/\//, '') });
+    expect(link).toHaveAttribute('href', url);
+  });
+});
+
 // plan.md §19 section 4 — every claim here is an invariant enforced
 // elsewhere in the codebase (backend/app/marks.py's legal-value
 // rejection, app/detection.py's column_count_mismatch, examSheet.ts's

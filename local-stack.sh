@@ -79,7 +79,7 @@ up() {
   # silently destroys every crop collected during testing — which is
   # exactly the evidence you ran the test to look at.
   docker volume inspect "$VOLUME" >/dev/null 2>&1 || docker volume create "$VOLUME" >/dev/null
-  docker run -d --name marks-minio --network "$NET" -p 9000:9000 -p 9001:9001 \
+  docker run -d --name marks-minio --network "$NET" -p 127.0.0.1:9000:9000 -p 127.0.0.1:9001:9001 \
     -v "$VOLUME:/data" \
     -e "MINIO_ROOT_USER=$MINIO_USER" -e "MINIO_ROOT_PASSWORD=$MINIO_PASS" \
     quay.io/minio/minio server /data --console-address ":9001" >/dev/null

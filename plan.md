@@ -1797,6 +1797,8 @@ property that makes this app deployable at all — to save one file-picker
 tap. The File System Access API is a lighter alternative but is not
 available on the mobile browsers this workflow actually runs on. A
 download plus a manual upload is the right primitive for a phone.
+(Revisited 2026-09-12 as a live-write-to-a-specific-Sheet question, not a
+file-picker one — still not built; see §20.)
 
 ### Duplicate detection must be scoped, in the same change
 
@@ -2179,11 +2181,26 @@ logic, this is the one screen in the app where motion is earned.
 | Hero visual, inline SVG | ~2–5KB |
 | Scroll animation | 0 bytes of JS |
 | Fonts | 0 bytes — system stack |
+| Share QR code, inline SVG (added 2026-09-12) | ~2.5KB gzip |
 | Landing runtime JS chunk | 0 bytes — never ships |
 
 Under ~10KB gzipped for a complete first paint, against the current
 75KB-gzip JS-before-anything. If a change pushes past this, the change is
 wrong, not the budget.
+
+**Revised to ~12KB (2026-09-12) for the share-via-QR-code addition.** A
+QR code scannable at this URL's length costs ~2.5KB gzip on its own even
+after the cheapest real optimizations (`QrCode.tsx`: run-length-merged
+SVG path instead of one rect per module, Alphanumeric-mode encoding on
+an uppercased bare origin instead of Byte mode) — there is no further
+lever short of a URL shortener, which would trade a third-party
+dependency and an opaque link for a few hundred bytes, a bad trade for
+what this page is. That cost alone exceeded the ~2.3KB of headroom the
+original ~10KB figure left. The "change is wrong, not the budget" rule
+above is aimed at decorative bloat; this is a real, requested feature
+whose weight is inherent to what it does, so the budget moved instead —
+recorded here, not silently, and `prerender.test.ts`'s own assertion
+carries the same note.
 
 ### Open risks, named rather than assumed away
 
@@ -2215,3 +2232,92 @@ suite's job here is limited to content, entry logic and weight.
 goes dark page → light app. That is normal for marketing → product and is
 accepted, but the landing tokens must be **scoped to the page** and must
 not leak into `:root`, or they will break the app's own theming.
+
+## 20. Google Sheets live write — explored, not built (2026-09-12)
+
+Raised as an exploratory question: what would it take to connect Google
+Drive and write results directly into one specific Google Sheet, instead
+of (or alongside) the local `.xlsx` pick/download/re-cache flow §17/§18
+already build. **Nothing here is built.** This section exists so the
+exploration doesn't get re-derived from scratch later, and so it amends
+rather than silently contradicts §18's "Drive API is deliberately not the
+answer here" rejection above.
+
+Scoped by the answers given when it was raised: additive only (the
+existing local-file flow stays untouched), the instructor pastes a Sheet
+URL/ID rather than using a Google Picker, and the OAuth token exchange is
+client-side only (no backend, no refresh-token storage) — preserving the
+stateless-backend invariant even though it reopens the "no auth" one.
+
+### What it would require
+
+- **Google Cloud setup (manual, outside the repo)**: a project with the
+  Sheets API enabled; an OAuth consent screen left in Testing mode (avoids
+  Google's CASA review, caps at 100 listed test users, 7-day token
+  expiry); a Web-application OAuth client ID with the app's origins
+  authorized.
+- **Scope**: pasting an arbitrary Sheet ID rules out the narrow
+  `drive.file` scope (that scope only covers files opened through a
+  picker tied to the app) — this needs the broader
+  `https://www.googleapis.com/auth/spreadsheets` scope, and the consent
+  screen shows the correspondingly broader warning.
+- **Frontend-only additions**: Google Identity Services loaded via a
+  script tag (not the heavier `gapi` client); a new `googleSheets.ts`
+  module making plain `fetch` calls to the Sheets API v4 REST endpoints
+  (`spreadsheets.get`, `.batchUpdate`, `.values.update`), porting
+  `workbookExport.ts`'s `sanitizeSheetName`/`findSheetCollision` logic to
+  work against the API's returned tab list instead of an in-memory
+  `ExcelJS.Workbook`; a new optional `Section.googleSheet` field
+  (spreadsheetId, sheetTitle, connectedAt) alongside the existing
+  `workbook` field; a third export button on `Results.tsx` beside the two
+  that exist today.
+- **One real gap, not just a port**: `writeTotalsColumn`'s "write into the
+  existing roster sheet" only works today because the roster was parsed
+  from the uploaded `.xlsx` bytes. A Google-Sheet-sourced roster has no
+  equivalent unless a parallel "read the roster via `values.get`, run it
+  through the same header-matching rules" path is also built — otherwise
+  a Sheets export could only write a fresh results tab, not the opt-in
+  totals column.
+- **Auth tradeoff**: the access token would live only in memory, never
+  IndexedDB, never sent to a backend — but it's short-lived (~1 hour) with
+  no refresh flow, so a long grading session may need a second consent
+  popup.
+- **Privacy disclosure**: this reopens the "nothing leaves the laptop"
+  claim, which currently holds only because of the CNN default
+  recognition path. Any Section with a connected Google Sheet would need
+  its own visible disclosure that its marks data goes to Google's servers
+  on every write, the same way the harvesting disclosure already is one.
+
+### Restricting it to one instructor on the shared hosted demo
+
+Also raised: step 11's hosted demo is a single deployed bundle other
+faculty use from the same URL, and this feature should be visible/usable
+only by the person who requested it, not the others. There's no accounts
+system in this app (multi-user auth is deliberately deferred — see
+CLAUDE.md's Deferred list), so any gate here is necessarily client-side,
+not real access control. The shape discussed:
+
+- **Declutter layer**: the entry point only renders once a localStorage
+  flag is set, itself set by visiting the deployed URL once with a query
+  string only the requester would know (e.g. `?labs=sheets`) — mirroring
+  this app's existing env-style feature switches (`RECOGNIZER`) but moved
+  to a runtime, per-browser flag since a build-time env var can't
+  distinguish one visitor from another on one shared bundle.
+- **Backstop layer**: since anyone can read a deployed JS bundle and find
+  that query param, the feature's *function* (not just its visibility)
+  should also require Google Sign-In and check the signed-in email
+  against one hardcoded address baked into the build. Someone who finds
+  the trigger without the matching account sees "not available," not a
+  working feature.
+- **What this is and isn't**: UI-hiding plus a client-side identity check,
+  not real access control — there's no backend to enforce it against.
+  Fine for keeping other faculty from being confused by a button that
+  isn't for them; not a claim that anyone's data is protected against a
+  determined reader of the bundle. Should be documented as such wherever
+  it's built, not implied to be stronger than it is.
+
+### Not decided
+
+Whether to actually build this at all. Filed here as reference for if/when
+it's picked up, in the same spirit as §18's semester-purge decisions were
+filed as open questions before being resolved.

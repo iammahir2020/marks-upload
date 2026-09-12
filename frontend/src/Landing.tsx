@@ -22,6 +22,8 @@ import './landing.css';
 import GridTemplateFigure from './GridTemplateFigure';
 import ScanAnimation from './ScanAnimation';
 import ScanGraphic from './ScanGraphic';
+import QrCode from './QrCode';
+import { DEPLOYED_APP_URL } from './landing';
 
 interface LandingProps {
   onOpenApp: () => void;
@@ -155,6 +157,15 @@ export default function Landing({ onOpenApp }: LandingProps) {
           <button type="button" className="btn btn-primary" data-open-app onClick={onOpenApp}>
             Open the app
           </button>
+          <div className="lp-share">
+            <p className="lp-eyebrow">Share it</p>
+            <div className="lp-qr-frame">
+              <QrCode url={DEPLOYED_APP_URL} />
+            </div>
+            <a className="lp-share-link" href={DEPLOYED_APP_URL}>
+              {DEPLOYED_APP_URL.replace(/^https?:\/\//, '')}
+            </a>
+          </div>
         </div>
       </section>
     </div>
