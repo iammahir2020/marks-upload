@@ -598,6 +598,49 @@
   color: var(--lp-foreground);
 }
 
+/* --- Footer ---
+   A plain bottom bar, not another .lp-section: no eyebrow, no display
+   type scale, deliberately quieter than everything above it — the last
+   thing on the page, read by almost nobody, and should look it. */
+.lp-footer {
+  border-top: 1px solid var(--lp-border);
+  padding: 32px var(--lp-section-x);
+}
+
+.lp-footer-inner {
+  max-width: 640px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+}
+
+.lp-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 20px;
+}
+
+.lp-footer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--lp-muted-foreground);
+  font-size: 0.875rem;
+}
+
+.lp-footer-link:hover {
+  color: var(--lp-foreground);
+}
+
+.lp-footer-copyright {
+  color: var(--lp-faint);
+  font-size: 0.8125rem;
+}
+
 /* --- Button color overrides, scoped to this page only ---
    .btn/.btn-primary/.btn-secondary/.btn-sm (index.css) supply the pill
    geometry, hit-target sizing and hover/active/disabled mechanics —

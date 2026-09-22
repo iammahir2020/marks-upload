@@ -102,6 +102,30 @@ describe('Landing — sharing via QR code', () => {
   });
 });
 
+describe('Landing — footer', () => {
+  it('names the author and the current year in the copyright line', () => {
+    renderLanding();
+    const year = new Date().getFullYear();
+    expect(screen.getByText(new RegExp(`© ${year} Mahir Al Kamal\. All rights reserved\.`))).toBeInTheDocument();
+  });
+
+  it('links to email, GitHub, and LinkedIn', () => {
+    renderLanding();
+    expect(screen.getByRole('link', { name: /mahiralkamal\.mak@gmail\.com/i })).toHaveAttribute(
+      'href',
+      'mailto:mahiralkamal.mak@gmail.com',
+    );
+    expect(screen.getByRole('link', { name: /github/i })).toHaveAttribute(
+      'href',
+      'https://github.com/iammahir2020',
+    );
+    expect(screen.getByRole('link', { name: /linkedin/i })).toHaveAttribute(
+      'href',
+      'https://www.linkedin.com/in/mahiralkamal/',
+    );
+  });
+});
+
 // plan.md §19 section 4 — every claim here is an invariant enforced
 // elsewhere in the codebase (backend/app/marks.py's legal-value
 // rejection, app/detection.py's column_count_mismatch, examSheet.ts's
