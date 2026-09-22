@@ -216,7 +216,7 @@ describe('isCompleteId — issues.md N5', () => {
 describe('isValidSerial — issues.md N21', () => {
   it('rejects anything that is not a number', () => {
     // The one identity field nothing validated on EITHER side of the wire.
-    // results.ts sorts by Number(serial), so a non-numeric serial has no
+    // resultsTable.ts sorts by Number(serial), so a non-numeric serial has no
     // defined place in the exported table.
     for (const bad of ['abc', '7a', '1.5', '-1', '', '   ', '../x']) {
       expect(isValidSerial(bad)).toBe(false);

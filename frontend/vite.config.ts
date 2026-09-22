@@ -83,7 +83,7 @@ export function landingShellDevPlugin(): Plugin {
         })
       } catch (err) {
         // Fail toward the app still loading, never toward a broken dev
-        // server — the same posture landing.ts's own storage calls take.
+        // server — the same posture landingShell.ts's own storage calls take.
         // A typo in Landing.tsx should show up as a Vite overlay error
         // when the module itself loads, not as this plugin taking the
         // whole page down.

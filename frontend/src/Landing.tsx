@@ -23,7 +23,7 @@ import GridTemplateFigure from './GridTemplateFigure';
 import ScanAnimation from './ScanAnimation';
 import ScanGraphic from './ScanGraphic';
 import QrCode from './QrCode';
-import { DEPLOYED_APP_URL } from './landing';
+import { DEPLOYED_APP_URL } from './landingShell';
 
 interface LandingProps {
   onOpenApp: () => void;

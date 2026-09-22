@@ -633,7 +633,7 @@
    the mechanism itself, kept in this file only because
    `scripts/prerender-landing.mjs` inlines this whole file as the page's
    critical CSS. The `html.ms-app-visible` class name has to match
-   `landing.ts`'s APP_VISIBLE_CLASS literally — a `<style>` block can't
+   `landingShell.ts`'s APP_VISIBLE_CLASS literally — a `<style>` block can't
    import a TS constant — so landing.test.ts reads this file's text and
    pins the two copies together.
 

@@ -53,7 +53,7 @@ source of truth.
 | File | What it is |
 |---|---|
 | [plan.md](plan.md) | Architecture, data models, screens, API contract, resolved decisions. §19 (2026-09-10) specs the landing page: static-first, prerendered, zero runtime JS, dark, Raycast's structure but not its skin — **all three phases (content, static-first prerendered delivery, the scroll-linked scan animation) built 2026-09-10; real-device verification of the animation's timing and phone layout still needed** |
-| [step.md](step.md) | Execution plan — steps 0–14, each with a *Before you start*, substeps, a test, and a *Done when* bar. **Step 14 (landing page) has all three phases code-done (2026-09-10)** — content, tokens, entry/exit; real static-first delivery, prerendered at build time via `scripts/prerender-landing.mjs` with zero runtime JS of its own; and the five-state scroll-linked scan animation (`ScanAnimation.tsx`) with its reduced-motion/unsupported-browser fallback — at ~7.9KB gzip first paint against §19's ~10KB budget. **14.9 (2026-09-10) fixed two real bugs found by actually using it**: `vite dev` (the everyday `./dev.sh` workflow) never served the landing page's static shell at all, since the prerender injection only ran on `vite build` — fixed with a dev-mode Vite plugin using the same injection code as the build script, now shared via `scripts/landing-shell.mjs`. Separately, the "way back" link was undiscoverable, tucked inside a `<details>` that collapses the moment a first section exists — moved to an always-visible "About" button in `Library.tsx`'s header. **A same-day-adjacent addition (2026-09-12)**: the close section now shows a share QR code (`QrCode.tsx`) encoding the app's own deployed URL (`landing.ts`'s `DEPLOYED_APP_URL`), for showing the screen to a colleague to scan rather than reading the address out or typing it into a message — plus the plain link as readable text alongside it. Verified by decoding the actual built SVG path with a real QR decoder (jsQR), not just by trusting the encoder. This pushed the page's own weight budget from ~10KB to ~12KB gzip (plan.md §19's Weight budget table has the accounting) — a deliberate, documented exception to that section's "the change is wrong, not the budget" rule, since the cost is inherent to a real requested feature rather than decorative bloat. **What's left is real-device verification**, which the spec itself names as the only way to check the crossfade timing and phone layout jsdom can't simulate; see plan.md §19 for the rationale, including why it is pre-rendered at build time rather than server-rendered. Steps 0–10 match plan §14; step 11 (hosted demo), step 12 (class-list workbook round trip) and step 13 (multi-course, multi-section persistence) are later, deliberate extensions beyond plan §13's MVP scope, each running in independently-shippable phases — three for 11, four for 12, four for 13. **All four phases of step 12 are done** (2026-09-07: roster upload/parsing/identification at Setup, writing the exam sheet back into the instructor's own file, roster-aware review/results, and pre-export coverage/duplicate-blocking/an opt-in totals column/IndexedDB persistence — each verified against the real 16-student marksheet, not only synthetic shapes); it reverses three of plan §15/§2/§13's recorded decisions on purpose, amended in 12.0. What remains is real-phone verification of the file picker and download, needing the user's own participation. **Step 13's all four phases are done (2026-09-10)**: the DB v5 schema/migration, `Library.tsx`/`SectionForm.tsx`/`AssessmentForm.tsx` replacing `Setup.tsx` (deleted), the roster moved onto the Section, every "don't grade into the wrong section" protection (context header, resume confirmation, assessment-scoped duplicate detection, an identity-carrying filename), and the real scoped semester purge — offered only when a section is created under a genuinely new semester label, blocked outright while any assessment in that semester has never been exported, comparing semester labels by exact string so drift (`Fall 2026` vs `fall 2026`) is surfaced as two purge candidates rather than silently merged. It reverses 12.1's fresh-upload-per-quiz rule on purpose, replacing it with a provenance line + Re-pick + re-cache rather than quietly editing the old sentence, and 12.1 now carries an amendment note saying so. **A same-day follow-up (13.22, 2026-09-10)** replaced the free-text semester field with a Spring/Summer/Autumn-plus-year picker and confirmed the app opens on the library — the two things step 13 had originally left open. Ends with the Progress table. |
+| [step.md](step.md) | Execution plan — steps 0–14, each with a *Before you start*, substeps, a test, and a *Done when* bar. **Step 14 (landing page) has all three phases code-done (2026-09-10)** — content, tokens, entry/exit; real static-first delivery, prerendered at build time via `scripts/prerender-landing.mjs` with zero runtime JS of its own; and the five-state scroll-linked scan animation (`ScanAnimation.tsx`) with its reduced-motion/unsupported-browser fallback — at ~7.9KB gzip first paint against §19's ~10KB budget. **14.9 (2026-09-10) fixed two real bugs found by actually using it**: `vite dev` (the everyday `./dev.sh` workflow) never served the landing page's static shell at all, since the prerender injection only ran on `vite build` — fixed with a dev-mode Vite plugin using the same injection code as the build script, now shared via `scripts/landing-shell.mjs`. Separately, the "way back" link was undiscoverable, tucked inside a `<details>` that collapses the moment a first section exists — moved to an always-visible "About" button in `Library.tsx`'s header. **A same-day-adjacent addition (2026-09-12)**: the close section now shows a share QR code (`QrCode.tsx`) encoding the app's own deployed URL (`landingShell.ts`'s `DEPLOYED_APP_URL`), for showing the screen to a colleague to scan rather than reading the address out or typing it into a message — plus the plain link as readable text alongside it. Verified by decoding the actual built SVG path with a real QR decoder (jsQR), not just by trusting the encoder. This pushed the page's own weight budget from ~10KB to ~12KB gzip (plan.md §19's Weight budget table has the accounting) — a deliberate, documented exception to that section's "the change is wrong, not the budget" rule, since the cost is inherent to a real requested feature rather than decorative bloat. **What's left is real-device verification**, which the spec itself names as the only way to check the crossfade timing and phone layout jsdom can't simulate; see plan.md §19 for the rationale, including why it is pre-rendered at build time rather than server-rendered. Steps 0–10 match plan §14; step 11 (hosted demo), step 12 (class-list workbook round trip) and step 13 (multi-course, multi-section persistence) are later, deliberate extensions beyond plan §13's MVP scope, each running in independently-shippable phases — three for 11, four for 12, four for 13. **All four phases of step 12 are done** (2026-09-07: roster upload/parsing/identification at Setup, writing the exam sheet back into the instructor's own file, roster-aware review/results, and pre-export coverage/duplicate-blocking/an opt-in totals column/IndexedDB persistence — each verified against the real 16-student marksheet, not only synthetic shapes); it reverses three of plan §15/§2/§13's recorded decisions on purpose, amended in 12.0. What remains is real-phone verification of the file picker and download, needing the user's own participation. **Step 13's all four phases are done (2026-09-10)**: the DB v5 schema/migration, `Library.tsx`/`SectionForm.tsx`/`AssessmentForm.tsx` replacing `Setup.tsx` (deleted), the roster moved onto the Section, every "don't grade into the wrong section" protection (context header, resume confirmation, assessment-scoped duplicate detection, an identity-carrying filename), and the real scoped semester purge — offered only when a section is created under a genuinely new semester label, blocked outright while any assessment in that semester has never been exported, comparing semester labels by exact string so drift (`Fall 2026` vs `fall 2026`) is surfaced as two purge candidates rather than silently merged. It reverses 12.1's fresh-upload-per-quiz rule on purpose, replacing it with a provenance line + Re-pick + re-cache rather than quietly editing the old sentence, and 12.1 now carries an amendment note saying so. **A same-day follow-up (13.22, 2026-09-10)** replaced the free-text semester field with a Spring/Summer/Autumn-plus-year picker and confirmed the app opens on the library — the two things step 13 had originally left open. Ends with the Progress table. |
 | [stack-reference.md](stack-reference.md) | Library-level notes from Context7: exact calls, starting parameter values, known traps |
 | [learn.md](learn.md) | Plain-language walkthrough of what each finished step's code actually does, for learning alongside the build. Updated after each step — see "How to work here." |
 | [issues.md](issues.md) | **The open-defect register — read it before trusting any screen or endpoint.** Three audits: 2026-08-27 (15 findings), a full re-read on 2026-08-31 (28 more, N1–N28), and a 2026-09-10 full-repo pass (N37) that specifically targeted the second audit's own "not read at all" list plus the entire step 14 landing-page/build-tooling codebase — see below for both, plus a first live grading session (N31–N34), N35 found while checking a direct user question, and N36 found while building the per-assessment delete feature. **46 of 52 are now fixed** — frontend (12), pair (11, closing both HIGH findings: N1 path traversal, N2 unbounded config), hot-path (**N4**, where a blank ID cell was producing a confident fabricated digit — demonstrated, not inferred, plus N18), cnn-path (N16, N17, N24, 15), dormant (4, cleared *ahead of* step 3r.6's comparison run), a **2026-09-09 live-session pass** closing **N31** and **N32**, both HIGH, plus **N33** — `decode_serial` now returns '?' per uncertain position instead of blanking the whole field (mirrors `read_id`), and harvesting refuses a crop the original scan couldn't match to a legal value regardless of what the instructor typed to get past Confirm — **N35 (2026-09-10)**, where a leading-zero mark ("03", "05") could never decode on the default `cnn` path because the decoder only ever scored a legal value's un-padded digit rendering — and **N36 (2026-09-10)**, where the section/semester delete guards blocked on `exportedAt === null` alone, which would have made a section holding even one brand-new (and therefore always-unexported) assessment permanently undeletable. **N37 (Med, found 2026-09-10) is now fixed too (2026-09-12)** — `local-stack.sh` was publishing MinIO's S3 API and console to the whole LAN with hardcoded credentials; both ports now bind to `127.0.0.1` explicitly, the one-line fix the register had already named. **5 remain open**: **N34** (Med) was deliberately left unbuilt — asked to choose a fix direction, the user chose to defer it entirely — plus four Low deploy/infra items. Everything the desk audits found on the `cnn` path is closed, and all four live-session findings are too; N34 is open by choice alone now. Suites went 148/79 → **259/358** (N37 was a shell-script finding, not covered by either suite). It also carries explicit "what audit N did NOT cover" sections naming the files never opened, updated after each audit. |
@@ -102,7 +102,7 @@ a deliberate user decision made on the real-batch numbers rather than on
 the full comparison run originally required — that run still hasn't
 happened, and `comparison_log/` does not exist. What the decision rests
 on: the CNN beats Tesseract decisively on the ID (91.8%/55.2% vs
-58.9%/0.0%), reads marks at 98.1% per-question, and — the part accuracy
+44.5%/0.0%), reads marks at 98.1% per-question, and — the part accuracy
 numbers don't capture — costs nothing, cannot be rate-limited mid-class,
 needs no network, and keeps every photo on the laptop. Two caveats live
 with it: **serial is the weakest field at 63.2%** with no Gemini baseline
@@ -283,7 +283,7 @@ the roster is a property of the section, not a per-quiz choice), and
 `AssessmentForm.tsx` (quiz name/question count/maxes — Setup's old form
 minus ID digits, inherited from the section). `sections.ts` is the new
 pure-logic module (grouping, sorting, `assessmentConfig()`), matching
-`results.ts`/`examSheet.ts`'s shape. `App.tsx` got a real screen enum
+`resultsTable.ts`/`examSheet.ts`'s shape. `App.tsx` got a real screen enum
 (`library | section | assessment | scan | results`) replacing
 `config === null` as the router. Every workbook export now shows
 provenance ("the file you picked" / "the copy this app wrote," with
@@ -408,7 +408,13 @@ conflict, for starting a genuinely clean new session.
 marks-upload/
 ├── plan.md · stack-reference.md · step.md · CLAUDE.md · learn.md
 ├── Cnn migration.md            # folded into plan.md §16 / step.md — see note above
-├── dev.sh                       # run both servers together — see Commands
+├── dev.sh                       # run both servers together (Linux) — see Commands
+├── dev.ps1                      # the Windows counterpart — see "Running on Windows"
+├── shell-portability.sh         # sourced by the four .sh scripts: portable_python
+│                                # (python3 does not exist on Windows), venv_exe
+│                                # (Scripts\ vs bin/), native_path/MSYS guards for docker+aws
+├── .gitattributes               # pins *.sh and Dockerfile to LF — core.autocrlf=true on
+│                                # Windows would otherwise hand bash a CRLF shebang line
 ├── local-stack.sh               # step 11 — the DEPLOYED shape, locally: container on a
 │                                # read-only FS + MinIO standing in for S3
 ├── deploy.sh                    # step 11.6 — idempotent AWS deploy (ECR/Lambda/S3)
@@ -604,7 +610,11 @@ marks-upload/
         │                       # brand-new empty assessment (always unexported)
         │                       # permanently undeletable; now also requires a real
         │                       # record count, everywhere the guard is used
-        ├── results.ts          # step 9.1/9.2 — sort by serial then ID, unverified-record rule
+        ├── moduleNames.test.ts # a PORTABILITY guard, not a style check: fails if any two
+        │                       # source files differ only by case. Windows and macOS resolve
+        │                       # `./Results` to `results.ts`, so Landing.tsx/landing.ts and
+        │                       # Results.tsx/results.ts each rendered as `undefined`
+        ├── resultsTable.ts     # step 9.1/9.2 — sort by serial then ID, unverified-record rule
         ├── roster.ts           # step 12.2/12.3/12.4 (plan.md §17) — class-list roster
         │                       # parsing: header matching, the exclude-then-prefer-then-
         │                       # confirm class-list identification rule, ID normalization
@@ -707,7 +717,7 @@ marks-upload/
         │                       # "CSE203-2_Quiz-1_2026-09-09.xlsx"; step 13.20 — stamps
         │                       # exportedAt on both export paths. "Reset everything" moved
         │                       # to Library.tsx (step 13)
-        ├── landing.ts          # step 14.4/14.6 (plan.md §19) — LANDING_SEEN_KEY and
+        ├── landingShell.ts     # step 14.4/14.6 (plan.md §19) — LANDING_SEEN_KEY and
         │                       # APP_VISIBLE_CLASS, re-exported through prerenderEntry.tsx so
         │                       # the build-time prerender script and the app embed the exact
         │                       # same literals; showLandingOverlay() (Library's "way back")
@@ -802,13 +812,13 @@ marks-upload/
         │                       # never serializes into static HTML and exists only for
         │                       # Landing.test.tsx's component-level tests. The close section
         │                       # (added 2026-09-12) also renders QrCode.tsx against
-        │                       # landing.ts's DEPLOYED_APP_URL, plus the same URL as plain
+        │                       # landingShell.ts's DEPLOYED_APP_URL, plus the same URL as plain
         │                       # readable/clickable text — for showing the screen to a
         │                       # colleague to scan, instead of reading the address out loud
         │                       # or typing it into a message
         ├── prerenderEntry.tsx  # step 14.5 — the ONLY module scripts/prerender-landing.mjs
         │                       # imports: renderLandingMarkup() (renderToStaticMarkup, actually
-        │                       # run) plus a re-export of landing.ts's two shared constants, so
+        │                       # run) plus a re-export of landingShell.ts's two shared constants, so
         │                       # the Node script embeds the same literals rather than a second,
         │                       # hand-typed copy that could drift
         └── App.tsx             # step 13.7 — a real screen enum (library/section/assessment/
@@ -823,7 +833,7 @@ marks-upload/
                                  # library now, since the pre-load landing decision moved into
                                  # the static shell scripts/prerender-landing.mjs builds; Library's
                                  # onShowLanding prop (unchanged) is now wired straight to
-                                 # landing.ts's showLandingOverlay()
+                                 # landingShell.ts's showLandingOverlay()
 ```
 
 `frontend/scripts/prerender-landing.mjs` (step 14.5/14.6, not under `src/`
@@ -840,20 +850,38 @@ inline bootstrap script into the real `dist/index.html`, outside `#root`.
 All verified working (backend through step 3's rate-limited fallback,
 frontend through step 9's Results screen and Excel export).
 
+**These are written for Linux. On Windows, two substitutions cover
+everything below** (2026-09-22 — the project was moved to a Windows
+laptop; see "Running on Windows" further down for what actually had to
+change in code):
+
+- `source venv/bin/activate` becomes `.\venv\Scripts\Activate.ps1` in
+  PowerShell, or `source venv/Scripts/activate` in Git Bash. A venv's
+  programs live in `Scripts\` there, not `bin/`, and carry `.exe`.
+- `./dev.sh` becomes `.\dev.ps1`. The `.sh` scripts themselves do run
+  under Git Bash and resolve the venv layout on their own
+  (`shell-portability.sh`), but `dev.sh`'s Ctrl+C cleanup depends on
+  POSIX process groups that MSYS only approximates — `dev.ps1` is the
+  real Windows entry point.
+
 ```bash
 # Run both servers together — for actual scanning use (step 6+), not
 # detector tuning. Ctrl+C stops both, reliably (see learn.md step 6 for
 # why that took two fixes: process-group signal targeting, then a
 # self-signal re-entrancy bug in the cleanup trap itself).
-./dev.sh
+./dev.sh          # Linux
+#  .\dev.ps1     # Windows — same job, console signal + taskkill /T + a Job object
 
 # Detection harness — the primary loop for steps 1–3
 cd backend && source venv/bin/activate && python detect.py <image-path> --questions 5 --id-digits 7 --out ../testset/debug/<name>
 cd backend && source venv/bin/activate && python batch_detect.py ../testset/images --questions 5 --id-digits 7 --out ../testset/debug/
 cd backend && source venv/bin/activate && python id_ocr_accuracy.py
 
-# Backend tests — offline, Gemini always mocked, never any AWS (259 tests
-# as of the N35 leading-zero-mark fix, 2026-09-10)
+# Backend tests — offline, Gemini always mocked, never any AWS. 259 tests:
+# 257 pass anywhere, 2 SKIP without the Tesseract binary (they are the only
+# ones that exercise a real ID read rather than mocking it; the rest of the
+# remote path is mocked and needs no binary). Count as of the N35
+# leading-zero-mark fix, 2026-09-10; the skip is 2026-09-22.
 cd backend && source venv/bin/activate && pytest
 
 # CNN accuracy harnesses (steps 2r/3r, plan.md §16). These need NO extra
@@ -862,7 +890,7 @@ cd backend && source venv/bin/activate && pytest
 cd backend && source venv/bin/activate
 python cnn/accuracy.py                                                # ID accuracy + confidently-wrong count — 91.8% per-digit,
                                                                        # 55.2% whole-ID, 1 confidently wrong (2026-08-30),
-                                                                       # vs id_ocr_accuracy.py's 58.9% / 0.0% whole-ID
+                                                                       # vs id_ocr_accuracy.py's 44.5% / 0.0% whole-ID
 python cnn/accuracy.py --calibrate                                    # dump confidence/margin per real digit, to pick floors —
                                                                        # last recalibrated 2026-08-30 (0.9/0.8 -> 0.75/0.6) against
                                                                        # the real_class_* batch's ~20 writers, see step.md step 2r
@@ -943,7 +971,8 @@ uvicorn app.main:app --reload --host 0.0.0.0 --ssl-keyfile certs/key.pem --ssl-c
 # Frontend — HTTPS and LAN binding are on by default via vite.config.ts,
 # no --host flag needed
 cd frontend && npm run dev
-cd frontend && npx vitest run   # 407 tests as of the 2026-09-12 share-QR-code addition (dev-mode landing
+cd frontend && npx vitest run   # 408 tests as of the 2026-09-22 Windows port (moduleNames.test.ts);
+                                 # 407 at the 2026-09-12 share-QR-code addition (dev-mode landing
                                  # shell, "About" button, the overflow/sticky fix, and the phone scan
                                  # animation fix were step 14.10, 2026-09-10)
                                 # (use `npm run build` to typecheck — see the tsc caveat below); or `npx vitest` for watch mode
@@ -971,6 +1000,144 @@ the frontend — LAN IP detected via a socket trick, never hardcoded.
 CORS is a regex in `app/main.py` matching `localhost`/`127.0.0.1` and all
 three private LAN ranges (`192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`),
 rather than one hardcoded address — the actual LAN IP changes per network.
+
+## Running on Windows
+
+Built and run on Ubuntu until 2026-09-22, then moved to a Windows 11
+laptop. Both are supported now; nothing was made Windows-only, and the
+Linux path is unchanged. Verified on Windows: both test suites, a real
+end-to-end scan through the HTTPS backend, the production build with its
+prerendered landing page, `dev.ps1`, `preflight.sh`, `fetch-crops.sh`, and
+both CNN accuracy harnesses — the last two reproduce the documented
+numbers exactly (91.8% per-digit ID / 55.2% whole-ID / 1 confidently
+wrong; 98.1% per-question marks), which is the real evidence that
+recognition behaves identically on the two platforms.
+
+Docker Desktop, the AWS CLI and Tesseract were installed on 2026-09-22,
+which closed most of that gap. Also verified since: `preflight.sh` at 0
+blockers (including the container building for linux/amd64 and a real scan
+succeeding inside it on a read-only root), `local-stack.sh up` end to end
+with harvesting to MinIO over the real S3 API, `fetch-crops.sh local`, and
+a real scan on `RECOGNIZER=remote` — Tesseract reading the ID locally
+(flagging uncertain digits as `?` rather than guessing) while Gemini
+returned serial and marks correctly.
+
+Two things only running them could have found:
+
+- **`local-stack.sh`'s docker BUILD CONTEXT still used an MSYS path.** The
+  first run died with `unable to prepare context: path not found`. The
+  `-v` mount had been fixed and the build context had not — a build
+  context is a host path handed to docker.exe exactly like a mount is.
+  Fixed, and an audit across all four scripts then found the same
+  omission in `fetch-crops.sh`'s `aws s3 sync` destination.
+- **The harvested keys in MinIO use forward slashes** —
+  `harvested/<source>/id_digits/confirmed/7_<hash>.png` — live proof that
+  `.as_posix()` in the harvest tests was fixing the TEST rather than
+  masking a real Windows key-layout bug. The `test-` source prefix was
+  honoured too: 14 crops excluded, the real corpus untouched at 319.
+
+**Still not verified:** `deploy.sh` itself, which has never been run.
+preflight covers the image build and AWS auth, but not `docker push` to
+ECR, the Lambda update, `aws s3 sync` of the frontend, or the CloudFront
+invalidation. The `mktemp` + `file://` CloudFront-config path only runs
+when CREATING a distribution, and one already exists, so that branch
+stays untested by design.
+
+**Windows Firewall is a step Linux never needed.** The LAN network here
+is categorised Public, inbound defaults to block, and the pre-existing
+node/python rules point at other binaries entirely (`E:\node js\node.exe`,
+an nvm Node, the base Python) — none of them the ones this project runs.
+Two inbound rules were added, by PORT rather than by binary so they
+survive a Node or Python upgrade, scoped to `LocalSubnet` so only devices
+on the same Wi-Fi can reach them:
+
+    Marks Scanner backend (dev)   TCP 8000  LocalSubnet  Allow
+    Marks Scanner frontend (dev)  TCP 5173  LocalSubnet  Allow
+
+Whether they are sufficient can only be settled by a real phone — a
+request from this machine to its own LAN IP does not traverse the
+firewall at all, so it proves the servers bind and serve, nothing more.
+
+
+Six things genuinely broke. Two were real bugs that existed on Linux too
+and were merely invisible there:
+
+**1. Two pairs of modules collided on a case-insensitive filesystem.**
+`Landing.tsx`/`landing.ts` and `Results.tsx`/`results.ts`. Vite resolves
+an extensionless `./Results` by trying extensions in order, and on
+Windows the `stat` for `Results.ts` finds `results.ts` — so
+`import Results from './Results'` returned the pure-logic module, whose
+default export does not exist. Every component rendered as `undefined`,
+with React's generic "Element type is invalid" as the only clue, and 52
+tests failed. Renamed to `landingShell.ts` and `resultsTable.ts`.
+`moduleNames.test.ts` now fails on ANY two source files whose names
+differ only by case — including on Linux, which is the point: the person
+who creates the collision is usually not the person whose machine breaks.
+
+**2. `python3` is not a name that exists on Windows** — and worse than
+absent, a stock Windows 11 has an app-execution alias at exactly that
+name which prints "Python was not found" and exits non-zero. Four shell
+scripts called it. `shell-portability.sh`'s `portable_python` resolves it
+by *executing* a candidate rather than trusting `command -v`, which the
+stub answers.
+
+**3. A venv keeps its programs in `Scripts\`, not `bin/`.** Same helper:
+`venv_bin_dir`, `venv_exe`, `venv_activate`. This is why `dev.sh`,
+`preflight.sh` and `local-stack.sh` could not find their own venv.
+
+**4. `execFileSync('npm', ...)` in `prerender.test.ts`** — `npm` is
+`npm.cmd` on Windows, which fails twice over: `execFileSync` does not
+consult PATHEXT (ENOENT), and since the fix for CVE-2024-27980 Node
+refuses to spawn a `.cmd` without `shell: true` (EINVAL).
+
+**5. Two harvest tests compared Store keys against `str(WindowsPath)`,**
+so every assertion saw `\` where the key has `/`. The production code was
+right — `harvest.py`'s `_key` builds keys with `/` on every platform,
+which is what keeps the local and S3 layouts byte-identical — and the
+tests now use `.as_posix()`. A test-only bug, but it would have been read
+as an S3 key-layout failure.
+
+**6. Native Windows tools do not understand MSYS paths, and MSYS mangles
+container paths.** `aws.exe` and `docker.exe` cannot open `/g/Dev/...`,
+and Git Bash rewrites any argument starting with `/` — so `-v vol:/data`
+became `-v vol:C:/Program Files/Git/data`. Host paths now go through
+`native_path`; `disable_msys_path_conversion` protects container-side
+ones. Both are no-ops on Linux. **Untested** — see above.
+
+Two things were made more helpful rather than fixed, both about optional
+binaries that Windows installs without putting on PATH:
+
+- `app/id_ocr.py` now probes `C:\Program Files\Tesseract-OCR` when
+  `tesseract` is not on PATH, with `TESSERACT_CMD` in `backend/.env` as
+  the explicit override (`app/config.py`). `tesseract_missing_message()`
+  replaces a six-frame `TesseractNotFoundError` traceback with an
+  actionable message, and the two `test_main.py` tests that need a real
+  Tesseract now SKIP rather than fail — the binary is genuinely optional
+  since `cnn` became the default, so a suite that hard-fails without it
+  reports a broken app on a correct default install.
+- `gen_dev_cert.py` finds Git for Windows' own `openssl.exe` when
+  `openssl` is not on PATH, which it usually is not. Verified by
+  stripping PATH to `C:\Windows\System32` and generating a cert anyway.
+
+**`.gitattributes` was added, and it is load-bearing.** Git for Windows
+defaults to `core.autocrlf=true`, which would rewrite every `.sh` file's
+line endings on checkout — a CRLF shebang makes the kernel look for an
+interpreter literally named `bash\r`. `*.sh` and `Dockerfile` are pinned
+to `eol=lf`; the photos, the `.onnx` model and the `.pem` certs are
+pinned `binary` so they are never translated at all.
+
+Deliberately NOT changed: `dev.sh` keeps its `kill -TERM 0` process-group
+cleanup, because that is correct on Linux and the long comment explaining
+it records two real bugs. `dev.ps1` is a separate file rather than a
+branch inside `dev.sh` — Windows has no process groups in that sense, so
+the mechanism is different all the way down: the shared console carries
+Ctrl+C, `taskkill /T` walks the tree in the finally block, and a Job
+object with KILL_ON_JOB_CLOSE covers a hard kill of the script itself.
+That last one needed a second, delayed pass to actually work —
+`venv\Scripts\python.exe` is a launcher that spawns the real interpreter
+faster than the script can assign it to the job, so uvicorn and its
+reload worker were being born outside. Verified by hard-killing the
+script twice and confirming both ports come back bindable.
 
 ## How to work here
 
@@ -1221,6 +1388,55 @@ all-blank result as if it were a normal scan.
   `tsconfig.json` is a solution file (`"files": []` plus references), so
   that command typechecks *nothing* and passes on genuinely broken code.
   Use `npm run build` (which runs `tsc -b`) or `tsc -p tsconfig.app.json`.
+- **Don't add a source file whose name differs from an existing one only
+  by case.** `Landing.tsx` + `landing.ts` and `Results.tsx` + `results.ts`
+  both existed and both were broken — invisibly on Linux, catastrophically
+  on Windows and macOS, where the filesystem is case-insensitive and Vite
+  resolves an extensionless `./Results` by `stat`-ing `Results.ts`, which
+  *finds* `results.ts`. The component came back `undefined` and React
+  reported only "Element type is invalid"; 52 tests failed at once. The
+  files are `landingShell.ts` and `resultsTable.ts` now, and
+  `moduleNames.test.ts` fails on any new collision — on every platform,
+  deliberately, because whoever creates one is usually not the person
+  whose machine breaks.
+- **Don't call `python3` from a shell script.** It is not a name that
+  exists on Windows, and the failure is worse than absence: a stock
+  Windows 11 has an app-execution alias at that exact path which answers
+  `command -v` and then prints "Python was not found" and exits non-zero.
+  Use `shell-portability.sh`'s `portable_python`, which resolves the name
+  by *running* a candidate. Same file for the venv layout —
+  `venv/bin/python` does not exist on Windows, it is
+  `venv\Scripts\python.exe` — via `venv_exe` / `venv_activate`.
+- **Don't spawn `npm` (or any `.cmd`) with `execFileSync` and no
+  `shell: true`.** On Windows `npm` is `npm.cmd`, and two separate things
+  break: `execFileSync` does not consult PATHEXT, so the bare name is
+  ENOENT; and since the fix for CVE-2024-27980 Node refuses to spawn a
+  `.cmd`/`.bat` without a shell at all, which is EINVAL. `prerender.test.ts`
+  hit both in turn.
+- **Don't compare a Store key against `str(some_path)` in a test.**
+  `harvest.py` builds keys with `/` on every platform on purpose — that is
+  what keeps the local and S3 layouts byte-identical, which is
+  `stores.py`'s entire premise — but `str()` on a `WindowsPath` returns
+  `\`. Six harvest tests failed on Windows for a reason that had nothing
+  to do with harvesting, while reading exactly like an S3 key-layout
+  failure. Use `.as_posix()`.
+- **Don't hand an MSYS path to a native Windows program, or a
+  container-side path to MSYS.** These are two halves of the same trap and
+  both bite in the same scripts. `aws.exe` and `docker.exe` cannot open
+  `/g/Dev/...`, so host paths go through `native_path`. Git Bash rewrites
+  any argument starting with `/` before the program sees it, turning
+  `-v vol:/data` into `-v vol:C:/Program Files/Git/data`, so scripts that
+  drive docker call `disable_msys_path_conversion` first. Both are no-ops
+  on Linux. Note these are the one part of the Windows work that is
+  **untested** — this laptop has neither Docker nor the AWS CLI.
+- **Don't remove `.gitattributes`, and don't "fix" its `eol=lf` lines.**
+  Git for Windows installs with `core.autocrlf=true`. Without the pin, a
+  fresh clone there gets CRLF in every `.sh` file, and a CRLF shebang
+  makes the kernel look for an interpreter named `bash` followed by a
+  carriage return — an error message with an invisible character in it.
+  The photos, `digit_cnn.onnx` and the dev `.pem` files are pinned
+  `binary` for the same reason, one layer worse: translation corrupts them
+  outright.
 - **Don't state that everything stays on the device.** `Setup.tsx` said
   exactly that from step 5 until 11.5 corrected it, while `/api/harvest`
   had been saving labelled cell crops server-side since 3r.6c. The true
@@ -1379,7 +1595,8 @@ the *section*, which is where the class list actually belongs.
 this list until the deferral's own trigger condition — "only if Gemini
 accuracy or quota becomes a real constraint" — actually happened (a real
 `rate_limited` response, and `id_ocr.py` measured at 58.9% per-digit on
-real photos). There's now a concrete, additive, optional build order for
+the real photos that existed at the time — 8 of them; re-measured on the
+full 29-photo set on 2026-09-22 it is 44.5%). There's now a concrete, additive, optional build order for
 it: plan.md §16, step.md steps 2r.0/2r/3r/3r.6, rationale in learn.md.
 **Picked up deliberately, not as a side effect of other step work**: steps
 2r.0 (recognizer interface), 2r (training the digit CNN, under

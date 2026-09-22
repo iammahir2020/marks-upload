@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from app.detection import detect  # noqa: E402
-from app.id_ocr import read_id  # noqa: E402
+from app.id_ocr import read_id, tesseract_missing_message  # noqa: E402
 
 TESTSET = Path(__file__).parent.parent / "testset"
 QUESTIONS = 5
@@ -23,6 +23,15 @@ ID_DIGITS = 7
 
 
 def main() -> int:
+    # This harness measures the `remote` path's local OCR specifically, so
+    # it is the one place where a missing Tesseract is a real blocker
+    # rather than an optional extra. Say what to do about it instead of
+    # raising TesseractNotFoundError from six frames deep.
+    missing = tesseract_missing_message()
+    if missing:
+        print(missing, file=sys.stderr)
+        return 1
+
     labels = json.loads((TESTSET / "labels.json").read_text())
     cases = [
         (name, label) for name, label in labels.get("images", {}).items()

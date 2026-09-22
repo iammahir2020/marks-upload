@@ -111,14 +111,15 @@ at startup by the `RECOGNIZER` environment variable:
 
 The CNN path exists because the deferral condition for building one
 actually happened: real `rate_limited` responses from Gemini, and
-Tesseract measured at 58.9% per-digit ID accuracy on real photos. It
+Tesseract measured at 58.9% per-digit ID accuracy on the real photos
+that existed then (44.5% once the test set grew to 29 — see below). It
 became the default on 2026-08-30. Measured on the 18-photo real-class
 batch (~20 different writers):
 
 | Field | CNN | Previous path |
 |---|---|---|
-| ID, per-digit | **91.8%** (167/182) | Tesseract 58.9% |
-| ID, whole-ID exact match | **55.2%** (16/29) | Tesseract 0.0% |
+| ID, per-digit | **91.8%** (167/182) | Tesseract **44.5%** (81/182) |
+| ID, whole-ID exact match | **55.2%** (16/29) | Tesseract 0.0% (0/29) |
 | Marks, per-question | **98.1%** (103/105), half marks 100% | Gemini — not measured on this batch |
 | Total | 89.5% | Gemini — not measured on this batch |
 | Serial | 63.2% (12/19) | Gemini — not measured on this batch |
@@ -418,14 +419,26 @@ revisit casually.
 
 ## Running it
 
-**Prerequisites:** Python 3.10+ and Node 20+.
+**Prerequisites:** Python 3.10+ and Node 20+. Linux, macOS and Windows are
+all supported. Where a command differs, the Windows form sits directly
+beside it below.
+
+**On Windows, which shell.** PowerShell runs `dev.ps1`, the Python
+harnesses and npm. The four `.sh` scripts (`local-stack.sh`,
+`fetch-crops.sh`, `preflight.sh`, `deploy.sh`) are bash and want **Git
+Bash** — right-click the repo folder and pick *Git Bash Here*. They
+resolve the venv layout themselves, so nothing inside them needs
+adjusting. After installing any new tool, open a **new** terminal; an
+existing one keeps the PATH it started with.
 
 A Gemini API key and the Tesseract binary are needed **only** for
 `RECOGNIZER=remote` — the default CNN path uses neither. For `remote`, get
-a key into `backend/.env` and run `apt install tesseract-ocr` (the pip
-package is a wrapper only; OCR 500s from the app while working in your
-shell is almost always a missing binary or an unset
-`pytesseract.pytesseract.tesseract_cmd`).
+a key into `backend/.env` and install Tesseract: `apt install tesseract-ocr`
+on Linux, or the [UB Mannheim installer](https://github.com/UB-Mannheim/tesseract/wiki)
+on Windows. The pip package is a wrapper only. On Windows the installer
+does not add itself to PATH by default, so `app/id_ocr.py` looks in
+`C:\Program Files\Tesseract-OCR` automatically; set `TESSERACT_CMD` in
+`backend/.env` if it lives anywhere else.
 
 ### One-time setup
 
@@ -441,22 +454,120 @@ python gen_dev_cert.py      # self-signed HTTPS cert; re-run if the LAN IP chang
 cd frontend && npm install
 ```
 
+```powershell
+# Windows — a venv keeps its programs in Scripts\, not bin/
+cd backend
+py -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+copy .env.example .env      # only needed for RECOGNIZER=remote
+python gen_dev_cert.py      # finds openssl inside Git for Windows automatically
+
+cd ..\frontend
+npm install
+```
+
+Every other `bash` block below works as written on Windows with one
+substitution: `source venv/bin/activate` becomes
+`.\venv\Scripts\Activate.ps1` in PowerShell, or `source venv/Scripts/activate`
+in Git Bash. Everything after the activate line is identical.
+
+**Optional tools.** None of these are needed for the default `cnn` path:
+
+```bash
+apt install docker.io awscli tesseract-ocr        # Linux
+```
+
+```powershell
+winget install Docker.DockerDesktop       # local-stack.sh, deploy.sh backend
+winget install Amazon.AWSCLI              # deploy.sh, fetch-crops.sh s3
+winget install UB-Mannheim.TesseractOCR   # RECOGNIZER=remote only
+```
+
+**After installing any of these on Windows, restart your terminal — and
+your editor, if the terminal lives inside one.** These installers add
+themselves to the machine PATH, but a running process keeps the PATH it
+started with and passes that stale copy to everything it spawns. The
+symptom is `docker: command not found` in an editor's terminal while
+`docker` works perfectly in a new window. The four `.sh` scripts work
+around this themselves (`ensure_native_tools_on_path` in
+`shell-portability.sh` looks where Windows actually installs Docker and
+the AWS CLI), so they run either way — but anything you type by hand
+needs the fresh terminal.
+
 ### Run both servers
 
 ```bash
-./dev.sh
+./dev.sh          # Linux / macOS
+```
+
+```powershell
+.\dev.ps1         # Windows
 ```
 
 Starts the backend (HTTPS, bound to all interfaces) and the Vite dev
 server together, generating the backend cert first if it's missing. Ctrl+C
 stops both.
 
-Then open the frontend's HTTPS URL **on the phone**, on the same network.
-Both servers use self-signed certificates, so each device clicks past a
-one-time "not trusted" warning — `getUserMedia` needs a *secure* context,
-not a *trusted* one, so this is enough for the camera to work.
+The two scripts do the same job by different means, because process groups
+are a POSIX idea: `dev.sh` broadcasts with `kill 0`, while `dev.ps1` relies
+on the shared console, `taskkill /T`, and a Job object that catches even a
+hard kill of the script. `dev.sh` does run under Git Bash on Windows, but
+its cleanup is much less reliable there — prefer `dev.ps1`.
 
-To run them separately:
+If a run is ever orphaned — the window closed without Ctrl+C, say — free
+the ports with:
+
+```bash
+kill $(lsof -t -i:8000 -i:5173)                    # Linux / macOS
+```
+
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 8000,5173 |
+  ForEach-Object { taskkill /PID $_.OwningProcess /T /F }
+```
+
+**Then open the frontend's HTTPS URL on the phone**, on the same network.
+`dev.sh` and `dev.ps1` both print the LAN IP on startup. Visit the **API**
+first and accept its certificate there:
+
+```
+https://<lan-ip>:8000/docs     accept the warning here FIRST
+https://<lan-ip>:5173          then open the app
+```
+
+That order matters. Both servers use self-signed certificates, and while
+the page itself prompts you, a blocked API request does not — scans just
+fail silently. `getUserMedia` needs a *secure* context, not a *trusted*
+one, so a self-signed cert is enough for the camera.
+
+**On Windows, one extra step the phone will not work without.** Windows
+blocks inbound connections by default, more so on a network marked
+*Public*, which is what a home Wi-Fi usually is. Skipping this looks
+exactly like the app being broken: the page simply never loads. Add two
+rules once, from an **admin** PowerShell:
+
+```powershell
+New-NetFirewallRule -DisplayName "Marks Scanner backend (dev)" `
+  -Direction Inbound -Protocol TCP -LocalPort 8000 `
+  -RemoteAddress LocalSubnet -Action Allow -Profile Any
+New-NetFirewallRule -DisplayName "Marks Scanner frontend (dev)" `
+  -Direction Inbound -Protocol TCP -LocalPort 5173 `
+  -RemoteAddress LocalSubnet -Action Allow -Profile Any
+```
+
+By **port** rather than by program, so a Node or Python upgrade does not
+silently break them, and scoped to `LocalSubnet` so only devices on the
+same Wi-Fi can connect.
+
+If the phone still cannot load the page, the cause is usually not this
+laptop. Open `https://<lan-ip>:8000/docs` on the phone: a certificate
+warning means the network is fine and something else is wrong; a timeout
+means the phone is on mobile data, on a different SSID or band, or the
+router has client isolation switched on — and that last one cannot be
+worked around from the laptop at all.
+
+To run the servers separately:
 
 ```bash
 # Backend — HTTPS is required, not optional: an HTTPS page cannot fetch a
@@ -485,6 +596,10 @@ the real container image on a read-only filesystem with only `/tmp`
 writable (exactly how AWS Lambda mounts it), harvesting over the S3 API to
 a local MinIO, `ALLOWED_ORIGINS` set as it will be in production, rate
 limiting on, and a production frontend *build* rather than the dev server.
+
+**On Windows, run these from Git Bash**, not PowerShell — they are bash
+scripts. They resolve the venv layout and convert host paths to the form
+`docker.exe` and `aws.exe` expect, so nothing inside them needs changing.
 
 ```bash
 ./local-stack.sh up       # MinIO + backend container, then builds the frontend
@@ -550,6 +665,10 @@ Harvested crops end up in one of three places depending on how the app ran
 deployed. The key layout is identical in all three on purpose, so they
 merge into one training set and the training code never needs to know
 where any given crop came from:
+
+**On Windows, run these from Git Bash**, not PowerShell — they are bash
+scripts. They resolve the venv layout and convert host paths to the form
+`docker.exe` and `aws.exe` expect, so nothing inside them needs changing.
 
 ```bash
 ./fetch-crops.sh merge                 # local disk only
@@ -625,6 +744,10 @@ builds for `linux/amd64` and carries the adapter, model, and `boto3` but
 `VITE_API_BASE` actually reaches the frontend bundle, and that both test
 suites pass. It exits with the number of blockers.
 
+**On Windows, run these from Git Bash**, not PowerShell — they are bash
+scripts. They resolve the venv layout and convert host paths to the form
+`docker.exe` and `aws.exe` expect, so nothing inside them needs changing.
+
 ```bash
 ./preflight.sh
 ./deploy.sh backend      # ECR build+push, Lambda, API Gateway, crops bucket
@@ -634,6 +757,14 @@ suites pass. It exits with the number of blockers.
 
 `deploy.sh` is idempotent — re-running updates in place, which step 11's
 own Done-when requires (harvested crops must survive a redeploy).
+
+**`deploy.sh` has never been run from Windows.** Everything else in this
+README has been exercised there, including `preflight.sh` at zero blockers
+and `local-stack.sh` end to end — but preflight covers only the image
+build and AWS auth, not `docker push`, the Lambda update, the frontend
+`aws s3 sync`, or the CloudFront invalidation. Run `preflight.sh` first
+and expect a first Windows deploy to be the first real test of those
+paths.
 
 **It is deployed and live**: <https://d2n2meq17rr1oi.cloudfront.net>
 
@@ -659,13 +790,23 @@ request succeeded. API Gateway sidesteps Function URL auth entirely. See
 
 ```bash
 cd backend && source venv/bin/activate && pytest   # 259 tests, fully offline
-cd frontend && npx vitest run                      # 383 tests (npx vitest for watch mode)
+                                                   # (257 pass, 2 skip without Tesseract)
+cd frontend && npx vitest run                      # 408 tests (npx vitest for watch mode)
 cd frontend && npm run lint                        # oxlint
 cd frontend && npm run build
 ```
 
+```powershell
+cd backend; .\venv\Scripts\Activate.ps1; pytest
+cd ..\frontend; npx vitest run; npm run lint; npm run build
+```
+
 The backend suite never touches the network — Gemini responses are served
 from cached fixtures in `backend/tests/fixtures/`.
+
+**Use `npm run build` to typecheck, never a bare `npx tsc --noEmit`.** The
+root `tsconfig.json` is a solution file (`"files": []` plus references), so
+that command typechecks *nothing* and passes on genuinely broken code.
 
 ### Detection and recognition tuning
 
@@ -688,6 +829,14 @@ python id_ocr_accuracy.py
 python ../testset/check_labels.py
 ```
 
+```powershell
+cd backend; .\venv\Scripts\Activate.ps1
+python detect.py ..\testset\images\filled_file.jpeg --questions 5 --id-digits 7 --out ..\testset\debug\one
+python batch_detect.py ..\testset\images --questions 5 --id-digits 7 --out ..\testset\debug\
+python id_ocr_accuracy.py
+python ..\testset\check_labels.py
+```
+
 Any change to detection re-runs the full test set. A tweak that fixes one
 photo silently breaks four others otherwise.
 
@@ -705,6 +854,13 @@ python cnn/accuracy.py --calibrate     # dump confidence/margin per digit, to pi
 python cnn/marks_accuracy.py           # serial/marks/total accuracy, half marks reported separately
 ```
 
+```powershell
+cd backend; .\venv\Scripts\Activate.ps1
+python cnn\accuracy.py
+python cnn\accuracy.py --calibrate
+python cnn\marks_accuracy.py
+```
+
 **Retraining** is the only part that needs the extra dependencies, since
 `torch` is training-only:
 
@@ -715,6 +871,14 @@ python cnn/inspect_preprocess.py ../testset/debug/*/cells/id_d*.png  # look at t
 python cnn/train.py --epochs 8 --out cnn/checkpoints                 # EMNIST Digits, ~8-10 min/epoch on CPU
 ```
 
+On Windows the same two commands work, but PowerShell does not expand the
+glob — pass a concrete path to `inspect_preprocess.py`:
+
+```powershell
+python cnn\inspect_preprocess.py ..\testset\debug\one\cells\id_d1.png
+python cnn\train.py --epochs 8 --out cnn\checkpoints
+```
+
 To run the app against a different recognizer than the default:
 
 ```bash
@@ -722,8 +886,17 @@ RECOGNIZER=remote uvicorn app.main:app --reload --ssl-keyfile certs/key.pem --ss
 RECOGNIZER=both   uvicorn app.main:app --reload --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
 ```
 
+```powershell
+# Windows — an environment variable, set before launching; $null to undo
+$env:RECOGNIZER = "remote"
+.\dev.ps1
+$env:RECOGNIZER = $null
+```
+
 `remote` additionally needs `GEMINI_API_KEY` set in `backend/.env` and the
-Tesseract binary installed; the default `cnn` path needs neither.
+Tesseract binary installed; the default `cnn` path needs neither. `both`
+costs real Gemini quota and is meant for an actual comparison run, not
+everyday use.
 
 Collecting real handwriting to fine-tune on:
 
@@ -733,6 +906,14 @@ python generate_collection_sheet.py --out ../collection_sheet.docx
 
 # Push an already-labelled photo batch through the live harvesting endpoint
 uvicorn app.main:app --port 8123 &
+python harvest_real_photos.py --base-url http://127.0.0.1:8123
+```
+
+On Windows, `&` does not background a command — start the server in its
+own window first:
+
+```powershell
+Start-Process .\venv\Scripts\python.exe -ArgumentList '-m','uvicorn','app.main:app','--port','8123'
 python harvest_real_photos.py --base-url http://127.0.0.1:8123
 ```
 
@@ -747,6 +928,17 @@ cd synthetic_scripts
 python3 generate.py 0 20   # writes generated/images/ + _recs/*.json
 python3 generate.py        # assembles generated/ground_truth.json from _recs/
 ```
+
+```powershell
+cd synthetic_scripts
+py -3 generate.py 0 20
+py -3 generate.py
+```
+
+`python3` is not a usable name on Windows — it resolves to a Microsoft
+Store stub that prints "Python was not found" and exits non-zero. Use
+`py -3`, or `python` inside an activated venv. (The `.sh` scripts resolve
+this themselves, so nothing in them needs changing.)
 
 Needs 15 Google Fonts plus Liberation Sans, none carried in the repo —
 `generate.py` documents exactly which.
@@ -800,6 +992,26 @@ reasoning.
   LastModified reproduced a student ID digit for digit. Hence the shuffle,
   which works on any backend. Both are guarded by tests written as the
   attack rather than as the implementation.
+- **No two source files may differ only by case.** Windows and macOS have
+  case-insensitive filesystems, where `import Results from './Results'`
+  resolves to `results.ts` — the component comes back `undefined` and
+  React reports only "Element type is invalid". This was real:
+  `Landing.tsx`/`landing.ts` and `Results.tsx`/`results.ts` both existed,
+  invisibly broken on Linux, and failed 52 tests the moment the project
+  was opened on Windows. `moduleNames.test.ts` now fails on any new
+  collision, on every platform.
+- **`.gitattributes` pins line endings, and is load-bearing.** Git for
+  Windows defaults to `core.autocrlf=true`, which would rewrite every
+  `.sh` file on checkout — and a CRLF shebang makes the kernel look for an
+  interpreter named `bash` followed by a carriage return. The photos, the
+  `.onnx` model and the dev `.pem` files are pinned `binary` for the same
+  reason one layer worse: translation corrupts them outright.
+- **Shell scripts must not call `python3` or `venv/bin/...` directly.**
+  Neither name exists on Windows — and `python3` is worse than absent
+  there, since a stock Windows 11 answers `command -v` with a Microsoft
+  Store stub that then refuses to run. `shell-portability.sh` resolves
+  both (`portable_python`, `venv_exe`), and any new `docker` or `aws` call
+  taking a host path must go through its `native_path` too.
 
 ## Deliberately not built
 

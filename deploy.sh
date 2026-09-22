@@ -30,6 +30,23 @@ MEMORY_MB="${MEMORY_MB:-2048}"
 # letting a wedged request burn budget.
 TIMEOUT_S="${TIMEOUT_S:-60}"
 
+# Resolved BEFORE the first `aws` call below, not after it. Everything
+# this preamble sets up — the PATH rescue especially — has to be in place
+# before any native tool runs, and `aws sts get-caller-identity` is the
+# very first thing this script does.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=shell-portability.sh
+. "$HERE/shell-portability.sh"
+# Windows: docker/aws are often installed but absent from an inherited PATH.
+ensure_native_tools_on_path
+PY_CMD="$(portable_python)" || { echo "No usable python found on PATH." >&2; exit 1; }
+# This script drives docker; container-side paths must not be rewritten.
+disable_msys_path_conversion
+# aws.exe and docker.exe are native Windows programs and do not understand
+# the /g/Dev/... form Git Bash presents, so every HOST path handed to one
+# goes through native_path first. No-op on Linux.
+HERE_NATIVE="$(native_path "$HERE")"
+
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 # Bucket names are globally unique across all of AWS, so the account id is
 # appended rather than hoping "marks-scanner-crops" is free.
@@ -37,7 +54,6 @@ CROPS_BUCKET="${CROPS_BUCKET:-$PROJECT-crops-$ACCOUNT}"
 SITE_BUCKET="${SITE_BUCKET:-$PROJECT-site-$ACCOUNT}"
 ECR_URI="$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$ECR_REPO"
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 have() { "$@" >/dev/null 2>&1; }
@@ -70,7 +86,7 @@ deploy_backend() {
   # which Lambda rejects with a genuinely unhelpful error about the image
   # manifest. --platform is explicit rather than implied by this laptop.
   docker build --platform linux/amd64 --provenance=false \
-    -t "$ECR_URI:latest" "$HERE/backend"
+    -t "$ECR_URI:latest" "$HERE_NATIVE/backend"
   docker push "$ECR_URI:latest" >/dev/null
   local digest
   digest="$(aws ecr describe-images --repository-name "$ECR_REPO" --region "$REGION" \
@@ -262,10 +278,10 @@ deploy_frontend() {
   say "Upload"
   # Hashed assets are immutable and cached hard; index.html and the service
   # worker must never be, or a redeploy strands clients on the old bundle.
-  aws s3 sync "$HERE/frontend/dist" "s3://$SITE_BUCKET" --delete \
+  aws s3 sync "$HERE_NATIVE/frontend/dist" "s3://$SITE_BUCKET" --delete \
     --exclude "index.html" --exclude "sw.js" --exclude "registerSW.js" \
     --cache-control "public,max-age=31536000,immutable"
-  aws s3 sync "$HERE/frontend/dist" "s3://$SITE_BUCKET" \
+  aws s3 sync "$HERE_NATIVE/frontend/dist" "s3://$SITE_BUCKET" \
     --exclude "*" --include "index.html" --include "sw.js" --include "registerSW.js" \
     --cache-control "no-cache"
 
@@ -399,7 +415,12 @@ deploy_cdn() {
   echo "    s3=$s3_oac"
 
   say "Creating distribution (this takes several minutes to propagate)"
-  cat > /tmp/$PROJECT-dist.json <<JSON
+  local dist_config
+  # mktemp, not a hardcoded /tmp path: on Windows /tmp is an MSYS
+  # fiction that aws.exe cannot open, so the file:// URL below has to
+  # name a real one. native_path turns it into a form aws understands.
+  dist_config="$(mktemp -t "$PROJECT-dist.XXXXXX.json")"
+  cat > "$dist_config" <<JSON
 {
   "CallerReference": "$PROJECT-$(date +%s)",
   "Comment": "$PROJECT",
@@ -439,12 +460,12 @@ deploy_cdn() {
 JSON
 
   local out
-  out="$(aws cloudfront create-distribution --distribution-config "file:///tmp/$PROJECT-dist.json" \
+  out="$(aws cloudfront create-distribution --distribution-config "file://$(native_path "$dist_config")" \
     --query '{Id:Distribution.Id,Domain:Distribution.DomainName,Arn:Distribution.ARN}' --output json)"
-  DISTRIBUTION_ID="$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Id"])')"
+  DISTRIBUTION_ID="$(echo "$out" | $PY_CMD -c 'import json,sys; print(json.load(sys.stdin)["Id"])')"
   local domain arn
-  domain="$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Domain"])')"
-  arn="$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Arn"])')"
+  domain="$(echo "$out" | $PY_CMD -c 'import json,sys; print(json.load(sys.stdin)["Domain"])')"
+  arn="$(echo "$out" | $PY_CMD -c 'import json,sys; print(json.load(sys.stdin)["Arn"])')"
   echo "    $DISTRIBUTION_ID  https://$domain"
 
   grant_cdn_access "$arn"

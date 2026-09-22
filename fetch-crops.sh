@@ -23,7 +23,18 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=shell-portability.sh
+. "$HERE/shell-portability.sh"
+# Windows: docker/aws are often installed but absent from an inherited PATH.
+ensure_native_tools_on_path
+PY_CMD="$(portable_python)" || { echo "No usable python found on PATH." >&2; exit 1; }
+
 OUT="${OUT:-$HERE/backend/training_data/all}"
+# $OUT is used by bash itself (mkdir, the python summary) AND handed to
+# aws.exe, which on Windows cannot open the /g/Dev/... form Git Bash
+# presents. Keep both: $OUT for shell use, $OUT_NATIVE for the aws calls.
+# No-op on Linux, where the two are the same string.
+OUT_NATIVE="$(native_path "$OUT")"
 LOCAL_HARVEST="$HERE/backend/training_data/harvested"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
@@ -31,7 +42,7 @@ say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 # --- Summary ---------------------------------------------------------------
 
 summarise() {
-  python3 - "$1" <<'PY'
+  $PY_CMD - "$1" <<'PY'
 import collections, pathlib, sys
 
 root = pathlib.Path(sys.argv[1])
@@ -156,13 +167,13 @@ from_minio() {
   fi
   AWS_ACCESS_KEY_ID=localdev AWS_SECRET_ACCESS_KEY=localdev123 AWS_DEFAULT_REGION=us-east-1 \
     aws --endpoint-url http://127.0.0.1:9000 \
-    s3 sync "s3://marks-crops/harvested" "$OUT" --only-show-errors
+    s3 sync "s3://marks-crops/harvested" "$OUT_NATIVE" --only-show-errors
 }
 
 from_s3() {
   local bucket="$1" prefix="${2:-harvested}"
   say "s3://$bucket/$prefix"
-  aws s3 sync "s3://$bucket/$prefix" "$OUT" --only-show-errors
+  aws s3 sync "s3://$bucket/$prefix" "$OUT_NATIVE" --only-show-errors
 }
 
 # --- Main ------------------------------------------------------------------

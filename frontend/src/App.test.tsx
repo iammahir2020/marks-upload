@@ -12,7 +12,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it } from 'vitest';
 import App from './App';
 import { saveSection } from './db';
-import { APP_VISIBLE_CLASS } from './landing';
+import { APP_VISIBLE_CLASS } from './landingShell';
 import type { Section } from './types';
 
 beforeEach(() => {

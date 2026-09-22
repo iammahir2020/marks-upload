@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { APP_VISIBLE_CLASS, LANDING_SEEN_KEY } from './landing';
+import { APP_VISIBLE_CLASS, LANDING_SEEN_KEY } from './landingShell';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const distIndexPath = path.join(root, 'dist', 'index.html');
@@ -20,7 +20,19 @@ const distIndexPath = path.join(root, 'dist', 'index.html');
 let html: string;
 
 beforeAll(() => {
-  execFileSync('npm', ['run', 'build'], { cwd: root, stdio: 'pipe' });
+  // On Windows `npm` is a `.cmd` shim, and two separate things break a
+  // plain `execFileSync('npm', ...)` there: PATHEXT is not consulted, so
+  // the bare name is ENOENT; and since the fix for CVE-2024-27980, Node
+  // refuses to spawn a `.cmd`/`.bat` at all without `shell: true`, which
+  // is EINVAL. Both are Windows-only, hence the branch. The arguments are
+  // two fixed literals, so routing them through cmd.exe introduces no
+  // quoting hazard.
+  const isWindows = process.platform === 'win32';
+  execFileSync(isWindows ? 'npm.cmd' : 'npm', ['run', 'build'], {
+    cwd: root,
+    stdio: 'pipe',
+    shell: isWindows,
+  });
   html = readFileSync(distIndexPath, 'utf8');
 }, 180_000);
 

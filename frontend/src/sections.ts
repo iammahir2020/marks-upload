@@ -1,5 +1,5 @@
 // Pure grouping/sorting/labelling logic for Section and Assessment (step.md
-// step 13.3, plan.md §18). No IndexedDB here — same shape as results.ts and
+// step 13.3, plan.md §18). No IndexedDB here — same shape as resultsTable.ts and
 // examSheet.ts, so this is unit-testable without a DOM or a fake database.
 import type { Assessment, QuizConfig, Section } from './types';
 

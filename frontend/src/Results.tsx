@@ -23,7 +23,7 @@ import { useEffect, useMemo, useState } from 'react';
 import ExcelJS from 'exceljs';
 import { getRecordsByAssessment, saveAssessment, saveRecord, saveSection } from './db';
 import { buildExamSheet, type ExamSheetResult } from './examSheet';
-import { sortRecords, unverifiedReason } from './results';
+import { sortRecords, unverifiedReason } from './resultsTable';
 import type { ParsedRoster } from './roster';
 import { matchAgainstRoster } from './rosterMatch';
 import type { Assessment, QuestionValue, QuizConfig, Section, StudentRecord } from './types';

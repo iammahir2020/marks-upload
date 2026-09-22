@@ -2,7 +2,7 @@
 // Pure and dependency-free apart from ExcelJS's own types — kept separate
 // from any component so it's directly unit-testable, matching this
 // project's established pattern (validateMarks.ts, validateConfig.ts,
-// results.ts). Operates on an already-loaded `ExcelJS.Workbook`; loading
+// resultsTable.ts). Operates on an already-loaded `ExcelJS.Workbook`; loading
 // the file itself (and catching a corrupt/non-xlsx upload) is the caller's
 // job, not this module's — see Setup.tsx's `unreadable_file` handling.
 import type { Workbook, Worksheet } from 'exceljs';

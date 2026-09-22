@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { APP_VISIBLE_CLASS, LANDING_SEEN_KEY, showLandingOverlay } from './landing';
+import { APP_VISIBLE_CLASS, LANDING_SEEN_KEY, showLandingOverlay } from './landingShell';
 
 beforeEach(() => {
   localStorage.clear();

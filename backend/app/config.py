@@ -124,6 +124,17 @@ RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "30"))
 RATE_LIMIT_WINDOW_SECONDS = float(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 
 
+# --- Tesseract (the `remote` path only) ------------------------------------
+
+# Explicit path to the tesseract binary, for when it is installed but not
+# on PATH. On Linux `apt install tesseract-ocr` puts it on PATH and this
+# stays unset; the Windows installer (UB Mannheim) does NOT add itself to
+# PATH by default, so id_ocr.py falls back to probing the standard install
+# locations when this is empty. Unused on the default `cnn` recognizer,
+# which calls no Tesseract at all.
+TESSERACT_CMD = os.getenv("TESSERACT_CMD")
+
+
 # --- Harvesting (step 3r.6c's crop collection) -----------------------------
 
 # Kill switch. A deployment that would rather not collect handwriting at
