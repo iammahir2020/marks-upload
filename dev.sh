@@ -21,9 +21,16 @@ set -e
 
 cd "$(dirname "$0")"
 
+# A venv keeps its programs in bin/ on Linux and Scripts/ on Windows, so
+# the path is resolved rather than written out. On Windows this script
+# runs under Git Bash; note that dev.ps1 is the better entry point there,
+# because the `kill 0` cleanup below has no real equivalent in MSYS —
+# see that file's own header.
+. ./shell-portability.sh
+
 if [ ! -f backend/certs/cert.pem ]; then
   echo "No backend dev cert found — generating one (gen_dev_cert.py)..."
-  (cd backend && source venv/bin/activate && python gen_dev_cert.py)
+  (cd backend && venv_activate venv && python gen_dev_cert.py)
 fi
 
 cleanup() {
@@ -44,7 +51,7 @@ trap cleanup EXIT INT TERM
 
 (
   cd backend
-  source venv/bin/activate
+  venv_activate venv
   exec uvicorn app.main:app --reload --host 0.0.0.0 \
     --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
 ) &

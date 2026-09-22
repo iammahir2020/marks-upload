@@ -1,0 +1,56 @@
+# Line endings, pinned — added when this repo started being worked on from
+# Windows as well as Linux.
+#
+# Git for Windows installs with core.autocrlf=true by default, which
+# rewrites LF to CRLF on checkout for everything it considers text. For
+# most files here that is harmless. For three kinds of file it is not:
+#
+#   *.sh          a CRLF shebang line makes the kernel look for an
+#                 interpreter literally named "bash\r", and the script
+#                 dies with a "bad interpreter" error that names an
+#                 invisible character. Equally, `dev.sh` and friends are
+#                 run through Git Bash and WSL on this machine and on a
+#                 real Linux box; they must be byte-identical in both.
+#   Dockerfile    same problem one layer down — the image is built from
+#                 this tree and runs on Linux regardless of what built it.
+#   *.pem, images, the model
+#                 binary. CRLF translation corrupts them outright.
+#
+# `* text=auto` keeps the repository itself normalised to LF (what is
+# stored is LF no matter who commits), and the explicit `eol=lf` entries
+# below override the checkout half for the files that cannot survive it.
+* text=auto
+
+# Executed as scripts on Linux, and by Git Bash on Windows. LF always.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.dockerignore  text eol=lf
+
+# Windows-only, and PowerShell is happy either way — but keeping it CRLF
+# matches what every Windows editor will write back anyway, so the file
+# does not show up as modified after being opened.
+*.ps1           text eol=crlf
+
+# Source. LF everywhere: these are read by tools (pytest, vitest, tsc,
+# Vite) that do not care, and by two operating systems that do.
+*.py            text eol=lf
+*.ts            text eol=lf
+*.tsx           text eol=lf
+*.mts           text eol=lf
+*.mjs           text eol=lf
+*.css           text eol=lf
+*.html          text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+*.txt           text eol=lf
+*.example       text eol=lf
+
+# Binary — never translated, never diffed as text.
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.docx          binary
+*.xlsx          binary
+*.onnx          binary
+*.pem           binary
+*.pt            binary

@@ -1,6 +1,6 @@
 // Exam-sheet row building (step.md step 12.5, plan.md §17). Pure —
 // operates on plain data only (no ExcelJS at all), matching this project's
-// established pattern (validateMarks.ts, results.ts, roster.ts). The
+// established pattern (validateMarks.ts, resultsTable.ts, roster.ts). The
 // ExcelJS-touching side — sanitising a sheet name, resolving a name
 // collision, and actually writing the rows into a workbook — is
 // `workbookExport.ts`; kept separate so the matching rule here is testable

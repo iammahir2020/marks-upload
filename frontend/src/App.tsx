@@ -5,7 +5,7 @@
 import { lazy, Suspense, useState } from 'react';
 import AssessmentForm, { type NewAssessmentInput } from './AssessmentForm';
 import { getAllSections, saveAssessment, saveSection } from './db';
-import { showLandingOverlay } from './landing';
+import { showLandingOverlay } from './landingShell';
 import Library from './Library';
 import Scan from './Scan';
 import { assessmentConfig } from './sections';

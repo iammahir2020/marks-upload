@@ -2,8 +2,18 @@
 """Step 2r.4: CNN ID-recognition accuracy harness. Mirrors
 id_ocr_accuracy.py exactly — same ground truth (testset/labels.json), same
 cases, same two numbers reported — so the comparison to Tesseract's
-measured baseline (58.9% per-digit, 0/8 whole-ID exact match) is apples to
-apples, per step.md step 2r.4's own requirement. Also reports the
+measured baseline (44.5% per-digit, 0/29 whole-ID exact match) is apples to
+apples, per step.md step 2r.4's own requirement.
+
+That baseline is a CONSTANT here rather than a live measurement, because
+running Tesseract from this harness would couple the default `cnn` path to
+an optional binary. The trade is that the constant can go stale, and it
+did: it read 58.9% (33/56) until 2026-09-22, measured when the test set was
+8 photos. This harness had long since grown to 29, so it was quoting an
+8-photo Tesseract number beside its own 29-photo one — exactly the
+apples-to-apples claim this docstring makes. Re-measured on the full set by
+running id_ocr_accuracy.py: 81/182 = 44.5%, 0/29 whole-ID. If you add
+photos, re-run that harness and update these two numbers with it. Also reports the
 confidently-wrong count separately, since step.md's Done-when bar for this
 step is about that count staying zero, not just raw accuracy going up —
 matching the "flag, never guess" bar id_ocr.py already holds itself to.
@@ -130,7 +140,7 @@ def main() -> int:
                     # via the same string-equality check id_ocr_accuracy.py
                     # uses ('?' never equals a real digit) — this keeps
                     # the two harnesses' headline numbers on identical
-                    # footing, so "beats 58.9%" is a real comparison.
+                    # footing, so "beats 44.5%" is a real comparison.
                     if true_digit is not None and digit != true_digit:
                         confidently_wrong += 1
 
@@ -157,9 +167,9 @@ def main() -> int:
 
     print()
     if total_digits:
-        print(f"per-digit accuracy: {correct_digits}/{total_digits} = {correct_digits/total_digits:.1%}  (id_ocr_accuracy.py baseline: 33/56 = 58.9%)")
+        print(f"per-digit accuracy: {correct_digits}/{total_digits} = {correct_digits/total_digits:.1%}  (id_ocr_accuracy.py baseline: 81/182 = 44.5%)")
         print(f"confidently wrong: {confidently_wrong} (must stay 0 — this is the bar that matters most, not raw accuracy)")
-        print(f"whole-ID exact match: {exact_matches}/{len(cases)} = {exact_matches/len(cases):.1%}  (id_ocr_accuracy.py baseline: 0/8 = 0.0%)")
+        print(f"whole-ID exact match: {exact_matches}/{len(cases)} = {exact_matches/len(cases):.1%}  (id_ocr_accuracy.py baseline: 0/29 = 0.0%)")
     else:
         print("no cases produced a detectable ID table — nothing to score")
 

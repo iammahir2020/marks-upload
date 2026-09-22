@@ -15,6 +15,15 @@ set -uo pipefail   # deliberately NOT -e: every check must run, not just the fir
 REGION="${AWS_REGION:-us-east-1}"
 PROJECT="${PROJECT:-marks-scanner}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=shell-portability.sh
+. "$HERE/shell-portability.sh"
+# Windows: docker/aws are often installed but absent from an inherited PATH.
+ensure_native_tools_on_path
+# This script drives docker; container-side paths must not be rewritten.
+disable_msys_path_conversion
+# docker.exe and curl.exe are native Windows programs and do not understand
+# the /g/Dev/... form Git Bash presents. No-op on Linux.
+HERE_NATIVE="$(native_path "$HERE")"
 
 BLOCKERS=0
 WARNINGS=0
@@ -27,13 +36,23 @@ head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 # --- Tooling ---------------------------------------------------------------
 
 head_ "Tooling"
-for tool in aws docker node npm python3; do
+for tool in aws docker node npm; do
   if command -v "$tool" >/dev/null 2>&1; then
     pass "$tool present"
   else
     fail "$tool missing"
   fi
 done
+# Python is probed separately because the name differs per platform, and
+# on Windows the wrong name is worse than a missing one: `python3` there
+# is a Microsoft Store stub that answers `command -v` and then refuses to
+# run. portable_python resolves it by actually executing a candidate.
+if PY_CMD="$(portable_python)"; then
+  pass "python present ($PY_CMD)"
+else
+  fail "python missing"
+  PY_CMD="python3"
+fi
 
 if docker info >/dev/null 2>&1; then
   pass "docker daemon reachable"
@@ -45,8 +64,8 @@ fi
 
 head_ "AWS identity"
 if IDENT="$(aws sts get-caller-identity --output json 2>/dev/null)"; then
-  ACCOUNT="$(echo "$IDENT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Account"])')"
-  ARN="$(echo "$IDENT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Arn"])')"
+  ACCOUNT="$(echo "$IDENT" | $PY_CMD -c 'import json,sys; print(json.load(sys.stdin)["Account"])')"
+  ARN="$(echo "$IDENT" | $PY_CMD -c 'import json,sys; print(json.load(sys.stdin)["Arn"])')"
   pass "authenticated as $ARN"
   pass "account $ACCOUNT, region $REGION"
 else
@@ -131,7 +150,7 @@ if [ -n "$ACCOUNT" ]; then
     *AccessDenied*|*not\ authorized*)
       warn "cannot read s3://$CROPS lifecycle (needs s3:GetLifecycleConfiguration) — verify by hand" ;;
     *Expiration*)
-      DAYS="$(echo "$LIFECYCLE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Rules"][0]["Expiration"]["Days"])' 2>/dev/null || echo "?")"
+      DAYS="$(echo "$LIFECYCLE" | $PY_CMD -c 'import json,sys; print(json.load(sys.stdin)["Rules"][0]["Expiration"]["Days"])' 2>/dev/null || echo "?")"
       pass "crops expire after ${DAYS} days" ;;
     *)
       warn "crops lifecycle present but has no Expiration — crops are kept forever" ;;
@@ -141,7 +160,7 @@ fi
 # --- The artifact ----------------------------------------------------------
 
 head_ "Container image"
-if docker build --platform linux/amd64 --provenance=false -q -t "$PROJECT-preflight" "$HERE/backend" >/dev/null 2>&1; then
+if docker build --platform linux/amd64 --provenance=false -q -t "$PROJECT-preflight" "$HERE_NATIVE/backend" >/dev/null 2>&1; then
   pass "builds for linux/amd64"
   SIZE_B="$(docker image inspect "$PROJECT-preflight" --format '{{.Size}}' 2>/dev/null || echo 0)"
   SIZE_MB=$((SIZE_B / 1024 / 1024))
@@ -184,7 +203,7 @@ CID="$(docker run -d --rm -p 9099:8000 --read-only --tmpfs /tmp \
   -e HARVEST_ENABLED=false "$PROJECT-preflight" 2>/dev/null)"
 if [ -n "$CID" ]; then
   sleep 6
-  PHOTO="$HERE/testset/images/filled_file.jpeg"
+  PHOTO="$HERE_NATIVE/testset/images/filled_file.jpeg"
   CFG='{"quizName":"preflight","idDigits":7,"totalMax":25,"questions":[{"q":1,"max":5},{"q":2,"max":5},{"q":3,"max":5},{"q":4,"max":5},{"q":5,"max":5}]}'
   BODY="$(curl -s --max-time 90 -X POST http://localhost:9099/api/scan \
     -F "image=@$PHOTO" -F "config=$CFG" 2>/dev/null)"
@@ -243,8 +262,9 @@ fi
 # --- Tests -----------------------------------------------------------------
 
 head_ "Test suites"
-if [ -x "$HERE/backend/venv/bin/pytest" ]; then
-  if ( cd "$HERE/backend" && ./venv/bin/pytest -q >/dev/null 2>&1 ); then
+VENV_PYTEST="$(venv_exe "$HERE/backend/venv" pytest)"
+if [ -x "$VENV_PYTEST" ]; then
+  if ( cd "$HERE/backend" && "$VENV_PYTEST" -q >/dev/null 2>&1 ); then
     pass "backend tests pass"
   else
     fail "backend tests FAIL — do not deploy"

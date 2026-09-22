@@ -15,12 +15,37 @@ network.
 
     python gen_dev_cert.py
 """
+import os
+import shutil
 import socket
 import subprocess
 import sys
 from pathlib import Path
 
 CERT_DIR = Path(__file__).parent / "certs"
+
+
+def find_openssl() -> str | None:
+    r"""`openssl` is on PATH on any normal Linux box and on none by
+    default on Windows. It is nonetheless almost always present there,
+    because Git for Windows ships one — so look in Git's own directory
+    before telling anyone to go and install something they already have.
+    """
+    found = shutil.which("openssl")
+    if found:
+        return found
+    if sys.platform != "win32":
+        return None
+    candidates = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "mingw64" / "bin" / "openssl.exe",
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin" / "openssl.exe",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Git" / "mingw64" / "bin" / "openssl.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Git" / "mingw64" / "bin" / "openssl.exe",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def detect_lan_ip() -> str | None:
@@ -41,6 +66,17 @@ def main() -> int:
     key_path = CERT_DIR / "key.pem"
     cert_path = CERT_DIR / "cert.pem"
 
+    openssl = find_openssl()
+    if openssl is None:
+        print(
+            "openssl was not found on PATH.\n"
+            "  Linux:   apt install openssl\n"
+            "  Windows: it ships with Git for Windows — install that, or add\n"
+            r"           C:\Program Files\Git\mingw64\bin to PATH.",
+            file=sys.stderr,
+        )
+        return 1
+
     lan_ip = detect_lan_ip()
     san_entries = ["DNS:localhost", "IP:127.0.0.1"]
     if lan_ip:
@@ -51,7 +87,7 @@ def main() -> int:
 
     result = subprocess.run(
         [
-            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
             "-keyout", str(key_path), "-out", str(cert_path),
             "-days", "365",
             "-subj", "/CN=localhost",

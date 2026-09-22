@@ -29,7 +29,12 @@ def _make_cells(tmp_path: Path, names: list[str]) -> Path:
 
 
 def _files_under(harvest_dir: Path) -> list[str]:
-    return sorted(str(p.relative_to(harvest_dir)) for p in harvest_dir.rglob("*.png"))
+    # `.as_posix()`, not `str()`: what these tests assert on is the Store
+    # KEY, which harvest.py builds with "/" on every platform so the local
+    # and S3 layouts stay byte-identical (stores.py's whole premise).
+    # `str()` on a WindowsPath hands back "\" instead and every assertion
+    # below fails for a reason that has nothing to do with harvesting.
+    return sorted(p.relative_to(harvest_dir).as_posix() for p in harvest_dir.rglob("*.png"))
 
 
 def test_confirmed_id_digit_matching_original_is_tagged_confirmed(tmp_path):

@@ -199,7 +199,7 @@ export default function Review({
     }
 
     // Same rule for the serial (issues.md N21). It was the one identity
-    // field nothing validated on either side of the wire: `results.ts`
+    // field nothing validated on either side of the wire: `resultsTable.ts`
     // sorts by `Number(serial)`, so a non-numeric one has no defined place
     // in the exported table, and it also becomes a path segment in
     // /api/harvest's storage key. `marks.py`'s validate_serial enforces the

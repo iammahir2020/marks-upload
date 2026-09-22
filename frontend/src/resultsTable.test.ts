@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sortRecords, unverifiedReason } from './results';
+import { sortRecords, unverifiedReason } from './resultsTable';
 import type { StudentRecord } from './types';
 
 function record(overrides: Partial<StudentRecord>): StudentRecord {

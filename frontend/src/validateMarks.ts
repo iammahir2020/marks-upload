@@ -63,7 +63,7 @@ export function parseMarkField(raw: string, max: number): FieldParse {
 // something like "12?4567". Nothing stopped that being confirmed and
 // exported verbatim (issues.md N5).
 // A serial identifies a script's position in the pile. 1..9999 is far more
-// than any real class, and `results.ts` sorts by `Number(serial)`, so a
+// than any real class, and `resultsTable.ts` sorts by `Number(serial)`, so a
 // non-numeric one has no defined place in the exported table.
 //
 // The other half of issues.md N21: `marks.py`'s `validate_serial` applies

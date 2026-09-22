@@ -47,6 +47,30 @@ FIXTURE_MARKS_RESULT = MarksResult(
 )
 
 
+def _tesseract_available() -> bool:
+    """Most of the `remote`-path tests mock `app.id_ocr.read_id` and so
+    need no binary at all. Two of them deliberately do not — they are
+    about main.py's own wiring around a real ID read — and those cannot
+    run without the Tesseract program itself, which is a separate install
+    from the pip wrapper and is genuinely optional now that `cnn` is the
+    default recognizer (CLAUDE.md, step 3r.6e).
+
+    Skipping is the honest outcome there, the same as the existing
+    `filled_file.jpeg not present` skips in this file: the test has
+    nothing to say on a machine where the thing it exercises isn't
+    installed. Failing instead would mean the suite reports a broken app
+    on a correctly-configured default install."""
+    from app.id_ocr import tesseract_missing_message
+
+    return tesseract_missing_message() is None
+
+
+requires_tesseract = pytest.mark.skipif(
+    not _tesseract_available(),
+    reason="the tesseract binary is not installed (only needed on RECOGNIZER=remote)",
+)
+
+
 @pytest.fixture
 def force_remote_recognizer(monkeypatch):
     """These tests mock app.marks.recognize / app.id_ocr.read_id /
@@ -162,6 +186,7 @@ def test_known_good_image_matches_cli_values(force_remote_recognizer):
     mock_read_id.assert_called_once()
 
 
+@requires_tesseract
 def test_two_consecutive_requests_do_not_influence_each_other(force_remote_recognizer):
     """Different configs, same image, back to back — the second request's
     result must not be contaminated by the first's temp output."""
@@ -217,6 +242,7 @@ def test_rate_limited_falls_back_to_local_ocr(force_remote_recognizer):
     mock_fallback.assert_called_once()
 
 
+@requires_tesseract
 def test_rate_limited_with_nothing_recoverable_still_fails_honestly(force_remote_recognizer):
     """If the local fallback can't recover anything either, this must
     still surface as a failed scan with the original reason — not a

@@ -71,7 +71,7 @@ def test_harvest_endpoint_saves_confirmed_and_corrected_crops(tmp_path, monkeypa
     files = list(tmp_path.rglob("*.png"))
     assert files, "expected at least one harvested crop"
 
-    relative = {str(p.relative_to(tmp_path)) for p in files}
+    relative = {p.relative_to(tmp_path).as_posix() for p in files}
     # positions 1, 4, 6 differ between original and confirmed ("?" vs a digit)
     assert any(f.startswith("fac-test1/id_digits/corrected/2_") for f in relative)
     assert any(f.startswith("fac-test1/id_digits/confirmed/6_") for f in relative)
@@ -110,7 +110,7 @@ def test_harvest_endpoint_refuses_a_field_the_original_scan_marked_unmatched(tmp
     assert resp.status_code == 200
     assert resp.json() == {"harvested": True}
 
-    relative = {str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*.png")}
+    relative = {p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.png")}
     assert not any("marks_q1" in f for f in relative)
     # everything else in the request still harvests normally
     assert any(f.startswith("fac-test1/marks_q2/confirmed/2.5_") for f in relative)
@@ -153,7 +153,7 @@ def test_a_request_without_a_source_lands_under_unknown(tmp_path, monkeypatch):
     )
     assert resp.json() == {"harvested": True}
     assert all(
-        str(p.relative_to(tmp_path)).startswith("unknown/")
+        p.relative_to(tmp_path).as_posix().startswith("unknown/")
         for p in tmp_path.rglob("*.png")
     )
 

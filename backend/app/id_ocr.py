@@ -8,11 +8,84 @@ check exists for a 7-digit ID) — flag uncertainty rather than guess.
 """
 from __future__ import annotations
 
+import os
+import shutil
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytesseract
+
+from . import config
+
+
+def _locate_tesseract() -> None:
+    r"""Point pytesseract at the real binary when PATH alone won't find it.
+
+    The pip package is a wrapper; the binary is installed separately. On
+    Linux `apt install tesseract-ocr` puts it on PATH and none of this
+    does anything. The Windows installer does not: it lands in
+    `C:\Program Files\Tesseract-OCR` and leaves PATH alone unless the
+    person ticks a box, so `tesseract` is ENOENT from inside a venv even
+    though the program is plainly installed — which surfaces as a 500 from
+    /api/scan with no indication that a *path* is the problem.
+
+    Probing is deliberately confined to win32. Guessing at install
+    locations on a platform where PATH is the convention would be the
+    wrong kind of helpful, and TESSERACT_CMD remains the explicit override
+    everywhere.
+    """
+    if config.TESSERACT_CMD:
+        pytesseract.pytesseract.tesseract_cmd = config.TESSERACT_CMD
+        return
+    if shutil.which("tesseract"):
+        return
+    if sys.platform != "win32":
+        return
+    program_files = [
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        os.environ.get("LOCALAPPDATA", ""),
+    ]
+    for base in program_files:
+        if not base:
+            continue
+        candidate = Path(base) / "Tesseract-OCR" / "tesseract.exe"
+        if candidate.is_file():
+            pytesseract.pytesseract.tesseract_cmd = str(candidate)
+            return
+
+
+def tesseract_missing_message() -> str | None:
+    """None when Tesseract can be run, otherwise an explanation worth
+    printing. The bare `TesseractNotFoundError` traceback says "not
+    installed or not in your PATH" without saying which, and on Windows
+    "installed but not on PATH" is the overwhelmingly common case — the
+    installer leaves PATH alone by default."""
+    try:
+        pytesseract.get_tesseract_version()
+    except Exception:
+        pass
+    else:
+        return None
+    lines = [
+        "Tesseract is not available. The pip package is only a wrapper; the",
+        "program itself installs separately.",
+        "",
+        "  Linux:    apt install tesseract-ocr",
+        "  Windows:  https://github.com/UB-Mannheim/tesseract/wiki",
+        "            (the installer does NOT add itself to PATH; this app looks",
+        r"            in C:\Program Files\Tesseract-OCR automatically, or set",
+        "            TESSERACT_CMD in backend/.env to the full path)",
+        "",
+        "Only RECOGNIZER=remote and =both need it. The default, RECOGNIZER=cnn,",
+        "uses neither Tesseract nor Gemini.",
+    ]
+    return "\n".join(lines)
+
+
+_locate_tesseract()
 
 OEM = 3
 PSM = 8  # "single word" — stack-reference.md suggested 10 ("single character"),

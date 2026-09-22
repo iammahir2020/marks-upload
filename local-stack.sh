@@ -29,6 +29,20 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=shell-portability.sh
+. "$HERE/shell-portability.sh"
+# Windows: docker/aws are often installed but absent from an inherited PATH.
+ensure_native_tools_on_path
+PY_CMD="$(portable_python)" || { echo "No usable python found on PATH." >&2; exit 1; }
+# This script drives docker; container-side paths must not be rewritten.
+disable_msys_path_conversion
+# docker.exe is a native Windows program and cannot open the /g/Dev/... form
+# Git Bash presents, so every HOST path handed to it goes through this.
+# No-op on Linux. (The build CONTEXT needs it as much as a -v mount does —
+# missing it here was how this script first failed on Windows: "unable to
+# prepare context: path not found".)
+HERE_NATIVE="$(native_path "$HERE")"
+
 NET=marks-local
 VOLUME=marks-minio-data
 BUCKET=marks-crops
@@ -37,7 +51,7 @@ WEB_PORT=5173
 MINIO_USER=localdev
 MINIO_PASS=localdev123
 
-LAN_IP="$(python3 -c "
+LAN_IP="$($PY_CMD -c "
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.connect(('8.8.8.8', 80)); print(s.getsockname()[0]); s.close()")"
@@ -64,7 +78,7 @@ up() {
   # SKIP_BUILD=1 for a pure frontend iteration.
   if [ "${SKIP_BUILD:-0}" != "1" ]; then
     say "Building backend image"
-    docker build -q -t marks-backend "$HERE/backend" >/dev/null
+    docker build -q -t marks-backend "$HERE_NATIVE/backend" >/dev/null
     echo "    built"
   fi
 
@@ -109,7 +123,7 @@ up() {
   if ! openssl x509 -in "$HERE/backend/certs/cert.pem" -noout -text 2>/dev/null \
        | grep -q "IP Address:$LAN_IP"; then
     say "Regenerating TLS cert — it does not cover $LAN_IP"
-    ( cd "$HERE/backend" && ./venv/bin/python gen_dev_cert.py )
+    ( cd "$HERE/backend" && "$(venv_exe "$HERE/backend/venv" python)" gen_dev_cert.py )
     echo "    NOTE: the phone must accept the new cert again at $API_URL"
   fi
 
@@ -124,7 +138,7 @@ up() {
   # backend).
   docker run -d --name marks-api --network "$NET" -p "$API_PORT:8000" \
     --read-only --tmpfs /tmp \
-    -v "$HERE/backend/certs:/certs:ro" \
+    -v "$HERE_NATIVE/backend/certs:/certs:ro" \
     -e HARVEST_BACKEND=s3 \
     -e HARVEST_BUCKET="$BUCKET" \
     -e HARVEST_PREFIX=harvested \

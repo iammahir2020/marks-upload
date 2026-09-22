@@ -6,7 +6,7 @@
 // so Landing.tsx never ships a runtime chunk of its own (14.6).
 import { renderToStaticMarkup } from 'react-dom/server';
 import Landing from './Landing';
-import { APP_VISIBLE_CLASS, LANDING_SEEN_KEY } from './landing';
+import { APP_VISIBLE_CLASS, LANDING_SEEN_KEY } from './landingShell';
 
 export function renderLandingMarkup(): string {
   // onOpenApp is never called here — renderToStaticMarkup produces plain

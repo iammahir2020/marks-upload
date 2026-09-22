@@ -23,7 +23,8 @@ import GridTemplateFigure from './GridTemplateFigure';
 import ScanAnimation from './ScanAnimation';
 import ScanGraphic from './ScanGraphic';
 import QrCode from './QrCode';
-import { DEPLOYED_APP_URL } from './landing';
+import { EmailIcon, GitHubIcon, LinkedInIcon } from './FooterIcons';
+import { DEPLOYED_APP_URL } from './landingShell';
 
 interface LandingProps {
   onOpenApp: () => void;
@@ -66,6 +67,13 @@ const PRIVACY_POINTS = [
   'Individual cells are kept, with the value you confirmed, to improve recognition — no names, nothing that reassembles a student ID.',
   'Marks live in your browser until you export them. No account, no sign-up, no server-side database.',
 ];
+
+// One copy of each, for the same reason DEPLOYED_APP_URL is: a single
+// place to update rather than one buried in JSX per link.
+const AUTHOR_NAME = 'Mahir Al Kamal';
+const AUTHOR_EMAIL = 'mahiralkamal.mak@gmail.com';
+const AUTHOR_GITHUB_URL = 'https://github.com/iammahir2020';
+const AUTHOR_LINKEDIN_URL = 'https://www.linkedin.com/in/mahiralkamal/';
 
 export default function Landing({ onOpenApp }: LandingProps) {
   return (
@@ -168,6 +176,36 @@ export default function Landing({ onOpenApp }: LandingProps) {
           </div>
         </div>
       </section>
+
+      <footer className="lp-footer">
+        <div className="lp-footer-inner">
+          <nav className="lp-footer-links" aria-label="Contact">
+            <a className="lp-footer-link" href={`mailto:${AUTHOR_EMAIL}`}>
+              <EmailIcon />
+              <span>{AUTHOR_EMAIL}</span>
+            </a>
+            <a className="lp-footer-link" href={AUTHOR_GITHUB_URL} target="_blank" rel="noreferrer">
+              <GitHubIcon />
+              <span>GitHub</span>
+            </a>
+            <a className="lp-footer-link" href={AUTHOR_LINKEDIN_URL} target="_blank" rel="noreferrer">
+              <LinkedInIcon />
+              <span>LinkedIn</span>
+            </a>
+          </nav>
+          {/* This page is prerendered ONCE, at build time (react-dom/server,
+              scripts/prerender-landing.mjs) — there is no client-side React
+              tree here to re-render on a later visit, so a client Date()
+              call would never re-run either. Reading the year here bakes
+              it into the static HTML exactly like every other word on
+              this page, and it advances the same way the rest of the
+              page's content does: on the next `npm run build` /
+              `deploy.sh frontend`, not on its own. */}
+          <p className="lp-footer-copyright">
+            © {new Date().getFullYear()} {AUTHOR_NAME}. All rights reserved.
+          </p>
+        </div>
+      </footer>
     </div>
   );
 }
