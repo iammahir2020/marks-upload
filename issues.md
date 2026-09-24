@@ -71,9 +71,108 @@ false positive** rather than recorded. One finding survived verification:
 Findings were verified by running the code, not taken on a tool's word.
 Where a finding was proven by execution it says so.
 
+**Audit 4 (2026-09-24)**: a pre-sharing security audit of the whole
+system (frontend, backend, infrastructure and the live AWS deployment),
+done before the app is handed to other faculty. Its findings, **N38–N57**,
+are in their own section directly below, all **open**. Nothing has been
+fixed yet, by request.
+
+---
+
+## Audit 4 — pre-sharing security audit (2026-09-24)
+
+**Threat model.** The app is about to go to people the owner doesn't
+control, through a public, unauthenticated URL whose costs land on the
+owner's personal AWS account. So "exploit" here covers running up that
+bill, poisoning the training data, and taking the service down, as well
+as reading data.
+
+**How it was checked.** Every source file and script was read, and so was
+the live AWS configuration (read-only, as the deploy user). Where a
+finding could be demonstrated, it was:
+
+- Probes against the live site used a `test-` source tag and sent no
+  labels, so nothing entered the real training data.
+- Anything heavy (the malicious-image test) was run on the laptop, never
+  against production.
+
+**Verdict.** The data-handling core holds up well: there's no way to read
+anyone else's marks, the N1 path-traversal fix holds, and the logs are
+scrubbed. The exposure is economic and operational: **no hard cap on what
+an anonymous caller can make this account spend**, a harvest endpoint
+anyone can write to, and a cheap malicious image that multiplies the cost
+per request. **N38, N39 and N40 should be fixed before the URL goes to
+other faculty.**
+
+### Findings
+
+| # | Sev | Area | Finding | Evidence |
+|---|---|---|---|---|
+| **N38** | **High** | Infra | **No spending cap.** Nothing limits what an anonymous caller can make this account spend: no Lambda reserved concurrency, no API Gateway stage throttling, no WAF. The only limit is `ratelimit.py`'s per-container, in-memory counter, and N41 bypasses it with one header. Each request can bill up to 60 s × 2 GB (`TIMEOUT_S`/`MEMORY_MB` in `deploy.sh`). A scripted caller turns the free tier into a real bill within minutes. Whether a budget alarm exists could not be checked (the deploy user lacks `budgets:ViewBudget`), and preflight still lists it as undecided. | Live: API stage `$default` has no throttling settings, and the route has `AuthorizationType: NONE`. |
+| **N39** | **High** | Backend | **A tiny image can cost many times a real scan.** `detection.py` decodes uploads with `cv2.imread` and no pixel-dimension limit. The 4 MB byte cap doesn't help: a grid-patterned PNG compresses to almost nothing but claims a huge resolution. A failed detection then retries 3 more rotations, each re-encoding the full image. API Gateway gives up at 30 s, but the Lambda keeps running (and billing) up to 60 s. Both `/api/scan` and `/api/harvest` are affected. | Local run: a **126 KB** 10000×10000 PNG took **17.5 s** of CPU to fail, against ~1.5 s for a real photo. A 6000×6000 one (51 KB) took 5.6 s. |
+| **N40** | **High** | Backend / data | **Anyone can write to the training corpus.** `/api/harvest` is unauthenticated, and the caller supplies both the image and the "confirmed" labels. Anyone can file crops under any labels, and pick their own `source` tag (a `test-` prefix hides them from `fetch-crops.sh`; anything else mixes them into real data). The `confirmed`/`corrected` tag is computed from the caller's own `original` field, so it can't be trusted either. Poisoned crops would silently corrupt any future fine-tune (plan.md §16). Storage growth is bounded only by the bucket's expiration rule. | Live: 3 requests with rotating fake `X-Forwarded-For` values all returned 200. |
+| **N41** | Med | Backend | **The rate limit trusts a header the caller controls.** `ratelimit.client_ip` keys on the **first** `X-Forwarded-For` entry. CloudFront keeps whatever the caller sent there and appends the real address after it, so changing that one header per request gives an unlimited budget. The code documents this as accepted for a demo; once the app is shared, that trade no longer holds. The entry CloudFront appended (or `CloudFront-Viewer-Address`) is the trustworthy one. | Verified as part of N40's probe. |
+| **N42** | Med | Infra | **The API is reachable directly, bypassing CloudFront.** API Gateway's default `execute-api` URL is still enabled (`DisableExecuteApiEndpoint: false`). Anything added at CloudFront later (a WAF, header checks, edge rate limits) can simply be skipped by calling that URL. It also serves FastAPI's interactive docs publicly at `/docs`, `/redoc` and `/openapi.json`, a ready-made map of the API. | Live: `vxnuu414dh.execute-api…/docs` → 200, `/openapi.json` → 200, and a direct `/api/scan` → 200. |
+| **N43** | Med | Infra / frontend | **No security headers.** The distribution has no response-headers policy, so the site is served without HSTS, a Content-Security-Policy, `frame-ancestors`/`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy` or `Permissions-Policy`. There's no current injection bug for a CSP to stop (see the clean list below), so this is defence in depth. But it's the standard baseline for a page that asks for camera access, and it prevents the app being framed by another site. | Live: `curl -I` on the site shows only `server: AmazonS3` and the cache headers. |
+| **N44** | Med | Laptop mode | **Laptop mode is exposed to everyone on the same network.** Both dev servers bind every interface (uvicorn `--host 0.0.0.0 --reload` in `dev.sh`/`dev.ps1`; Vite `host: true`). CORS allows every private-range origin, and harvesting writes to local disk. On campus Wi-Fi the "LAN" is the whole campus, so anyone on it can scan through the laptop, write to its local training folder, or pull project files from the Vite dev server (Vite has a history of `server.fs` bypass CVEs). The self-signed-certificate flow also trains users to click past TLS warnings. The firewall rules are scoped to `LocalSubnet`, which on campus is large. | Code: `dev.sh:55`, `dev.ps1:151`, `vite.config.ts:123`, `config.py:71`. |
+| **N45** | Med | Data governance | **Other faculties' student data would land in the owner's AWS account.** Harvesting is on by default for every user of the shared URL, with no opt-out in the UI. Other institutions' student handwriting, including per-digit ID crops, would end up in the owner's personal S3 bucket. The crops are designed to be unlinkable and the bucket has an expiration rule, but consent and institutional data-protection approval are the owner's to obtain, and the other faculty have no switch. | `Review.tsx` fires `/api/harvest` on every Confirm. |
+| **N46** | Med | Availability | **The whole service disappears with the AWS account.** A Free-plan account closes automatically about 6 months after signup (≈18 Feb 2027 here, per preflight's own warning), regardless of the credits' later expiry. Faculty relying on the shared URL would lose it mid-semester, and the crops bucket with it. | `preflight.sh` "Decisions this script cannot make", item 11.6.0. |
+| **N47** | Low | Backend | **Uploads can be any image format OpenCV decodes, not just photos.** No check that the upload is actually a JPEG or PNG: `cv2.imread` will parse TIFF, JPEG 2000, PNM, Sun Raster, HDR and more. Those native decoders are a historical source of memory-corruption CVEs, for no product benefit. A magic-bytes allowlist removes that surface. | `main.py:356` writes whatever arrived to `upload.jpg`, and `detection.py:353` decodes it. |
+| **N48** | Low | Infra | **The site still accepts TLS 1.0.** The distribution uses the default `*.cloudfront.net` certificate, whose minimum protocol is `TLSv1` and can't be raised without a custom domain and an ACM certificate. | Live: `ViewerCertificate.MinimumProtocolVersion: TLSv1`. |
+| **N49** | Low | Infra | **Abuse would go unnoticed until the bill arrives.** CloudFront access logging is off, and there's no alarm on invocation count, errors or duration, only the dashboard (step 11.8). The only record is 30 days of Lambda logs. | Live: `Logging.Enabled: false`. |
+| **N50** | Low | Infra / IAM | **The deploy credentials can replace the live backend.** `marks-scanner-deploy` is an IAM user with long-lived access keys on the laptop and no MFA requirement, and it can update the Lambda's code and image, so a stolen laptop profile can swap in malicious backend code. It also can't read concurrency, budgets, bucket versioning or encryption, so the checks in N38 can't be verified without an admin profile. Overlaps **N12** (account-wide CloudFront/API Gateway grants). | Live: `AccessDenied` on `GetFunctionConcurrency`, `ViewBudget` and `GetBucketVersioning`. |
+| **N51** | Low | Container | **The container's base image is loosely pinned and near end of life.** No `USER` line, so it runs as root when run locally (Lambda itself doesn't). The base image is pinned by mutable tag (`python:3.10-slim`; Python 3.10 reaches end of life in **October 2026**), and so is the Lambda Web Adapter (`0.9.1`). ECR tags are mutable and scan-on-push is off. | `backend/Dockerfile:17,23`, `deploy.sh:80`. |
+| **N52** | Low | Frontend deps | **One moderate npm advisory.** `exceljs` depends on a `uuid` version with a moderate advisory (GHSA-w5hq-g745-h8pq, missing buffer bounds check in v3/v5/v6). exceljs probably only uses v4, so it likely isn't reachable here. The suggested `npm audit fix --force` would downgrade exceljs to 3.x, which is worse. | `npm audit`: 2 moderate. |
+| **N53** | Low | Frontend | **A malicious class-list file could crash the app.** The workbook upload has no size limit. It's unzipped and parsed in the browser (`SectionForm.tsx:130-133`), and its bytes are kept in IndexedDB. A zip bomb, for example a "shared template" passed between faculty, can crash the tab or bloat storage. | Code read. |
+| **N54** | Low | Frontend / data | **Student data sits unencrypted on the phone.** IndexedDB holds student IDs, class-list names and marks, plus the whole class-list workbook, in plain form, indefinitely. The only clean-up is manual (Reset everything, the semester purge). A lost or shared device exposes a class. This is inherent to "no server database" and should be stated in the faculty-facing disclosure. | Design. |
+| **N55** | Low | Infra | **The crops bucket lacks two standard protections.** There's no bucket policy denying non-TLS access (`aws:SecureTransport`), and versioning status couldn't be read (see N50). The deploy user holds `s3:DeleteObject` on it, so leaked deploy keys could delete the whole training corpus. | Live: `NoSuchBucketPolicy`. |
+| **N56** | Low | Backend | **The upload size cap has a gap on the laptop.** The early check only runs when a `Content-Length` header is sent. A chunked upload is parsed in full before `_reject_oversized` sees it. On AWS, API Gateway's 10 MB and Lambda's 6 MB payload limits bound this; laptop mode has no such bound. | `main.py:123`, `:205`. |
+| **N57** | Info | Backend | **A caller-supplied trace header is copied into the process environment.** With X-Ray on, `trace` copies `X-Amzn-Trace-Id` into `os.environ`. Only trace grouping can be polluted, and SDK errors are swallowed, but it's a value from outside ending up in process state. | `main.py:303-305`. |
+
+### Checked and clean
+
+These are recorded so that "not listed" isn't mistaken for "not checked":
+
+- **Secrets:** none tracked, and none anywhere in git history (AWS keys,
+  Google API keys, private keys). The Lambda environment holds no secret.
+- **Python dependencies:** all pinned; `pip-audit` finds no known
+  vulnerabilities.
+- **Injection:** no XSS sinks in the frontend (no `dangerouslySetInnerHTML`,
+  `innerHTML`, `eval` or `postMessage`). All link targets are constants,
+  and the landing page's inline bootstrap is built with `JSON.stringify`
+  of constants.
+- **Class-list parsing:** no prototype-pollution path.
+- **Harvest:** path traversal (N1) still blocked by allowlist sanitizers
+  on both `source` and label.
+- **Logs:** scrubbed of IDs and digits (`observability.py`).
+- **CORS:** rejects foreign origins (live: a preflight from
+  `https://evil.example` got no `Access-Control-Allow-Origin`).
+- **Caching:** `/api/*` uses `CachingDisabled`, and the service worker
+  caches only built assets, never API responses.
+- **S3:** both buckets block all public access. The site bucket is
+  readable only by this distribution (OAC + `SourceArn`). The crops
+  bucket has an expiration rule (N8's intent is live).
+- **Lambda role:** write-only, to one bucket.
+- **Lambda endpoints:** no Function URL exists.
+- **Cross-user isolation:** no server-side store of marks, so there's
+  nothing to read across users.
+
+### Not covered
+
+- **ECR vulnerability scan results, budget alarms and live concurrency
+  settings:** the deploy user can't read them (N50). Check from an admin
+  profile.
+- **OpenCV codec fuzzing:** not attempted. N47 removes the surface
+  rather than testing it.
+- **The phone and PWA install flow:** not exercised in this pass.
+
 ---
 
 ## At a glance
+
+**Since 2026-09-24: audit 4 adds N38–N57 (20 findings, all open: 3 High,
+6 Med, 10 Low, 1 Info). See "Audit 4" above. The counts below cover
+audits 1–3 only.**
 
 52 findings: 43 from the two audits, plus N29 found while mapping backend
 findings to their frontend counterparts, N30 found while deploying,

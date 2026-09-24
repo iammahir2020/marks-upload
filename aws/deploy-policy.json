@@ -177,6 +177,12 @@
       "Effect": "Allow",
       "Action": "sts:GetCallerIdentity",
       "Resource": "*"
+    },
+    {
+      "Sid": "MonitoringDashboardForThisProjectOnly",
+      "Effect": "Allow",
+      "Action": "cloudwatch:PutDashboard",
+      "Resource": "arn:aws:cloudwatch::ACCOUNT_ID:dashboard/marks-scanner"
     }
   ]
 }

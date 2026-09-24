@@ -25,8 +25,13 @@ def _blank_cell() -> np.ndarray:
 
 
 def _inked_cell() -> np.ndarray:
+    """One thin vertical stroke — a plain "1". This was a solid filled
+    rectangle until step 15, which is exactly what a heavily scribbled-out
+    glyph looks like: once the model gained a CROSSED_OUT class, that ink
+    could route to crossed_out_fields instead of unmatched_fields, and
+    these tests would fail for a reason unrelated to what they check."""
     img = _blank_cell()
-    cv2.rectangle(img, (60, 30), (100, 90), (0, 0, 0), -1)  # one solid glyph-shaped stroke
+    cv2.line(img, (80, 30), (80, 90), (0, 0, 0), 6)
     return img
 
 
@@ -40,9 +45,9 @@ def recognizer():
 def test_blank_cell_has_no_ink(tmp_path, recognizer):
     path = tmp_path / "marks_r1_c0.png"
     cv2.imwrite(str(path), _blank_cell())
-    value, had_ink = recognizer._decode_value_cell(path, legal_vals=set())
-    assert value is None
-    assert had_ink is False
+    read = recognizer._decode_value_cell(path, legal_vals=set())
+    assert read.value is None
+    assert read.had_ink is False
 
 
 def test_inked_cell_with_no_legal_candidate_has_ink(tmp_path, recognizer):
@@ -53,17 +58,18 @@ def test_inked_cell_with_no_legal_candidate_has_ink(tmp_path, recognizer):
     field must be marked `had_ink=True` so N31's harvest refusal fires."""
     path = tmp_path / "marks_r1_c0.png"
     cv2.imwrite(str(path), _inked_cell())
-    value, had_ink = recognizer._decode_value_cell(path, legal_vals=set())
-    assert value is None
-    assert had_ink is True
+    read = recognizer._decode_value_cell(path, legal_vals=set())
+    assert read.value is None
+    assert read.had_ink is True
+    assert read.crossed_out is False
 
 
 def test_missing_crop_file_has_no_ink(tmp_path, recognizer):
     """A missing file is the pre-existing "?"/None case, not the N31
     case — nothing to mislabel, so had_ink must stay False."""
-    value, had_ink = recognizer._decode_value_cell(tmp_path / "does_not_exist.png", legal_vals=set())
-    assert value is None
-    assert had_ink is False
+    read = recognizer._decode_value_cell(tmp_path / "does_not_exist.png", legal_vals=set())
+    assert read.value is None
+    assert read.had_ink is False
 
 
 def test_read_marks_reports_unmatched_fields_for_an_inked_no_match_cell(tmp_path, recognizer, monkeypatch):

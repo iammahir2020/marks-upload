@@ -461,3 +461,57 @@ def test_the_store_refuses_a_key_that_would_escape_even_if_one_got_through(tmp_p
 
     with pytest.raises(ValueError, match="escapes the store root"):
         LocalStore(root).put("../../escaped/x.png", src)
+
+
+# --- Step 15: crossed-out cells are never harvested -----------------------
+
+
+def _harvest_everything(tmp_path: Path, crossed_out_fields: frozenset[str]) -> list[str]:
+    """One full script — 3-digit ID, serial, one question, total — every
+    field confirmed with a real value, so the only thing that can stop a
+    crop being harvested is `crossed_out_fields`."""
+    cells_dir = _make_cells(
+        tmp_path,
+        ["id_d1.png", "id_d2.png", "id_d3.png", "serial.png", "marks_r1_c0.png", "marks_r1_c1.png"],
+    )
+    harvest_dir = tmp_path / "harvest"
+    harvest(
+        cells_dir, id_digits=3, question_count=1,
+        original_student_id="1?3", confirmed_student_id="123",
+        original_serial=None, confirmed_serial="7",
+        original_questions=[None], confirmed_questions=[5.0],
+        original_total=None, confirmed_total=5.0,
+        store=LocalStore(harvest_dir),
+        crossed_out_fields=crossed_out_fields,
+    )
+    return _files_under(harvest_dir)
+
+
+def test_a_crossed_out_question_is_refused_under_its_correction(tmp_path):
+    """The student wrote 6, struck it, wrote 5; the instructor accepts 5.
+    The crop still holds the struck 6 — labelled "5", it would teach the
+    model that a scribbled-over 6 is a 5."""
+    files = _harvest_everything(tmp_path, frozenset({"q1"}))
+    assert not any("marks_q1" in f for f in files)
+    assert any("marks_total" in f for f in files), "a sibling field must still harvest"
+
+
+def test_a_crossed_out_id_refuses_every_id_digit(tmp_path):
+    """The scan reports the ID as crossed out, not which box, so no ID
+    crop from this script is trusted — including the digits that read
+    cleanly."""
+    files = _harvest_everything(tmp_path, frozenset({"student_id"}))
+    assert not any("id_digits" in f for f in files)
+    assert any("serial" in f for f in files)
+
+
+@pytest.mark.parametrize("field, prefix", [("serial", "serial/"), ("total", "marks_total")])
+def test_a_crossed_out_serial_or_total_is_refused(tmp_path, field, prefix):
+    files = _harvest_everything(tmp_path, frozenset({field}))
+    assert not any(prefix in f for f in files)
+
+
+def test_no_crossed_out_fields_harvests_every_field(tmp_path):
+    files = _harvest_everything(tmp_path, frozenset())
+    for prefix in ("id_digits", "serial/", "marks_q1", "marks_total"):
+        assert any(prefix in f for f in files), prefix

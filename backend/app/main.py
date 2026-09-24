@@ -9,8 +9,10 @@ implementation of that protocol, not a second call site here.
 """
 from __future__ import annotations
 
+import os
 import tempfile
 import time
+import traceback
 from pathlib import Path
 from typing import Annotated
 
@@ -77,6 +79,16 @@ def _resolve_recognizer() -> Recognizer:
 
 
 recognizer: Recognizer = _resolve_recognizer()
+
+# X-Ray's boto3 patch is NOT done here, on purpose — see stores.py's
+# S3Store.__init__ for why, and for a real incident that made the reason
+# concrete: calling `aws_xray_sdk.core.patch(("boto3",))` eagerly at
+# cold start forces `botocore` to import immediately, and that alone
+# added ~7s to Lambda's init phase, on top of an already-heavy import
+# chain — enough to blow past the platform's ~10s init-phase timeout and
+# break every request, not just ones that touch S3. Deferred to the one
+# place boto3 itself is actually imported, lazily, per /api/harvest
+# request, which is also the only place that needs it patched.
 
 # Step 11.4. Built here rather than per request so the counters persist
 # across calls within one process — which is the only place they can
@@ -218,6 +230,103 @@ else:
     )
 
 
+@app.middleware("http")
+async def trace(request: Request, call_next):
+    """Wraps every request in an X-Ray subsegment (step 11.8, the
+    monitoring dashboard). Off entirely unless XRAY_ENABLED — the laptop
+    app never imports `aws_xray_sdk` at all.
+
+    Registered LAST, deliberately: Starlette wraps middleware in REVERSE
+    registration order (the last one added is the OUTERMOST), so this
+    wraps `guard` and CORS rather than sitting inside them. That means a
+    request `guard` rejects with 429/413 still gets a real, correctly-
+    statused trace instead of silently vanishing from the map — which is
+    exactly the kind of thing worth being able to SEE in the graph, not
+    the kind of thing tracing should hide because it happened early.
+
+    No first-party ASGI/FastAPI integration exists in `aws-xray-sdk`
+    (Django/Flask/Bottle/aiohttp only) — this is the ~15 lines that
+    middleware class would have been, written directly. Lambda's own
+    runtime opens the top-level SEGMENT per invocation before any of this
+    code runs (from the `_X_AMZN_TRACE_ID` env var it sets); application
+    code only ever opens a SUBSEGMENT under it, never a new segment —
+    `begin_segment()` here would create a second, disconnected root
+    instead of nesting under the one Lambda already started.
+
+    **The env-var sync below is load-bearing, not defensive.** A second
+    real incident, found by actually checking a live trace rather than
+    trusting the deploy: every subsegment this middleware opened was
+    silently discarded ("Subsegment ... discarded due to Lambda worker
+    still initializing"), on every request, warm or cold — the platform's
+    own top-level segment recorded fine, but nothing this app added ever
+    showed up under it, which would have meant a Service Map with a bare
+    Lambda box and no S3 edge, the one thing this feature exists to draw.
+    Root cause, confirmed against the SDK's own source
+    (`lambda_launcher.py`): it re-reads `_X_AMZN_TRACE_ID` from the
+    environment FRESH on every subsegment call, which is correct for a
+    native Lambda handler — but the Lambda Web Adapter this app runs
+    behind forks uvicorn ONCE at cold start, and a forked child's
+    environment is a private copy from that moment; nothing updates it
+    per invocation the way Lambda updates the platform process's own. So
+    the SDK was reading a value frozen at cold start on every request
+    after the first. What IS fresh per request is the `X-Amzn-Trace-Id`
+    HTTP header — LWA forwards the real one on every proxied call, by
+    design, for exactly this — so this middleware copies it into the
+    environment itself before asking the recorder for a subsegment,
+    keeping the SDK's own already-correct re-read logic pointed at
+    reality instead of a stale snapshot.
+
+    Writing process-global state per request is safe here for one
+    specific reason worth stating rather than leaving implicit: Lambda
+    runs exactly one invocation at a time per execution environment, so
+    requests through this process are serialised and two cannot race to
+    set it. That is a property of the platform, not of this code — which
+    is the other half of why XRAY_ENABLED must stay off anywhere that is
+    not a real Lambda invocation (see config.py). Under a concurrent
+    server it would cross-attribute one request's spans to another's
+    trace.
+
+    Follows `observability.py`'s own rule for the same reason it exists
+    there: **tracing must never be able to fail or slow a scan.** Any
+    exception from the X-Ray SDK itself — including "no parent segment",
+    the exact failure mode of enabling this outside a real Lambda
+    invocation — is caught and logged, never allowed to reach the
+    response.
+    """
+    if not config_module.XRAY_ENABLED:
+        return await call_next(request)
+
+    try:
+        from aws_xray_sdk.core import xray_recorder
+        from aws_xray_sdk.core.models import http as xray_http
+
+        incoming_trace_header = request.headers.get("x-amzn-trace-id")
+        if incoming_trace_header:
+            os.environ["_X_AMZN_TRACE_ID"] = incoming_trace_header
+        segment = xray_recorder.begin_subsegment(request.url.path)
+    except Exception:  # noqa: BLE001 - tracing must never break a request
+        obs.log_event("xray_error", stage="begin")
+        return await call_next(request)
+
+    try:
+        if segment is not None:
+            segment.put_http_meta(xray_http.METHOD, request.method)
+            segment.put_http_meta(xray_http.URL, str(request.url))
+        response = await call_next(request)
+        if segment is not None:
+            segment.put_http_meta(xray_http.STATUS, response.status_code)
+        return response
+    except Exception as exc:
+        if segment is not None:
+            segment.add_exception(exc, traceback.format_exc())
+        raise
+    finally:
+        try:
+            xray_recorder.end_subsegment()
+        except Exception:  # noqa: BLE001 - see docstring
+            obs.log_event("xray_error", stage="end")
+
+
 @app.post("/api/scan")
 async def scan(
     image: Annotated[UploadFile, File()],
@@ -310,6 +419,8 @@ async def scan(
             total=total,
             low_confidence_fields=low_confidence_fields,
             unmatched_fields=marks_result.unmatched_fields,
+            crossed_out_fields=list(id_result.crossed_out_fields) + list(marks_result.crossed_out_fields),
+            suggestions=marks_result.suggestions,
         )
 
 
@@ -394,6 +505,10 @@ async def harvest_endpoint(
                 # sent by the frontend (Review.tsx only populates this on
                 # `original`) and is ignored even if it were.
                 frozenset(original_fields.unmatchedFields),
+                # Step 15 — same rule, same side: a crop the original scan
+                # found a crossed-out glyph in is never labelled with
+                # whatever the instructor corrected it to.
+                frozenset(original_fields.crossedOutFields),
             )
         except Exception as e:  # noqa: BLE001 — see the comment above
             # Type and message only: never the exception's own repr, which

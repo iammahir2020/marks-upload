@@ -106,7 +106,7 @@ describe('Landing — footer', () => {
   it('names the author and the current year in the copyright line', () => {
     renderLanding();
     const year = new Date().getFullYear();
-    expect(screen.getByText(new RegExp(`© ${year} Mahir Al Kamal\. All rights reserved\.`))).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`© ${year} Mahir Al Kamal\\. All rights reserved\\.`))).toBeInTheDocument();
   });
 
   it('links to email, GitHub, and LinkedIn', () => {

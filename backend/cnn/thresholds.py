@@ -67,3 +67,37 @@ MARGIN_FLOOR = 0.6
 # actual lever here — leave these two numbers alone.
 SERIAL_CONFIDENCE_FLOOR = 0.9
 SERIAL_MARGIN_FLOOR = 0.8
+
+# --- Crossed-out glyphs (step 15) -----------------------------------------
+#
+# A glyph is treated as crossed out when the model gives CROSSED_OUT at
+# least this much probability (cnn/classes.py). What a wrong call costs is
+# asymmetric, and the floor is set for it:
+#
+# - a crossed-out glyph missed is today's behaviour: its scribble is read
+#   as some digit, the cell decodes to nothing legal, and it is flagged
+#   exactly as before. No worse than the 10-class model.
+# - a clean digit wrongly called crossed out is dropped. On a mark cell
+#   that can turn "15" into a SUGGESTION of "5" — never a stored value,
+#   the instructor still has to accept it, but a wrong suggestion on a
+#   legible cell is a new failure this feature would introduce.
+#
+# So this sits high. Measured 2026-09-24 with `cnn/crossed_accuracy.py
+# --sweep` (36 held-out crossed-out practice glyphs, one writer; 328 clean
+# testset/ glyphs, ~20 writers, never trained on):
+#
+#     floor   caught   clean glyphs called crossed out
+#     0.50    34/36    2/328
+#     0.70    34/36    1/328
+#     0.80    33/36    1/328   <- here
+#     0.95    31/36    1/328
+#
+# The one false call left at every floor is real_class_07's serial "99",
+# whose two 9s touch and segment as ONE blob; it was never going to read
+# right, and now comes out blank and flagged instead. The nearest genuine
+# clean digit is a continental barred 7 at 0.58 (it was 0.79 before
+# strikes.py learned to render barred 7s as 7s), so 0.8 over 0.7 buys that
+# margin at the price of one missed crossing-out, which costs nothing new.
+#
+# Re-derive with: `python cnn/crossed_accuracy.py --sweep`
+CROSSED_OUT_FLOOR = 0.8

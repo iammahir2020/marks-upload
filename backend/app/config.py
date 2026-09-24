@@ -150,3 +150,21 @@ HARVEST_DIR = Path(os.getenv("HARVEST_DIR", str(BACKEND_DIR / "training_data" / 
 # S3 destination. Unset on the laptop; required when HARVEST_BACKEND=s3.
 HARVEST_BUCKET = os.getenv("HARVEST_BUCKET")
 HARVEST_PREFIX = os.getenv("HARVEST_PREFIX", "harvested")
+
+
+# --- Tracing (X-Ray service map + CloudWatch dashboard) --------------------
+
+# Off by default, same shape as every other deploy-only seam here: the
+# laptop app must not need `aws-xray-sdk` at all, and this flag is what
+# keeps it from trying. `deploy.sh` sets it only on the real Lambda
+# function's environment — never on local-stack.sh's container, which
+# runs the identical image OUTSIDE a real Lambda invocation (`docker run`,
+# not an actual `Invoke` call). That distinction matters beyond taste:
+# the X-Ray SDK expects Lambda's own runtime to have already opened a
+# facade SEGMENT for the invocation (it reads that from the
+# `_X_AMZN_TRACE_ID` env var Lambda sets), and application code only ever
+# opens SUBSEGMENTS under it. Outside a real invocation no such segment
+# exists, so turning this on there would mean every request tracing
+# against a parent that was never created — flip it under local-stack.sh
+# to reproduce that failure mode on purpose, not by accident.
+XRAY_ENABLED = _flag("XRAY_ENABLED", False)

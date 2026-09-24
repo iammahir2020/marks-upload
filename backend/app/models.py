@@ -55,6 +55,12 @@ class ScanResult(BaseModel):
     # subset of low_confidence_fields; empty on the remote/both paths,
     # which never populate it.
     unmatched_fields: list[str] = []
+    # Step 15 — see marks.MarksResult's own comment. Vocabulary
+    # "student_id", "serial", "q1".."qN", "total". `suggestions` never
+    # holds a key for a field whose value above is non-null: a suggestion
+    # exists only where the value was deliberately left blank.
+    crossed_out_fields: list[str] = []
+    suggestions: dict[str, str] = {}
 
 
 class QuestionConfig(BaseModel):
@@ -135,3 +141,9 @@ class HarvestFields(BaseModel):
     # original side (see below). Names from the same "q1".."qN"/"total"
     # vocabulary as ScanResult.unmatched_fields — capped at +1 for `total`.
     unmatchedFields: list[str] = Field(default=[], max_length=MAX_QUESTIONS + 1)
+    # Step 15 — same rule as unmatchedFields, read off `original` only:
+    # ScanResult.crossed_out_fields' vocabulary, so +3 covers student_id,
+    # serial and total. A crop holding a crossed-out glyph is never
+    # harvested under the instructor's correction — it would teach the
+    # model that a scribble is that digit.
+    crossedOutFields: list[str] = Field(default=[], max_length=MAX_QUESTIONS + 3)

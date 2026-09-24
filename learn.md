@@ -8221,3 +8221,169 @@ because the wide-screen CSS rules were untouched — only gated more
 precisely (`@supports (...) and (min-width: 64em) and
 (prefers-reduced-motion: no-preference)`) so they only apply where a
 second column actually exists to make the scroll-runway make sense.
+
+## Step 15 — Crossed-out glyphs (code-done; real-scan verification still needed)
+
+It started with a photo. Q1 read "~~6~~ 5": the grader wrote 6, struck it
+out, and wrote 5 beside it. Q2 was "~~4~~ 3". The app flagged both as
+blank, which was safe but not useful. Here is why, and what changed.
+
+### Why the old model couldn't handle it
+
+The digit CNN had exactly ten outputs, one per digit. Whatever you feed a
+classifier, it has to pick one of its classes, so a scribble came back as
+*some* digit. On Q1 the struck 6 read as "6" at 0.91 confidence. Across a
+practice page of 164 crossed-out glyphs, the old model called 95 of them
+a confident digit, most often 8.
+
+On a mark cell the constrained decoder rescued it by accident: "6 5"
+isn't a legal mark out of 5, so the cell was flagged. On an ID box
+nothing rescues it. A struck digit just became a wrong digit.
+
+### An 11th class
+
+[`cnn/classes.py`](backend/cnn/classes.py) adds `CROSSED_OUT = 10`,
+**after** the digits, so `probs[7]` still means "probability this is a
+7" everywhere that was already written.
+
+A model needs examples of the new class, and there were almost none. They
+came from two places:
+
+- **Practice pages.** You wrote digits in rows on plain paper: some pages
+  clean, one page all crossed out. [`cnn/pages.py`](backend/cnn/pages.py)
+  cuts a page into glyphs and takes each glyph's label from its row, as
+  written in `training_data/pages/pages.json`. A row of scribbles labels
+  itself, because the digit under a scribble doesn't matter.
+- **Synthetic strikes.** [`cnn/strikes.py`](backend/cnn/strikes.py) draws
+  slashes, hatching, zigzags and looping scribble over EMNIST digits.
+
+The synthetic part had two traps, and both are worth knowing.
+
+**Trap 1: the model can learn the wrong thing.** Real crops at inference
+go through `_to_canvas`, which binarizes them. Raw EMNIST is soft grey.
+If only the struck samples had gone through `_to_canvas`, "binarized"
+would have meant "crossed out", and the model could score perfectly on
+that shortcut without ever looking at a stroke. So clean EMNIST digits go
+through the exact same render:
+
+```python
+def render_clean(digit28, digit, rng):
+    img = _photo_space(digit28, _thinning(rng))
+    ...
+    return _to_canvas(img)
+```
+
+**Trap 2: some "crossed-out" digits are real digits.** One straight line
+through a 1 *is* a 7, or a 4, or a plus sign. So a 1 or 7 never gets a
+single line (`SINGLE_LINE_AMBIGUOUS`). That still wasn't enough. The
+first trained model called a real student's continental 7 (a 7 with a
+bar through the stem) crossed out at 0.79. EMNIST is American
+handwriting and has almost no barred 7s, so the model had only ever seen
+"7 with a line through it" labelled as crossed out. The fix was to teach
+it the barred 7 *as a 7* (`_crossbar`, `BARRED_SEVEN_FRACTION`), which
+dropped that glyph to 0.58. Raising the threshold instead would only
+have hidden the problem.
+
+### Training without starting over
+
+Training from scratch takes hours on this CPU. `train.py --init-from`
+loads the old 10-class weights into the 11-class model instead
+(`load_widened`). The ten digit rows of the last layer are copied over
+unchanged, and only the new row starts from nothing. Two short runs, about
+35 minutes in total.
+
+### Measuring it honestly
+
+[`cnn/crossed_accuracy.py`](backend/cnn/crossed_accuracy.py) reports two
+numbers on purpose, because they cost different things:
+
+- **Caught:** crossed-out glyphs from rows held out of training. Missing
+  one is the old behaviour: flagged, no worse than before.
+- **False calls:** clean digits from `testset/` (about 20 writers, never
+  trained on) called crossed out. This is the expensive mistake, because
+  it drops a real digit from a cell.
+
+With `--sweep` it prints both at several thresholds. At the chosen 0.8:
+33 of 36 caught, 1 of 328 false calls. That one false call is a serial
+"99" whose two 9s touch, so the segmenter hands the model one blob. That
+cell was going to be wrong regardless.
+
+### What the app does with it
+
+In [`app/recognizers/local.py`](backend/app/recognizers/local.py), each
+glyph goes through the model once, and the same probability vector serves
+both the crossed-out check and the decoder:
+
+```python
+crossed = {i: is_crossed_out(p, CROSSED_OUT_FLOOR) for i, p in probs.items()}
+```
+
+- **ID box:** a crossed-out glyph gives `?`. If the section has a class
+  list, the existing one-candidate match (`rosterMatch.ts`) can still
+  suggest the student.
+- **Mark, total, serial:** the value is left **blank**. The struck glyphs
+  are dropped and the rest is decoded against the same legal values. The
+  result goes in `suggestions`, never in the value.
+
+That last point is the project's "flag, never guess" rule. On Review a
+crossed-out field shows **Crossed out** and, if something decoded, a
+**Use 5** button. The field stays empty until you tap it.
+
+Harvesting refuses every crossed-out cell (`crossed_out_fields`, the same
+mechanism as N31). The crop still holds the struck-out answer, and
+labelling it with your correction would teach the model that a scribble
+is a 5.
+
+### What it did to the old numbers
+
+Adding your real handwriting helped the ordinary digits too: ID per digit
+went from 91.8% to 93.4%, serial from 63.2% to 68.4%, total from 89.5% to
+94.7%, and marks read confidently wrong from 1 to 0. Nothing went down.
+
+### Still open
+
+- Every crossed-out example is from one writer. For marks that's the
+  right writer, since you write the marks. For IDs and serials, which
+  students write, it isn't.
+- If the correction touches its crossing-out (Q3 in the original photo),
+  the segmenter returns one blob. That cell is flagged crossed out with
+  no suggestion, and splitting it is a separate problem.
+- It hasn't been used in a real scanning session on the phone yet.
+
+### Follow-ups after the first live test (2026-09-24)
+
+**"The scan is missing half marks now."** It was worth measuring before
+changing anything. I built 120 half marks like "2.5" out of your own
+practice-page digits and ran them through both models:
+
+| Dot | Old model right | New model right | Old model *wrong number filled in* |
+|---|---|---|---|
+| Clear dot | 114 | 116 | — |
+| Tiny dot | 3 | 3 | — |
+| Dot touching a digit | 17 | 17 | 78 |
+
+The new model didn't break half marks. When the dot touched a digit, the
+old one quietly wrote "2" for 2.5, which looks like it worked. The new
+one leaves the cell blank instead. The real weakness in both is the
+segmenter: a tiny dot falls under the noise floor, and a touching dot
+merges into its digit, so the decoder sees "2 5" with no point.
+
+`_missing_point` in [`local.py`](backend/app/recognizers/local.py)
+handles the first case safely. If a cell failed to decode, no point was
+found, and putting one before the last glyph gives a legal value, that
+value is offered as **Use 2.5**. It is never filled in. With a tiny dot,
+correct results went from 3 to 93 out of 120, and there were no wrong
+suggestions.
+
+**Deleting a section or quiz no longer needs an export first.** It still
+asks you to type the name. If something was never exported it now says
+so ("Never exported — these marks exist only on this device") instead of
+refusing. The semester purge still refuses, because the app offers it
+unprompted and it removes every section at once.
+
+**Review's messages.** A mark field is 4.5rem wide, and a sentence under
+it wrapped into five lines. Now each field gets one word (`Invalid`,
+`Unclear`, `Crossed out`) and a Use button when there is a reading to
+offer. The sentence appears once, at the top of the card. One rule,
+`fieldStatus`, decides the word for every field, so the questions, total
+and serial can't drift apart.

@@ -39,9 +39,10 @@ import onnxruntime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.detection import detect  # noqa: E402
-from cnn.id_infer import predict_digit as _predict_digit  # noqa: E402
+from cnn.decode import decide_digit, is_crossed_out  # noqa: E402
+from cnn.id_infer import glyph_probs  # noqa: E402
 from cnn.preprocess import has_ink, preprocess_for_cnn  # noqa: E402
-from cnn.thresholds import CONFIDENCE_FLOOR, MARGIN_FLOOR  # noqa: E402
+from cnn.thresholds import CONFIDENCE_FLOOR, CROSSED_OUT_FLOOR, MARGIN_FLOOR  # noqa: E402
 
 TESTSET = Path(__file__).parent.parent.parent / "testset"
 QUESTIONS = 5
@@ -59,8 +60,17 @@ def predict_digit(session: onnxruntime.InferenceSession, canvas: np.ndarray) -> 
     inference logic moved to id_infer.py in step 3r so serial/mark
     decoding could reuse it, but this function's signature and behavior
     are unchanged — verified by re-running this exact harness after the
-    move and confirming identical numbers, see learn.md step 3r)."""
-    return _predict_digit(session, canvas, CONFIDENCE_FLOOR, MARGIN_FLOOR)
+    move and confirming identical numbers, see learn.md step 3r).
+
+    Step 15 added the crossed-out check CNNRecognizer.read_id makes, in
+    the same order: a box whose glyph reads as CROSSED_OUT is "?" before
+    any digit decision is taken. Returned confidence/margin are still the
+    top class's, for --calibrate."""
+    probs = glyph_probs(session, canvas)
+    digit, confidence, margin = decide_digit(probs, CONFIDENCE_FLOOR, MARGIN_FLOOR)
+    if is_crossed_out(probs, CROSSED_OUT_FLOOR):
+        digit = None
+    return (str(digit) if digit is not None else None), confidence, margin
 
 
 def main() -> int:

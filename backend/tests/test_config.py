@@ -92,12 +92,17 @@ def test_unset_environment_reproduces_the_laptop_defaults(reloaded):
     cfg = reloaded(
         ALLOWED_ORIGINS=None, HARVEST_BACKEND=None, HARVEST_DIR=None,
         HARVEST_ENABLED=None, HARVEST_BUCKET=None, RECOGNIZER=None,
+        XRAY_ENABLED=None,
     )
     assert cfg.allowed_origins() is None  # -> the regex above
     assert cfg.HARVEST_BACKEND == "local"
     assert cfg.HARVEST_ENABLED is True
     assert cfg.RECOGNIZER == "cnn"
     assert cfg.HARVEST_DIR == cfg.BACKEND_DIR / "training_data" / "harvested"
+    # Step 11.8 — the laptop app must never try to import aws_xray_sdk,
+    # which isn't even in requirements.txt. Off unless a deployment
+    # explicitly turns it on.
+    assert cfg.XRAY_ENABLED is False
 
 
 def test_unset_environment_still_builds_a_local_store(reloaded):

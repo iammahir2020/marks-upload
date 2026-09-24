@@ -165,6 +165,7 @@ def harvest(
     store: Store,
     source: str | None = None,
     unmatched_fields: frozenset[str] = frozenset(),
+    crossed_out_fields: frozenset[str] = frozenset(),
 ) -> None:
     """Writes each relevant cell crop to `store` under
     <source>/<field>/{confirmed,corrected}/<value>_<uuid>.png. Only fields
@@ -190,7 +191,17 @@ def harvest(
     pass validation, and the crop of the 7 was then harvested labelled
     "5" — silent, self-selecting for the hardest crops (the model reads
     them worst), and exactly the class of corpus damage that forced the
-    first corpus to be thrown away."""
+    first corpus to be thrown away.
+
+    `crossed_out_fields` (step 15) is the same refusal for a different
+    reason: the ORIGINAL scan found a crossed-out glyph in the cell
+    ("student_id", "serial", "q1".."qN", "total"). The instructor's value
+    is the student's correction, and the crop still holds the abandoned
+    answer next to or under it — labelled with the correction, it would
+    teach the model that a scribble is that digit. For the ID this refuses
+    all of its digits, not only the struck box: the scan does not say
+    which position it was, and losing six good crops from one script is
+    the cheap side of that trade."""
     src = _sanitize_source(source)
 
     # Collected first, written later and in a random order — see
@@ -210,7 +221,7 @@ def harvest(
         if crop_path.exists():
             pending.append((_key(field, tag, safe, src, crop_path), crop_path))
 
-    if confirmed_student_id:
+    if confirmed_student_id and "student_id" not in crossed_out_fields:
         for i in range(1, id_digits + 1):
             if i - 1 >= len(confirmed_student_id):
                 break
@@ -223,8 +234,8 @@ def harvest(
             tag = "confirmed" if confirmed_digit == original_digit else "corrected"
             add("id_digits", tag, confirmed_digit, cells_dir / f"id_d{i}.png")
 
-    if confirmed_serial:
-        tag = "confirmed" if confirmed_serial == original_serial else "corrected"
+    if confirmed_serial and "serial" not in crossed_out_fields:
+        tag ="confirmed" if confirmed_serial == original_serial else "corrected"
         add("serial", tag, confirmed_serial, cells_dir / "serial.png")
 
     for i in range(question_count):
@@ -232,13 +243,17 @@ def harvest(
         if confirmed_value is None:
             continue
         # N31 — refuse regardless of what was typed to work around it.
-        if f"q{i + 1}" in unmatched_fields:
+        if f"q{i + 1}" in unmatched_fields or f"q{i + 1}" in crossed_out_fields:
             continue
         original_value = original_questions[i] if i < len(original_questions) else None
         tag = "confirmed" if confirmed_value == original_value else "corrected"
         add(f"marks_q{i + 1}", tag, _fmt(confirmed_value), cells_dir / f"marks_r1_c{i}.png")
 
-    if confirmed_total is not None and "total" not in unmatched_fields:
+    if (
+        confirmed_total is not None
+        and "total" not in unmatched_fields
+        and "total" not in crossed_out_fields
+    ):
         tag = "confirmed" if confirmed_total == original_total else "corrected"
         add("marks_total", tag, _fmt(confirmed_total), cells_dir / f"marks_r1_c{question_count}.png")
 

@@ -116,6 +116,17 @@ Because `cnn` is the default, **`onnxruntime` and `scipy` moved into
 training-only in `requirements-cnn.txt`; nothing under `app/` imports it,
 so the running app still never needs it.
 
+**Step 15 (2026-09-24) taught the CNN a "crossed out" class** — plan.md
+§16's "Crossed-out glyphs", step.md step 15, learn.md. A crossed-out ID box
+reads `?`; a crossed-out mark/total/serial is left blank with the rest of
+the cell offered as a one-tap suggestion on Review (`suggestions`, never a
+pre-filled value); harvesting refuses every crossed-out cell. The
+headline numbers quoted elsewhere in this file predate it and are LOWER
+than current: with the step 15 model, ID is 93.4% per-digit / 58.6%
+whole-ID, serial 68.4%, total 94.7%, marks 98.1% with 0 confidently wrong.
+Its crossed-out examples are all one writer (the instructor), so a
+student's crossed-out ID/serial digit is the least-verified case.
+
 **A hosted demo is now specced as step 11** (2026-08-30), after the user
 asked about sharing this with other faculty. It is a deliberate extension
 beyond plan.md §13's MVP scope; the laptop workflow stays the supported
@@ -141,6 +152,99 @@ anything except an IAM principal — public and CloudFront-OAC both return
 403 with textbook-correct policies — so API Gateway fronts the Lambda
 instead. See step.md's step 11 row for the full account, learn.md for the
 reasoning.
+
+**Step 11.8 (2026-09-22) added a monitoring dashboard**, after the user
+asked for frontend/backend hit counts "in one place" with something like
+a node graph. Two real findings shaped what actually got built, both
+verified rather than assumed, and both worth knowing before touching this
+again: CloudWatch dashboards have no widget type that embeds an X-Ray
+trace map (checked against AWS's own docs — valid types are `metric`,
+`text`, `log`, `alarm`, `explorer`, `chart`, full stop), so the live
+Lambda↔S3 node graph lives on its own X-Ray-console page, one click from
+the dashboard, not inside it; and X-Ray tracing is a REST-API-only
+feature of API Gateway, so this project's HTTP API (chosen for its lower
+cost) can never appear in that graph at all — its own request count is a
+plain dashboard widget instead. `app/main.py`'s `trace` middleware
+(~15 lines, hand-written) exists because `aws-xray-sdk` has no ASGI/
+FastAPI integration (Django/Flask/Bottle/aiohttp only) and — separately —
+because that SDK itself entered maintenance mode 2026-02-25, with AWS now
+pointing people at OpenTelemetry (ADOT) instead. ADOT was considered and
+set aside specifically for this deployment: it's normally delivered as a
+Lambda Layer, and this Lambda is a container image, where Layers don't
+apply — ADOT's own docs call for hand-embedding its collector into the
+Dockerfile via a multi-stage build, real infra risk for a monitoring
+nice-to-have. `XRAY_ENABLED` (`app/config.py`) is off by default, same
+shape as every other deploy-only seam here — the laptop app never imports
+`aws-xray-sdk`, and `local-stack.sh` doesn't set it either, since it runs
+the deployed image OUTSIDE a real Lambda invocation, where the SDK has no
+parent segment to attach to. That exact failure mode is pinned by a test
+(`test_xray_enabled_never_breaks_a_scan_even_with_no_lambda_context`) —
+tracing must never be able to fail or slow a scan, the same rule
+`observability.py`'s logging already lives by. `aws/deploy-policy.json`
+gained one new grant, `cloudwatch:PutDashboard`, scoped to the one
+dashboard by name — its ARN has no region segment at all, confirmed
+against a real `AccessDenied` error message rather than assumed. See
+`aws/MONITORING.md`'s new top section for what the dashboard actually
+shows and why the two hit-count numbers don't move together (a
+`/api/harvest` call fires automatically on every Confirm, separately from
+the `/api/scan` call the photo already made — so API Gateway's count runs
+roughly double the scan count on ordinary use).
+
+**Two real production incidents happened while shipping this, both found
+by actually checking the live deployment rather than trusting a green
+deploy, both fixed the same day.** Worth keeping the full account, since
+both are the kind of bug that only shows up under a real Lambda
+invocation — nothing in the local test suite, and nothing in `deploy.sh`'s
+own smoke test at the time, could have caught either one.
+
+1. **The first deploy broke every request, not just X-Ray-related
+   ones.** `patch(("boto3",))` was originally called eagerly at
+   `main.py`'s module level, guarded only by `XRAY_ENABLED`. Patching
+   forces `botocore` to import immediately — confirmed by timing it
+   directly (1.8s → 8.9s just to `import app.main`) — and that alone
+   pushed cold-start init past Lambda's ~10s platform init-phase timeout,
+   on top of an already-heavy chain (opencv, onnxruntime). Real
+   production logs showed it plainly: `INIT_REPORT ... Status: timeout`,
+   then `app is not ready` repeating for 30+ seconds. Fixed by moving the
+   `patch()` call to the one place boto3 itself is actually imported —
+   `S3Store.__init__` (`app/stores.py`), lazily, per `/api/harvest`
+   request — restoring the original guarantee (patch before the first
+   client is built) without paying botocore's import cost on a plain
+   `/api/scan`, which never touches S3 at all. Pinned by
+   `test_xray_enabled_does_not_force_boto3_to_import_at_cold_start`, a
+   subprocess-based test (a same-process `sys.modules` check would be a
+   coin flip on test order, since other tests legitimately import boto3
+   for their own reasons).
+
+2. **After that fix, requests worked — but every subsegment this app
+   tried to record was silently discarded**, on every request, warm or
+   cold, scan or harvest: `Subsegment ... discarded due to Lambda worker
+   still initializing`, a misleading message for what turned out to be a
+   process-architecture mismatch, not an initialization race. Root cause,
+   confirmed against the SDK's own source (`lambda_launcher.py`): it
+   re-reads `_X_AMZN_TRACE_ID` from the environment fresh on every
+   subsegment call — correct for a native Lambda handler, but this app
+   runs behind the **Lambda Web Adapter**, which forks uvicorn ONCE at
+   cold start; a forked child's environment is a private copy from that
+   moment, and nothing updates it per invocation the way Lambda updates
+   the platform process's own. So every subsegment after the very first
+   invocation was reading a value frozen at cold start. Confirmed by
+   reading LWA's own behavior: it forwards the real, current
+   `X-Amzn-Trace-Id` as an HTTP header on every proxied request, by
+   design, for exactly this. Fixed by having `trace` copy that header
+   into `os.environ["_X_AMZN_TRACE_ID"]` before asking the recorder for a
+   subsegment — the SDK's own re-read logic then points at reality
+   instead of a stale snapshot, with no other code changed. **Verified
+   against a real trace, not just the absence of the discard message**:
+   `aws xray batch-get-traces` on a real `/api/harvest` call showed the
+   `/api/harvest` subsegment and 13 separate `S3` child subsegments (one
+   per harvested field), each `http.response.status=200` — the exact
+   Lambda→S3 graph this feature exists to draw. Pinned by
+   `test_xray_syncs_the_trace_env_var_from_the_incoming_header` for the
+   half of this fix that's this codebase's own responsibility (the LWA
+   fork behavior itself can't be reproduced outside a real deployment).
+
+Backend suite: 259 → 264.
 
 ## Stack
 
@@ -328,9 +432,11 @@ built (`App.tsx` already defaulted there). Frontend suite: 322 → 333,
 three consecutive full runs confirmed stable. **13.23, same week**: a
 per-section **Delete section** button, for one mis-created section rather
 than a whole semester or a full device wipe — reuses `db.ts`'s existing
-`deleteSection()` cascade, gated by the same block-then-confirm shape the
-semester purge already uses (an unexported assessment blocks it outright,
-named, Cancel only; otherwise a plain confirm with real counts, no undo).
+`deleteSection()` cascade behind a confirm with real counts, no undo.
+(It originally BLOCKED on an unexported assessment, like the purge; since
+2026-09-24 section and quiz deletes only WARN about never-exported work
+inside the typed confirm — the semester purge alone still blocks. See
+`sections.ts`'s `hasUnexportedWork`.)
 Frontend suite: 333 → 339. **13.24, same day**: a per-assessment
 **Delete quiz** button (`db.ts`'s new `deleteAssessment()`, one quiz
 narrower than `deleteSection()`), and both delete flows now require
@@ -466,6 +572,9 @@ marks-upload/
 │   │                           # (debug_uploads/ lived here until step 11.0.1
 │   │                           # deleted it — see "The backend is stateless")
 │   ├── training_data/all/      # gitignored — fetch-crops.sh's merged training set
+│   ├── training_data/pages/    # gitignored — step 15's photographed practice pages
+│   │                           # (loose digits in rows, clean and crossed out) plus
+│   │                           # pages.json, the per-row labels cnn/pages.py reads
 │   ├── training_data/harvested/ # gitignored — step 3r.6c's labelled crops. RESET
 │   │                           # 2026-08-31: 229 crops, one source, 211 confirmed /
 │   │                           # 18 corrected. Keys are content-addressed (dedupe).
@@ -477,7 +586,14 @@ marks-upload/
 │   │   ├── config.py           # step 11.1 — THE only place under app/ that reads the environment
 │   │   ├── observability.py    # structured JSON logs for CloudWatch; scrubs IDs by design
 │   │   ├── ratelimit.py        # step 11.4 — per-IP sliding window + client-IP extraction
-│   │   ├── stores.py           # step 11.2 — LocalStore / S3Store behind one put(key, src)
+│   │   ├── stores.py           # step 11.2 — LocalStore / S3Store behind one put(key, src);
+│   │   │                       # step 11.8 — S3Store.__init__ is ALSO the one place
+│   │   │                       # `patch(("boto3",))` runs, deliberately not main.py: doing
+│   │   │                       # it eagerly at cold start force-imports botocore and once
+│   │   │                       # broke every request, not just harvesting (~7s added to
+│   │   │                       # init, past Lambda's ~10s timeout) — moved to here, lazily,
+│   │   │                       # per /api/harvest request, the one place boto3 itself was
+│   │   │                       # already being imported
 │   │   ├── cells.py            # issues.md N18 — read_cell(): the ONE guarded reader for
 │   │   │                       # detection's crop files. cv2.imread returns None rather
 │   │   │                       # than raising, and five call sites did .shape on it
@@ -491,7 +607,18 @@ marks-upload/
 │   │   │                       # when Gemini itself fails (rate_limited/model_error)
 │   │   ├── harvest.py          # step 3r.6c — confirmed values -> training_data/harvested/
 │   │   ├── main.py             # step 4 — POST /api/scan, /api/harvest (3r.6c); calls
-│   │   │                       # recognition only through the Recognizer protocol (2r.0)
+│   │   │                       # recognition only through the Recognizer protocol (2r.0);
+│   │   │                       # step 11.8 — the `trace` middleware (X-Ray, XRAY_ENABLED-
+│   │   │                       # gated, registered LAST so it wraps `guard`/CORS too, and
+│   │   │                       # hand-written since aws-xray-sdk has no ASGI/FastAPI
+│   │   │                       # integration). Syncs `_X_AMZN_TRACE_ID` from the incoming
+│   │   │                       # `X-Amzn-Trace-Id` header before opening a subsegment — a
+│   │   │                       # real incident, not defensive code: Lambda Web Adapter
+│   │   │                       # forks uvicorn once at cold start, so the env var the SDK
+│   │   │                       # reads is frozen from that moment on every later request,
+│   │   │                       # and every subsegment was silently discarded until this
+│   │   │                       # existed. `patch(("boto3",))` deliberately does NOT live
+│   │   │                       # here — see stores.py
 │   │   └── recognizers/        # step 2r.0 — the Recognizer seam (plan.md §16)
 │   │       ├── base.py         #   Recognizer protocol + IdResult
 │   │       ├── remote.py       #   RemoteRecognizer — wraps id_ocr/marks/marks_ocr
@@ -517,13 +644,15 @@ marks-upload/
 │   │   └── test_harvest_endpoint.py #  step 3r.6c — /api/harvest against a real photo
 │   ├── requirements.txt        # includes python-docx (step 0's template fix, step 3r.6a's generator)
 │   ├── requirements-deploy.txt # step 11.2 — boto3, container only. NOT provided by a custom
-│   │                           # Lambda image the way it is by the managed runtime
+│   │                           # Lambda image the way it is by the managed runtime.
+│   │                           # step 11.8 added aws-xray-sdk here too, same reasoning
 │   ├── requirements-cnn.txt    # step 2r — torch/torchvision/onnx: TRAINING only.
 │   │                           # onnxruntime/scipy moved to requirements.txt when the
 │   │                           # CNN became the default (3r.6e) — inference needs them
 │   └── cnn/                    # steps 2r/3r — model + inference code the app's
 │       │                       # optional CNN path (app/recognizers/local.py) imports
-│       ├── model.py            #   DigitCNN architecture (plan.md §16)
+│       ├── classes.py          #   step 15 — NUM_CLASSES/CROSSED_OUT, torch-free (the app reads it)
+│       ├── model.py            #   DigitCNN architecture (plan.md §16); 11 outputs since step 15
 │       ├── preprocess.py       #   MNIST-matched 28x28 preprocessing, torch-free —
 │       │                       #   preprocess_for_cnn (ID) and glyph_to_canvas (segmented glyphs)
 │       ├── inspect_preprocess.py #  visual check: real crops -> 28x28 previews
@@ -533,7 +662,15 @@ marks-upload/
 │       │                       #   each legal value with a leading zero prepended, so a
 │       │                       #   mark written "03"/"05" can decode at all
 │       ├── id_infer.py         #   step 3r — shared TTA+softmax inference, factored out of accuracy.py
-│       ├── train.py            #   EMNIST Digits + augmentation -> ONNX export + parity check
+│       ├── train.py            #   EMNIST Digits + augmentation -> ONNX export + parity check;
+│       │                       #   step 15 — CROSSED_OUT examples, practice pages, --init-from
+│       │                       #   (widens a 10-class checkpoint), --samples-per-epoch
+│       ├── pages.py            #   step 15 — practice-page photo -> row-labelled glyph crops
+│       ├── strikes.py          #   step 15 — synthetic strikes over EMNIST, rendered through
+│       │                       #   inference's own _to_canvas (clean digits too — see its
+│       │                       #   docstring), barred 7s rendered as 7s
+│       ├── crossed_accuracy.py #   step 15 — caught (held-out practice rows) vs false calls
+│       │                       #   (every clean testset/ glyph); --sweep over floors
 │       ├── accuracy.py         #   ID accuracy harness, apples-to-apples with id_ocr_accuracy.py;
 │       │                       #   CONFIDENCE_FLOOR/MARGIN_FLOOR recalibrated 2026-08-30 against
 │       │                       #   the real_class_* batch's ~20 writers (0.9/0.8 -> 0.75/0.6)
@@ -877,11 +1014,11 @@ cd backend && source venv/bin/activate && python detect.py <image-path> --questi
 cd backend && source venv/bin/activate && python batch_detect.py ../testset/images --questions 5 --id-digits 7 --out ../testset/debug/
 cd backend && source venv/bin/activate && python id_ocr_accuracy.py
 
-# Backend tests — offline, Gemini always mocked, never any AWS. 259 tests:
-# 257 pass anywhere, 2 SKIP without the Tesseract binary (they are the only
-# ones that exercise a real ID read rather than mocking it; the rest of the
-# remote path is mocked and needs no binary). Count as of the N35
-# leading-zero-mark fix, 2026-09-10; the skip is 2026-09-22.
+# Backend tests — offline, Gemini always mocked, never any AWS. 285 tests
+# as of step 15's follow-ups (2026-09-24); with Tesseract
+# installed all 285 run and pass — without it, 2 SKIP (the only ones that
+# exercise a real ID read rather than mocking it; the rest of the remote
+# path is mocked and needs no binary).
 cd backend && source venv/bin/activate && pytest
 
 # CNN accuracy harnesses (steps 2r/3r, plan.md §16). These need NO extra
@@ -894,6 +1031,8 @@ python cnn/accuracy.py                                                # ID accur
 python cnn/accuracy.py --calibrate                                    # dump confidence/margin per real digit, to pick floors —
                                                                        # last recalibrated 2026-08-30 (0.9/0.8 -> 0.75/0.6) against
                                                                        # the real_class_* batch's ~20 writers, see step.md step 2r
+python cnn/crossed_accuracy.py --sweep                                # step 15 — crossed-out caught 33/36, clean glyphs
+                                                                       # falsely called crossed out 1/328 at floor 0.8
 python cnn/marks_accuracy.py                                          # step 3r.5 — 98.1% per-question (half marks 100%),
                                                                        # total 89.5%, serial 63.2% (the weak spot); reads
                                                                        # testset/quiz_configs.json per photo when a label has a "quiz" key
@@ -903,6 +1042,7 @@ python cnn/marks_accuracy.py                                          # step 3r.
 pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-cnn.txt
 python cnn/inspect_preprocess.py ../testset/debug/*/cells/id_d*.png   # look at the 28x28 outputs directly before training anything
 python cnn/train.py --epochs 8 --out cnn/checkpoints                  # EMNIST Digits, ~8-10 min/epoch on CPU
+python cnn/train.py --init-from cnn/checkpoints/digit_cnn_best.pt     --epochs 3 --samples-per-epoch 80000 --lr 3e-4                   # warm start, ~4 min/epoch — how step 15 trained
 
 # Run the app against a NON-default recognizer. Plain `uvicorn`/`./dev.sh`
 # already gives the CNN (step 3r.6e). "remote" needs GEMINI_API_KEY and the
@@ -971,7 +1111,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --ssl-keyfile certs/key.pem --ssl-c
 # Frontend — HTTPS and LAN binding are on by default via vite.config.ts,
 # no --host flag needed
 cd frontend && npm run dev
-cd frontend && npx vitest run   # 408 tests as of the 2026-09-22 Windows port (moduleNames.test.ts);
+cd frontend && npx vitest run   # 421 tests as of step 15's follow-ups (2026-09-24); 408 at the 2026-09-22 Windows port (moduleNames.test.ts);
                                  # 407 at the 2026-09-12 share-QR-code addition (dev-mode landing
                                  # shell, "About" button, the overflow/sticky fix, and the phone scan
                                  # animation fix were step 14.10, 2026-09-10)

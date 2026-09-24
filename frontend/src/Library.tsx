@@ -632,35 +632,12 @@ interface SectionDeleteReviewPanelProps {
   onConfirm: (sectionId: string) => void;
 }
 
-// The single-section counterpart to PurgeReviewPanel, same block-then-
-// confirm shape: an unexported assessment blocks the delete outright,
-// named individually, Cancel only; otherwise a typed confirm (13.24)
-// stating exactly what would go, no undo.
+// The single-section counterpart to PurgeReviewPanel: a typed confirm
+// (13.24) stating exactly what would go, no undo. Unlike the purge, an
+// unexported quiz does not block this — it is named in the confirm so the
+// loss is never silent (see sections.ts's hasUnexportedWork).
 function SectionDeleteReviewPanel({ preview, onCancel, onConfirm }: SectionDeleteReviewPanelProps) {
   const label = sectionDisplayLabel(preview.section);
-
-  if (preview.blockedBy.length > 0) {
-    return (
-      <div className="banner banner-danger" role="alert">
-        <p>
-          Can't delete <strong>{label}</strong> —{' '}
-          {preview.blockedBy.length === 1
-            ? '1 quiz hasn’t been exported yet:'
-            : `${preview.blockedBy.length} quizzes haven’t been exported yet:`}
-        </p>
-        <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
-          {preview.blockedBy.map((assessment) => (
-            <li key={assessment.id}>{assessment.quizName}</li>
-          ))}
-        </ul>
-        <div className="banner-actions">
-          <button className="btn btn-secondary btn-sm" onClick={onCancel}>
-            Cancel
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="banner banner-danger" role="alert">
@@ -669,6 +646,12 @@ function SectionDeleteReviewPanel({ preview, onCancel, onConfirm }: SectionDelet
         {preview.assessmentCount === 1 ? 'quiz' : 'quizzes'}, {preview.recordCount}{' '}
         {preview.recordCount === 1 ? 'record' : 'records'} — there's no undo.
       </p>
+      {preview.unexported.length > 0 && (
+        <p>
+          <strong>Never exported:</strong>{' '}
+          {preview.unexported.map((a) => a.quizName).join(', ')}. Their marks exist only on this device.
+        </p>
+      )}
       <TypedDeleteConfirm
         expected={label}
         itemLabel="section"
@@ -687,26 +670,10 @@ interface AssessmentDeleteReviewPanelProps {
 }
 
 // The single-assessment counterpart to SectionDeleteReviewPanel — same
-// block-then-typed-confirm shape, one level narrower: this one quiz,
-// never the section it lives in or any sibling quiz.
+// typed confirm, one level narrower: this one quiz, never the section it
+// lives in or any sibling quiz. Never-exported work warns, never blocks.
 function AssessmentDeleteReviewPanel({ preview, onCancel, onConfirm }: AssessmentDeleteReviewPanelProps) {
   const name = preview.assessment.quizName;
-
-  if (preview.blocked) {
-    return (
-      <div className="banner banner-danger" role="alert">
-        <p>
-          Can't delete <strong>{name}</strong> — it hasn’t been exported yet, and{' '}
-          {preview.recordCount === 1 ? '1 record' : `${preview.recordCount} records`} would be lost with it.
-        </p>
-        <div className="banner-actions">
-          <button className="btn btn-secondary btn-sm" onClick={onCancel}>
-            Cancel
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="banner banner-danger" role="alert">
@@ -714,6 +681,11 @@ function AssessmentDeleteReviewPanel({ preview, onCancel, onConfirm }: Assessmen
         Delete <strong>{name}</strong>: {preview.recordCount}{' '}
         {preview.recordCount === 1 ? 'record' : 'records'} — there's no undo.
       </p>
+      {preview.unexported && (
+        <p>
+          <strong>Never exported.</strong> These marks exist only on this device.
+        </p>
+      )}
       <TypedDeleteConfirm
         expected={name}
         itemLabel="quiz"

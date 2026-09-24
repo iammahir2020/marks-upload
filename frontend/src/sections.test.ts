@@ -321,56 +321,56 @@ describe('sectionDeletePreview (step.md 13.23)', () => {
 
     expect(preview.assessmentCount).toBe(2);
     expect(preview.recordCount).toBe(38); // not the other section's 99
-    expect(preview.blockedBy).toEqual([]);
+    expect(preview.unexported).toEqual([]);
   });
 
-  it('blocks on an unexported assessment that holds real records, naming it', () => {
+  it('names an unexported assessment that holds real records', () => {
     const section = makeSection();
     const exported = makeAssessment(section.id, { quizName: 'Quiz 1', exportedAt: '2026-12-01T00:00:00.000Z' });
     const unexported = makeAssessment(section.id, { quizName: 'Quiz 2', exportedAt: null });
 
     const preview = sectionDeletePreview(section, [exported, unexported], { [unexported.id]: 5 });
 
-    expect(preview.blockedBy).toEqual([unexported]);
+    expect(preview.unexported).toEqual([unexported]);
   });
 
-  it('does not block on an empty, never-exported assessment', () => {
+  it('does not count an empty, never-exported assessment as unexported work', () => {
     const section = makeSection();
     const emptyUnexported = makeAssessment(section.id, { exportedAt: null });
 
     const preview = sectionDeletePreview(section, [emptyUnexported], {});
 
-    expect(preview.blockedBy).toEqual([]);
+    expect(preview.unexported).toEqual([]);
   });
 
-  it('a section with no assessments yet never blocks and counts zero', () => {
+  it('a section with no assessments yet has nothing unexported and counts zero', () => {
     const section = makeSection();
     const preview = sectionDeletePreview(section, [], {});
     expect(preview.assessmentCount).toBe(0);
     expect(preview.recordCount).toBe(0);
-    expect(preview.blockedBy).toEqual([]);
+    expect(preview.unexported).toEqual([]);
   });
 });
 
 describe('assessmentDeletePreview (step.md 13.24)', () => {
-  it('is not blocked for a brand-new, empty assessment', () => {
+  it('reports no unexported work for a brand-new, empty assessment', () => {
     const assessment = makeAssessment(crypto.randomUUID());
     const preview = assessmentDeletePreview(assessment, {});
     expect(preview.recordCount).toBe(0);
-    expect(preview.blocked).toBe(false);
+    expect(preview.unexported).toBe(false);
   });
 
-  it('is blocked when it holds real records and has never been exported', () => {
+  it('reports unexported work when it holds real records and has never been exported', () => {
     const assessment = makeAssessment(crypto.randomUUID(), { exportedAt: null });
     const preview = assessmentDeletePreview(assessment, { [assessment.id]: 12 });
     expect(preview.recordCount).toBe(12);
-    expect(preview.blocked).toBe(true);
+    expect(preview.unexported).toBe(true);
   });
 
-  it('is not blocked once it has been exported, even with real records', () => {
+  it('reports no unexported work once it has been exported, even with real records', () => {
     const assessment = makeAssessment(crypto.randomUUID(), { exportedAt: '2026-12-01T00:00:00.000Z' });
     const preview = assessmentDeletePreview(assessment, { [assessment.id]: 12 });
-    expect(preview.blocked).toBe(false);
+    expect(preview.unexported).toBe(false);
   });
 });
 

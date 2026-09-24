@@ -19,6 +19,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.marks import _fmt  # noqa: E402
+from cnn.classes import CROSSED_OUT  # noqa: E402
 
 DECODE_FLOOR = 0.3  # plan.md §16's own starting point for the joint
                       # per-cell decode score — provisional in the same
@@ -40,9 +41,22 @@ def decide_digit(
     order = np.argsort(probs)[::-1]
     top, second = float(probs[order[0]]), float(probs[order[1]])
     confidence, margin = top, top - second
+    # The model's best answer being "this is not a digit" is never a digit
+    # to return. The margin rule already covers a near-tie between a digit
+    # and CROSSED_OUT the same way it covers a tie between two digits.
+    if int(order[0]) == CROSSED_OUT:
+        return None, confidence, margin
     if confidence < confidence_floor or margin < margin_floor:
         return None, confidence, margin
     return int(order[0]), confidence, margin
+
+
+def is_crossed_out(probs: np.ndarray, floor: float) -> bool:
+    """True if this glyph's probability vector says the writer struck it
+    out (cnn/classes.py). A 10-wide vector — a model without the class —
+    is never crossed out, so the check degrades to today's behaviour
+    rather than raising."""
+    return len(probs) > CROSSED_OUT and float(probs[CROSSED_OUT]) >= floor
 
 
 def _digits_of(value: float) -> tuple[list[int], int | None]:

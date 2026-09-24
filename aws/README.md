@@ -77,6 +77,7 @@ AWS_PROFILE=marks-scanner ./deploy.sh all
 | **`iam:PassRole`** | hand that role to Lambda at create time | **One role, and only to `lambda.amazonaws.com`** |
 | S3 bucket actions | create the crops and site buckets, upload the frontend, read the crops retention rule | Two buckets |
 | CloudFront actions | the distribution that gives the site real HTTPS | Account-wide — see below |
+| `cloudwatch:PutDashboard` | build the monitoring dashboard (step 11.8) | One dashboard, named `marks-scanner` — its ARN has no region segment at all, confirmed against a real `AccessDenied` message rather than assumed, so `Resource` reads `dashboard/marks-scanner` with nothing between the two colons where a region would sit on every other service's ARN |
 
 The policy also still carries `lambda:*FunctionUrlConfig`. Those are
 **dead grants** — `deploy.sh` made Function URL calls in an earlier design

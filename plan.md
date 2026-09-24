@@ -1335,6 +1335,66 @@ section assumes unless the loader preserved a true original.
 enough to be visible. This is precisely the failure the sum check was
 designed for, now protecting a second recognizer instead of one.
 
+### Crossed-out glyphs (step 15, 2026-09-24)
+
+A mark written, struck out and rewritten beside it — "~~6~~ 5" — is how
+anyone corrects ink. The 10-class model has no way to say "this is not a
+digit": it reads the scribble as one, often confidently. Measured on a
+real practice page of 164 crossed-out glyphs, it called 95 of them (58%)
+a confident digit, most often 8. On a mark cell the constrained decoder
+then finds no legal value ("65" on a 5-mark question) and flags the cell,
+which is safe but leaves the instructor typing every corrected mark. On
+an ID box nothing catches it at all: a struck digit becomes a wrong digit.
+
+**An 11th class, CROSSED_OUT**, appended after the digits so that class
+index `d` still means the digit `d` everywhere (`cnn/classes.py`). Its
+examples come from two sources:
+
+- **Synthetic**: EMNIST digits with a strike drawn over them (slashes,
+  horizontal lines, an X, hatching, zigzags, looping scribble), rendered
+  in photo space and sent through the SAME `_to_canvas` inference uses
+  (`cnn/strikes.py`). Clean EMNIST digits go through that path too. If
+  only struck samples were binarized that way, the model could learn
+  "binarized means crossed out" and never look at the strokes.
+  A 1 or 7 never gets a single straight line: one line through a 1 *is*
+  a 7, a 4 or a plus sign, and a model taught otherwise would flag real
+  digits.
+- **Real**: photographed practice pages of loose digits, one label per
+  row (`cnn/pages.py`, `training_data/pages/`, gitignored). A row of
+  crossed-out glyphs labels itself, since the digit under a scribble
+  never matters.
+
+**What the recognizer does with one** (`app/recognizers/local.py`):
+
+| Field | Crossed-out glyph found | What the instructor sees |
+|---|---|---|
+| ID box | that position is `?` | "A digit was crossed out — check the script." A class list's one-candidate match (§17) covers a single `?`. |
+| Mark / total | value left blank; struck glyphs dropped and the rest decoded against the same legal set | "Crossed out" plus a **Use 5** button if the rest decodes |
+| Serial | value left blank; the rest decoded per position | same, if every remaining position reads cleanly |
+
+The rule it keeps is "flag, never guess": what is left after dropping a
+struck glyph is a **suggestion**, never a stored or pre-filled value. That
+costs one tap on the rare corrected cell, which was a typed value before,
+and nothing on the thirty ordinary ones.
+
+**Harvesting refuses every crossed-out cell** (`crossed_out_fields`, the
+same mechanism as N31's `unmatched_fields`): the instructor's value is the
+correction, the crop still holds the abandoned answer, and labelling one
+with the other teaches the model a scribble is that digit.
+
+**The costly error is the opposite one.** Missing a crossing-out is
+today's behaviour, no worse. Calling a clean digit crossed out drops it,
+which on "15" leaves a suggestion of "5". `CROSSED_OUT_FLOOR`
+(`cnn/thresholds.py`) is set against that, measured by
+`cnn/crossed_accuracy.py` on every real glyph in `testset/` (~20 writers,
+never trained on).
+
+**Who writes what matters here, as it does for the rest of this section.**
+The marks are the instructor's own handwriting, so their practice pages
+are the target distribution for crossed-out marks. IDs and serials are
+the students' handwriting, and a crossed-out ID digit by a student is the
+case one person's pages cannot fully cover.
+
 ### Migration steps
 
 The concrete build order (Recognizer extraction → train the CNN →

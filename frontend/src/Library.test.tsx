@@ -8,6 +8,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAllAssessments, getAllSections, getRecordsByAssessment, saveAssessment, saveRecord, saveSection } from './db';
 import Library from './Library';
+import { sectionDisplayLabel } from './sections';
 import type { Assessment, Section, StudentRecord } from './types';
 
 function makeSection(overrides: Partial<Section> = {}): Section {
@@ -541,7 +542,11 @@ describe('Library — delete a single section (13.23)', () => {
     expect((await getAllSections())[0].id).toBe(sibling.id);
   });
 
-  it('blocks the delete on an unexported assessment that holds real records, naming it, Cancel only', async () => {
+  it('warns about an unexported quiz holding real records, naming it, but still deletes once confirmed', async () => {
+    // Step 15 follow-up: this used to BLOCK (Cancel only), which made a
+    // deliberate delete of scanned-but-unwanted work impossible without a
+    // pointless export first. The semester purge still blocks — see
+    // sections.ts's hasUnexportedWork.
     const section = makeSection();
     const unexported = makeAssessment(section.id, { quizName: 'Quiz 2', exportedAt: null });
     await saveSection(section);
@@ -551,17 +556,19 @@ describe('Library — delete a single section (13.23)', () => {
     renderLibrary();
     fireEvent.click(await screen.findByRole('button', { name: 'Delete section' }));
 
-    expect(await screen.findByText(/can't delete/i)).toBeInTheDocument();
-    // "Quiz 2" appears twice — once as the section's own scan-queue row,
-    // once (what this test is actually checking) named in the block list.
-    expect(screen.getAllByText('Quiz 2').length).toBeGreaterThanOrEqual(2);
-    expect(screen.queryByRole('button', { name: /yes, delete/i })).not.toBeInTheDocument();
+    expect(await screen.findByText(/never exported/i)).toBeInTheDocument();
+    expect(screen.queryByText(/can't delete/i)).not.toBeInTheDocument();
+    // "Quiz 2" appears in the section's own row and in the warning.
+    expect(screen.getAllByText(/Quiz 2/).length).toBeGreaterThanOrEqual(2);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    const label = sectionDisplayLabel(section);
+    const confirmButton = screen.getByRole('button', { name: new RegExp(`yes, delete ${label}`, 'i') });
+    expect(confirmButton).toBeDisabled();
+    typeToConfirm(label);
+    fireEvent.click(confirmButton);
 
-    // Nothing was deleted.
-    expect(await getAllSections()).toHaveLength(1);
-    expect(await getAllAssessments()).toHaveLength(1);
+    await waitFor(async () => expect(await getAllSections()).toHaveLength(0));
+    expect(await getRecordsByAssessment(unexported.id)).toHaveLength(0);
   });
 
   it('does not block deleting a section whose only assessment is empty and unexported', async () => {
@@ -669,7 +676,7 @@ describe('Library — delete a single assessment (13.24)', () => {
     expect((await getAllAssessments())[0].id).toBe(sibling.id);
   });
 
-  it('blocks deleting an unexported assessment that holds real records', async () => {
+  it('warns that an unexported quiz holding real records was never exported, and still deletes it once confirmed', async () => {
     const section = makeSection();
     const assessment = makeAssessment(section.id, { quizName: 'Quiz 1', exportedAt: null });
     await saveSection(section);
@@ -680,14 +687,15 @@ describe('Library — delete a single assessment (13.24)', () => {
     renderLibrary();
     fireEvent.click(await screen.findByRole('button', { name: 'Delete quiz' }));
 
-    expect(await screen.findByText(/can't delete/i)).toBeInTheDocument();
-    expect(screen.getByText(/2 records would be lost/i)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /yes, delete/i })).not.toBeInTheDocument();
+    expect(await screen.findByText(/never exported/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 records/i)).toBeInTheDocument();
+    expect(screen.queryByText(/can't delete/i)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    typeToConfirm('Quiz 1');
+    fireEvent.click(screen.getByRole('button', { name: /yes, delete quiz 1/i }));
 
-    expect(await getAllAssessments()).toHaveLength(1);
-    expect(await getRecordsByAssessment(assessment.id)).toHaveLength(2);
+    await waitFor(async () => expect(await getAllAssessments()).toHaveLength(0));
+    expect(await getRecordsByAssessment(assessment.id)).toHaveLength(0);
   });
 
   it('does not block deleting a brand-new, empty, never-exported assessment', async () => {

@@ -11,6 +11,8 @@ through RemoteRecognizer, which references them by module attribute for
 exactly this reason.
 """
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -307,3 +309,198 @@ def test_a_good_config_is_still_accepted(tmp_path):
         )
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "failed"
+
+
+# --- X-Ray tracing (step 11.8) ----------------------------------------------
+
+def _xray_sdk_available() -> bool:
+    try:
+        import aws_xray_sdk  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+requires_xray_sdk = pytest.mark.skipif(
+    not _xray_sdk_available(),
+    reason="aws-xray-sdk is deploy-only (requirements-deploy.txt), not installed here",
+)
+
+
+def test_xray_disabled_by_default_no_import_needed():
+    """The load-bearing property for this whole feature: XRAY_ENABLED is
+    False unless a deployment sets it, and the middleware's very first
+    line returns before touching `aws_xray_sdk` at all — so a laptop that
+    has never even run `pip install -r requirements-deploy.txt` (i.e. every
+    laptop, by design) can still run a scan. Needs no skip marker, because
+    proving this works WITHOUT the package installed is the actual point;
+    skipping it when the package is absent would test nothing."""
+    assert main_module.config_module.XRAY_ENABLED is False
+    image_path = TESTSET / "images" / "filled_file.jpeg"
+    if not image_path.exists():
+        pytest.skip("filled_file.jpeg not present")
+    with patch("app.marks.recognize", return_value=FIXTURE_MARKS_RESULT), \
+         patch("app.id_ocr.read_id", return_value=("2632711", [])):
+        resp = _post(image_path)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+
+@requires_xray_sdk
+def test_xray_enabled_never_breaks_a_scan_even_with_no_lambda_context(monkeypatch):
+    """The real-world failure mode this guards against: XRAY_ENABLED=true
+    with no actual Lambda invocation underneath it — exactly what would
+    happen if the flag were ever accidentally set on local-stack.sh's
+    container (which runs the deployed image via `docker run`, not a real
+    Lambda `Invoke`) rather than only on the true Lambda function's own
+    environment, where deploy.sh is the only thing that sets it.
+
+    `aws_xray_sdk.begin_subsegment()` has no parent segment to attach to
+    in that situation — verified directly against the installed SDK
+    (log_event's own "cannot find the current segment" warning is the
+    SDK's own logger, not this codebase's) — and returns None rather than
+    raising. `trace`'s None-guards handle that already; this test is the
+    end-to-end proof that a real request through TestClient still
+    completes and returns a normal 200, not a 500, regardless."""
+    monkeypatch.setattr(main_module.config_module, "XRAY_ENABLED", True)
+    image_path = TESTSET / "images" / "filled_file.jpeg"
+    if not image_path.exists():
+        pytest.skip("filled_file.jpeg not present")
+    with patch("app.marks.recognize", return_value=FIXTURE_MARKS_RESULT), \
+         patch("app.id_ocr.read_id", return_value=("2632711", [])):
+        resp = _post(image_path)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+
+@requires_xray_sdk
+def test_xray_traces_a_request_that_guard_rejects(monkeypatch):
+    """`trace` is registered LAST so Starlette makes it OUTERMOST, wrapping
+    `guard` — so a request guard rejects with 413 still gets a real,
+    correctly-statused trace instead of vanishing from the map.
+
+    Asserted by spying on `begin_subsegment`, NOT by the response status.
+    That distinction is the whole point and was got wrong first time: a
+    413 comes back either way — if `guard` were outermost it would reject
+    before `trace` ever ran, and the status assertion alone would still
+    pass, pinning nothing. What only holds in the correct order is that
+    the subsegment gets opened at all, and that it records 413 rather than
+    the 200 the route would have returned."""
+    monkeypatch.setattr(main_module.config_module, "XRAY_ENABLED", True)
+    monkeypatch.setattr(main_module.config_module, "MAX_UPLOAD_BYTES", 10)
+    image_path = TESTSET / "images" / "filled_file.jpeg"
+    if not image_path.exists():
+        pytest.skip("filled_file.jpeg not present")
+
+    from aws_xray_sdk.core import xray_recorder
+
+    opened: list[str] = []
+    statuses: list[int] = []
+
+    class _SpySegment:
+        def put_http_meta(self, key, value):
+            if key == "status":
+                statuses.append(value)
+
+        def add_exception(self, *a, **kw):
+            pass
+
+    def _spy_begin(name):
+        opened.append(name)
+        return _SpySegment()
+
+    monkeypatch.setattr(xray_recorder, "begin_subsegment", _spy_begin)
+    monkeypatch.setattr(xray_recorder, "end_subsegment", lambda *a, **kw: None)
+
+    resp = _post(image_path)
+
+    assert resp.status_code == 413
+    # The discriminating assertions: both are false if guard wraps trace.
+    assert opened == ["/api/scan"], "trace did not run — guard rejected first, so it is outermost"
+    assert statuses == [413], f"trace recorded {statuses}, not the guard's real 413"
+
+
+@requires_xray_sdk
+def test_xray_enabled_does_not_force_boto3_to_import_at_cold_start():
+    """The real incident (step 11.8, 2026-09-22): the first version of
+    this feature called `aws_xray_sdk.core.patch(("boto3",))` eagerly at
+    module import time, guarded only by XRAY_ENABLED. That call forces
+    `botocore` to import immediately to have something to monkey-patch —
+    and `botocore` alone added ~7s to `import app.main`, on top of an
+    already-heavy chain (opencv, onnxruntime). In the real deployed
+    Lambda that pushed cold-start init past the platform's ~10s
+    init-phase timeout, and EVERY request broke, not just ones that
+    touch S3 — confirmed directly in production logs
+    (`INIT_REPORT ... Status: timeout`, then `app is not ready` forever).
+
+    Fixed by moving the patch call to the one place boto3 itself is
+    actually imported — `S3Store.__init__`, lazily, per /api/harvest
+    request — so a plain `/api/scan` request, which never touches S3,
+    pays nothing extra for X-Ray being enabled.
+
+    A subprocess, not a direct `sys.modules` check, on purpose: this test
+    runs inside the same pytest process as `test_stores.py`'s
+    `stubbed_boto3` fixture and others that legitimately put `boto3`/
+    `botocore` into `sys.modules` for their own tests — a same-process
+    check would be a coin flip on test ORDER, not a real assertion. A
+    fresh interpreter is the only way to observe cold-start import
+    behaviour without inheriting whatever the rest of the suite already
+    touched.
+    """
+    backend_dir = Path(__file__).parent.parent
+    script = (
+        "import sys; sys.path.insert(0, %r); "
+        "import app.main; "
+        "print('boto3=' + str('boto3' in sys.modules)); "
+        "print('botocore=' + str('botocore' in sys.modules))"
+    ) % str(backend_dir)
+    env = {**os.environ, "XRAY_ENABLED": "true"}
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "boto3=False" in result.stdout, result.stdout
+    assert "botocore=False" in result.stdout, result.stdout
+
+
+@requires_xray_sdk
+def test_xray_syncs_the_trace_env_var_from_the_incoming_header(monkeypatch):
+    """The second real incident (step 11.8): every subsegment this
+    middleware opened was silently discarded in the real deployed Lambda,
+    on every request, because aws-xray-sdk's Lambda-context detection
+    re-reads `_X_AMZN_TRACE_ID` from the environment, and Lambda Web
+    Adapter forks uvicorn once at cold start — the forked child's
+    environment is a private copy from that moment, never refreshed per
+    invocation the way Lambda updates the platform process's own. Fixed
+    by copying the fresh per-request `X-Amzn-Trace-Id` HTTP header (which
+    LWA does forward correctly, on every call) into the environment
+    before asking the recorder for a subsegment.
+
+    This cannot be tested end-to-end without a real Lambda Web Adapter
+    fork — that part is only verifiable against the real deployment,
+    which it was (see CLAUDE.md's step 11.8 account). What IS testable
+    and deterministic: that the header, when present, actually lands in
+    `os.environ['_X_AMZN_TRACE_ID']` before the recorder is asked for
+    anything — the one part of this fix that is this codebase's own
+    responsibility rather than the platform's."""
+    monkeypatch.setattr(main_module.config_module, "XRAY_ENABLED", True)
+    monkeypatch.delenv("_X_AMZN_TRACE_ID", raising=False)
+    image_path = TESTSET / "images" / "filled_file.jpeg"
+    if not image_path.exists():
+        pytest.skip("filled_file.jpeg not present")
+
+    fake_trace_header = "Root=1-00000000-000000000000000000000000;Parent=0000000000000000;Sampled=1"
+    with open(image_path, "rb") as f:
+        resp = client.post(
+            "/api/scan",
+            files={"image": (image_path.name, f, "image/jpeg")},
+            data={"config": json.dumps(DEFAULT_CONFIG)},
+            headers={"X-Amzn-Trace-Id": fake_trace_header},
+        )
+    assert resp.status_code == 200
+    # The middleware's `finally` ends the subsegment but does not clear
+    # the env var it set — matching real Lambda behaviour, where the
+    # platform itself owns clearing/replacing it between invocations, not
+    # application code.
+    assert os.environ.get("_X_AMZN_TRACE_ID") == fake_trace_header

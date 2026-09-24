@@ -67,7 +67,7 @@ have() { "$@" >/dev/null 2>&1; }
 # the first one had that it didn't know about.
 #   $1 — the site origin, or empty to leave ALLOWED_ORIGINS unset
 lambda_env() {
-  local vars="RECOGNIZER=cnn,HARVEST_BACKEND=s3,HARVEST_BUCKET=$CROPS_BUCKET,HARVEST_PREFIX=harvested"
+  local vars="RECOGNIZER=cnn,HARVEST_BACKEND=s3,HARVEST_BUCKET=$CROPS_BUCKET,HARVEST_PREFIX=harvested,XRAY_ENABLED=true"
   [ -n "${1:-}" ] && vars="$vars,ALLOWED_ORIGINS=$1"
   echo "$vars"
 }
@@ -128,6 +128,17 @@ deploy_backend() {
     aws iam attach-role-policy --role-name "$ROLE_NAME" \
       --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
   fi
+  # Step 11.8 — lets the function write its own trace segments/subsegments
+  # to X-Ray. An AWS-managed policy rather than a hand-written inline one:
+  # unlike the crops bucket, there is no single ARN to scope this to (an
+  # xray:PutTraceSegments call names no resource), so "write-only, one
+  # thing" isn't expressible any tighter than this managed policy already
+  # is. Outside the create-only block above and safe to re-run every
+  # deploy — attaching an already-attached policy is a no-op, which is
+  # what makes this the right way to add the capability to a role that
+  # already existed before this step, not just a freshly created one.
+  aws iam attach-role-policy --role-name "$ROLE_NAME" \
+    --policy-arn arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
   # Write-only, to exactly one bucket, and no read. The function never needs
   # to list or fetch a crop — only append — so it cannot be used to
   # exfiltrate what it has already collected (step 11.6.3).
@@ -153,7 +164,7 @@ deploy_backend() {
     # between them, not merely tidy.
     aws lambda wait function-updated-v2 --function-name "$FUNCTION" --region "$REGION"
     aws lambda update-function-configuration --function-name "$FUNCTION" --region "$REGION" \
-      --memory-size "$MEMORY_MB" --timeout "$TIMEOUT_S" \
+      --memory-size "$MEMORY_MB" --timeout "$TIMEOUT_S" --tracing-config Mode=Active \
       --environment "Variables={$env_vars}" >/dev/null
     aws lambda wait function-updated-v2 --function-name "$FUNCTION" --region "$REGION"
   else
@@ -165,6 +176,7 @@ deploy_backend() {
     until aws lambda create-function --function-name "$FUNCTION" --region "$REGION" \
       --package-type Image --code "ImageUri=$ECR_URI:latest" --role "$role_arn" \
       --memory-size "$MEMORY_MB" --timeout "$TIMEOUT_S" --architectures x86_64 \
+      --tracing-config Mode=Active \
       --environment "Variables={$env_vars}" >/dev/null 2>&1; do
       attempt=$((attempt + 1))
       if [ "$attempt" -ge 10 ]; then
@@ -172,6 +184,7 @@ deploy_backend() {
         aws lambda create-function --function-name "$FUNCTION" --region "$REGION" \
           --package-type Image --code "ImageUri=$ECR_URI:latest" --role "$role_arn" \
           --memory-size "$MEMORY_MB" --timeout "$TIMEOUT_S" --architectures x86_64 \
+          --tracing-config Mode=Active \
           --environment "Variables={$env_vars}" >/dev/null
         exit 1
       fi
@@ -240,7 +253,16 @@ deploy_backend() {
   # 8000ms"), not the 2-4s originally estimated from a laptop emulator, so
   # this matters more than expected: without it the first real scan of a
   # class is the slow one.
-  local photo="$HERE/testset/images/filled_file.jpeg"
+  # HERE_NATIVE, not HERE: curl is a native program and this script has
+  # MSYS path conversion switched off (disable_msys_path_conversion, for
+  # docker's container-side paths), so an MSYS `/g/Dev/...` reaches curl
+  # verbatim and it cannot open the file — exit 26, CURLE_READ_ERROR.
+  # That mattered far more than a bad smoke test: `set -euo pipefail`
+  # turned it into an abort INSIDE deploy_backend, so `./deploy.sh all`
+  # deployed the backend and then silently stopped, never reaching cdn,
+  # frontend or dashboard. The `[ -f ]` guard below does not catch it —
+  # bash reads MSYS paths fine; only curl cannot.
+  local photo="$HERE_NATIVE/testset/images/filled_file.jpeg"
   if [ -f "$photo" ]; then
     curl -s --max-time 90 -X POST "$API_URL/api/scan" \
       -F "image=@$photo" \
@@ -502,10 +524,114 @@ apply_allowed_origins() {
   aws lambda wait function-updated-v2 --function-name "$FUNCTION" --region "$REGION"
 }
 
+# --- Monitoring (step 11.8) -------------------------------------------------
+
+# One CloudWatch Dashboard, private (AWS Console only — no public URL, no
+# new auth to build, matching how every other part of this app is watched
+# today). It is NOT the whole picture on purpose: CloudWatch dashboards
+# have no widget type that embeds an X-Ray trace map (confirmed against
+# AWS's own Dashboard Body Structure docs — valid types are metric, text,
+# log, alarm, explorer, chart, full stop), so the live Lambda<->S3 node
+# graph lives on its own page in the X-Ray console, one click away via the
+# link widget below, rather than inside this dashboard's grid. What DOES
+# fit here: frontend hits (CloudFront), backend hits (API Gateway, which
+# X-Ray can never show at all — HTTP APIs don't support tracing, only
+# REST APIs do), Lambda's own health metrics, and the existing success-
+# rate query from aws/MONITORING.md, all on one page instead of four
+# separate console tabs.
+deploy_dashboard() {
+  say "Monitoring dashboard"
+
+  # Re-derived rather than assumed set: `./deploy.sh dashboard` on its own
+  # (no prior `backend`/`cdn` in this same process) needs both looked up
+  # fresh, the same idempotent queries deploy_backend/find_distribution
+  # already use.
+  local api_id="${API_ID:-}"
+  if [ -z "$api_id" ]; then
+    api_id="$(aws apigatewayv2 get-apis --region "$REGION" \
+      --query "Items[?Name=='$FUNCTION'].ApiId | [0]" --output text 2>/dev/null | grep -v '^None$' || true)"
+  fi
+  local distribution_id="${DISTRIBUTION_ID:-}"
+  if [ -z "$distribution_id" ]; then
+    distribution_id="$(find_distribution)"
+  fi
+
+  local dashboard_config
+  dashboard_config="$(mktemp -t "$PROJECT-dashboard.XXXXXX.json")"
+
+  # CloudFront's own CloudWatch metrics publish ONLY to us-east-1 — a
+  # genuine AWS constant, true regardless of $REGION, not a value that
+  # changes per deployment the way every other region reference here does.
+  # Hardcoded on purpose; do not replace with $REGION.
+  # NOTE: this heredoc is deliberately UNQUOTED, because the widget bodies
+  # need $PROJECT/$REGION/$FUNCTION and the two derived ids expanded. The
+  # cost is that backticks and $(...) inside it are still live shell
+  # syntax — a markdown `code span` in the text widget below will be run
+  # as a command, not printed. (Found exactly that way: a backticked
+  # "/api/scan" became "No such file or directory" and shipped an empty
+  # string into the dashboard.) Keep the markdown backtick-free.
+  cat > "$dashboard_config" <<JSON
+{
+  "widgets": [
+    {
+      "type": "text", "x": 0, "y": 0, "width": 24, "height": 2,
+      "properties": {
+        "markdown": "**$PROJECT** — frontend and backend hit counts below. The live request-flow graph (Lambda -> S3) is a separate page, not a widget: [X-Ray trace map](https://$REGION.console.aws.amazon.com/cloudwatch/home?region=$REGION#xray:traces/map). If that link ever moves, the documented route is the CloudWatch left nav: **X-Ray traces -> Trace Map**. A scan shows just the Lambda box; a harvest also lights up the S3 edge."
+      }
+    },
+    {
+      "type": "metric", "x": 0, "y": 2, "width": 8, "height": 6,
+      "properties": {
+        "title": "Frontend hits (CloudFront requests)",
+        "view": "timeSeries", "stacked": false, "region": "us-east-1",
+        "metrics": [["AWS/CloudFront", "Requests", "DistributionId", "${distribution_id:-none}", "Region", "Global", {"stat": "Sum"}]]
+      }
+    },
+    {
+      "type": "metric", "x": 8, "y": 2, "width": 8, "height": 6,
+      "properties": {
+        "title": "Backend hits (API Gateway requests)",
+        "view": "timeSeries", "stacked": false, "region": "$REGION",
+        "metrics": [["AWS/ApiGateway", "Count", "ApiId", "${api_id:-none}", {"stat": "Sum"}]]
+      }
+    },
+    {
+      "type": "metric", "x": 16, "y": 2, "width": 8, "height": 6,
+      "properties": {
+        "title": "Lambda health",
+        "view": "timeSeries", "stacked": false, "region": "$REGION",
+        "metrics": [
+          ["AWS/Lambda", "Invocations", "FunctionName", "$FUNCTION", {"stat": "Sum"}],
+          ["AWS/Lambda", "Errors", "FunctionName", "$FUNCTION", {"stat": "Sum"}]
+        ]
+      }
+    },
+    {
+      "type": "log", "x": 0, "y": 8, "width": 24, "height": 6,
+      "properties": {
+        "title": "Scan success rate, by hour (aws/MONITORING.md)",
+        "region": "$REGION", "view": "table",
+        "query": "SOURCE '/aws/lambda/$FUNCTION' | fields @timestamp\n| filter event = \"scan\"\n| stats count() as scans, sum(status = \"failed\") as failed, sum(status = \"failed\") * 100 / count() as pct_failed by bin(1h)"
+      }
+    }
+  ]
+}
+JSON
+
+  aws cloudwatch put-dashboard --dashboard-name "$PROJECT" --region "$REGION" \
+    --dashboard-body "file://$(native_path "$dashboard_config")" >/dev/null
+  rm -f "$dashboard_config"
+  echo "    https://$REGION.console.aws.amazon.com/cloudwatch/home?region=$REGION#dashboards:name=$PROJECT"
+  if [ -z "$api_id" ] || [ -z "$distribution_id" ]; then
+    echo "    (backend and/or cdn not deployed yet — that widget will show no data until they are)"
+  fi
+}
+
 case "${1:-all}" in
-  backend)  deploy_backend ;;
-  cdn)      deploy_cdn ;;
-  frontend) deploy_frontend ;;
-  all)      deploy_backend; deploy_cdn; apply_allowed_origins; deploy_frontend ;;
-  *) echo "usage: $0 [backend|cdn|frontend|all]" >&2; exit 2 ;;
+  backend)   deploy_backend ;;
+  cdn)       deploy_cdn ;;
+  frontend)  deploy_frontend ;;
+  dashboard) deploy_dashboard ;;
+  all)       deploy_backend; deploy_cdn; apply_allowed_origins; deploy_frontend; deploy_dashboard ;;
+  *) echo "usage: $0 [backend|cdn|frontend|dashboard|all]" >&2; exit 2 ;;
 esac

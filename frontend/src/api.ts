@@ -22,6 +22,17 @@ export interface ScanResult {
   // on the `cnn` path (empty on `remote`/`both`) — see backend/app/marks.py's
   // MarksResult for the full reasoning.
   unmatched_fields: string[];
+  // Step 15 — fields where a crossed-out glyph was found ("student_id",
+  // "serial", "q1".."qN", "total"). Each is also in low_confidence_fields,
+  // and its value above is always null or "?"-marked: a crossed-out cell is
+  // never decoded into a value. Optional because only the `cnn` path sends
+  // them.
+  crossed_out_fields?: string[];
+  // A one-tap candidate for a field left blank, keyed by field: what a
+  // crossed-out cell reads as once the struck glyphs are dropped, or an
+  // unmatched "2 5" read as 2.5 when its decimal point was lost. Offered
+  // as "Use", never pre-filled.
+  suggestions?: Record<string, string>;
 }
 
 const DEFAULT_API_PORT = 8000;
@@ -139,6 +150,9 @@ export interface HarvestFields {
   // sends [] since the backend only reads this off the original side
   // (main.py's harvest_endpoint ignores confirmed.unmatchedFields).
   unmatchedFields: string[];
+  // Step 15 — same rule, same side: the backend refuses to harvest any crop
+  // the original scan found a crossed-out glyph in.
+  crossedOutFields: string[];
 }
 
 // Step 3r.6c: called from the review screen on Confirm, alongside (never

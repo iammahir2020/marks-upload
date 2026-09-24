@@ -12,3 +12,18 @@
 # where nothing is provided for you. Found the honest way — by running the
 # built image and importing boto3, which failed.
 boto3==1.40.47
+
+# Step 11.8 — X-Ray tracing for the monitoring dashboard (app/main.py's
+# `trace` middleware, app/config.py's XRAY_ENABLED). Its own repo entered
+# maintenance mode 2026-02-25 and AWS now points people at OpenTelemetry
+# (ADOT) instead — noted here rather than silently pinned, since it's the
+# reason to check before adding NEW instrumentation on top of this later.
+# ADOT was considered and set aside for this project specifically: its
+# usual delivery is a Lambda Layer, and this Lambda is a container image,
+# where Layers don't apply at all — ADOT's own docs call this out and
+# recommend hand-embedding its collector into the image via a multi-stage
+# build, which is real Dockerfile risk for a monitoring nice-to-have. This
+# SDK still functions today and has no ASGI/FastAPI integration either
+# (Django/Flask/Bottle/aiohttp only), which is why main.py's middleware is
+# ~15 lines written directly rather than a class this package provides.
+aws-xray-sdk==2.15.0

@@ -9,17 +9,23 @@ between training and inference, so it lives in exactly one place.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import torch
 from torch import nn
 
-NUM_CLASSES = 10  # digits 0-9 only — the decimal point is pure geometry,
-                   # not a class (plan.md §16), so a standard digit
-                   # dataset like EMNIST works with no relabelling.
+sys.path.insert(0, str(Path(__file__).parent.parent))
+# Digits 0-9 plus CROSSED_OUT (see classes.py). The decimal point is still
+# pure geometry, not a class (plan.md §16), so EMNIST still needs no
+# relabelling — its labels are already the first ten class indices.
+from cnn.classes import NUM_CLASSES  # noqa: E402
 
 
 class DigitCNN(nn.Module):
-    """Conv(1->32)x2 -> pool -> Conv(32->64)x2 -> pool -> FC(128) -> FC(10),
-    exactly as specified in plan.md §16. Input: (N, 1, 28, 28) float32,
+    """Conv(1->32)x2 -> pool -> Conv(32->64)x2 -> pool -> FC(128) -> FC(11),
+    as specified in plan.md §16 (FC(10) there; the 11th output is
+    CROSSED_OUT, added later). Input: (N, 1, 28, 28) float32,
     already MNIST-normalized (see preprocess.py) - this module does no
     preprocessing of its own."""
 

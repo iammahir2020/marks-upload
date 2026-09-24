@@ -100,6 +100,25 @@ class S3Store:
     """
 
     def __init__(self, bucket: str, prefix: str = "harvested") -> None:
+        # X-Ray's boto3 patch has to run before boto3 is imported, but NOT
+        # eagerly at cold start (step 11.8's real incident): calling
+        # `patch(("boto3",))` forces `botocore` to import immediately,
+        # which alone added ~7s to the Lambda's init phase — on top of an
+        # already-heavy import chain (opencv, onnxruntime), enough to blow
+        # past the platform's ~10s init-phase timeout and break EVERY
+        # request, scan included, not just harvesting. Deferred to here —
+        # the one place boto3 itself is imported, lazily, per request —
+        # keeps the original guarantee (`patch()` before the first client
+        # is built) without paying botocore's import cost on requests that
+        # never touch S3 at all. Measured after the fix: cold-start import
+        # time back to the pre-X-Ray baseline.
+        from . import config
+
+        if config.XRAY_ENABLED:
+            from aws_xray_sdk.core import patch
+
+            patch(("boto3",))
+
         import boto3
 
         self.bucket = bucket

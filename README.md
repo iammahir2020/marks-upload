@@ -176,6 +176,12 @@ In broad strokes, as of 2026-09-10:
   it uncovered are fixed, and the whole thing is still verifiable offline
   through `./local-stack.sh`. What remains is 11.7: using it as a user, on
   a phone, on mobile data.
+- **Monitoring (step 11.8) is DEPLOYED** — a CloudWatch dashboard carrying
+  frontend hits, backend hits and Lambda health on one page, plus X-Ray
+  tracing giving a real Lambda→S3 request-flow graph. Both are private to
+  the AWS console; no public URL and no new auth. See
+  [Monitoring](#monitoring-hit-counts-and-the-request-flow-graph) for what
+  each shows and why the two hit counts deliberately don't match.
 - **An optional class-list workbook round trip (step 12) is DONE, all four
   phases** — the instructor's own semester marksheet, uploaded once,
   matched against by student ID, written back into as a new sheet per
@@ -312,13 +318,15 @@ marks-upload/
 │                            # the number of blockers
 ├── aws/                     # Least-privilege IAM policy for the deploy user
 │                            # (deploy-policy.json) + MONITORING.md, the
-│                            # CloudWatch queries for a live session
+│                            # CloudWatch queries, the dashboard and the
+│                            # X-Ray trace map for a live session
 ├── fetch-crops.sh           # Pulls harvested crops (disk/MinIO/S3) into one
 │                            # training set and reports its class balance
 │
 ├── backend/
 │   ├── app/
-│   │   ├── main.py          # POST /api/scan and POST /api/harvest; resolves the recognizer at startup
+│   │   ├── main.py          # POST /api/scan and POST /api/harvest; resolves the recognizer at startup;
+│   │   │                    # the X-Ray `trace` middleware (outermost, so a guard rejection still traces)
 │   │   ├── detection.py     # OpenCV grid detection — the make-or-break component
 │   │   ├── id_ocr.py        # Local Tesseract student-ID reader
 │   │   ├── marks.py         # The Gemini call for serial + marks
@@ -750,21 +758,28 @@ scripts. They resolve the venv layout and convert host paths to the form
 
 ```bash
 ./preflight.sh
-./deploy.sh backend      # ECR build+push, Lambda, API Gateway, crops bucket
+./deploy.sh backend      # ECR build+push, Lambda (incl. X-Ray tracing), API Gateway, crops bucket
 ./deploy.sh cdn          # CloudFront distribution (S3 + /api/* -> API Gateway)
 ./deploy.sh frontend     # needs API_URL, and CloudFront permissions
+./deploy.sh dashboard    # the CloudWatch monitoring dashboard (step 11.8)
+./deploy.sh all          # all four, in dependency order
 ```
 
 `deploy.sh` is idempotent — re-running updates in place, which step 11's
 own Done-when requires (harvested crops must survive a redeploy).
 
-**`deploy.sh` has never been run from Windows.** Everything else in this
-README has been exercised there, including `preflight.sh` at zero blockers
-and `local-stack.sh` end to end — but preflight covers only the image
-build and AWS auth, not `docker push`, the Lambda update, the frontend
-`aws s3 sync`, or the CloudFront invalidation. Run `preflight.sh` first
-and expect a first Windows deploy to be the first real test of those
-paths.
+**`deploy.sh backend` and `dashboard` have now been run from Windows
+repeatedly** (2026-09-22), and doing so found a real bug worth knowing
+about if you ever see a deploy "fail" with nothing obviously wrong. The
+smoke test passed its photo as an MSYS path (`/g/Dev/...`) to `curl`,
+which is a native program — and because these scripts switch MSYS path
+conversion *off* (they have to, so Docker's container-side paths survive
+verbatim), curl could not open the file and exited 26. Under
+`set -euo pipefail` that aborted the script **inside `deploy_backend`**,
+so `./deploy.sh all` deployed the backend and then stopped silently,
+never reaching cdn, frontend or dashboard. Fixed by passing the native
+path, the same way `preflight.sh` already did. Still not exercised from
+Windows: `deploy.sh cdn` and `frontend`.
 
 **It is deployed and live**: <https://d2n2meq17rr1oi.cloudfront.net>
 
@@ -786,11 +801,96 @@ principal with a correct OAC grant returned 403; only a directly IAM-signed
 request succeeded. API Gateway sidesteps Function URL auth entirely. See
 [aws/MONITORING.md](aws/MONITORING.md) for where to watch it run.
 
+### Monitoring: hit counts and the request-flow graph
+
+Two pages, one click apart, both free and both behind your own AWS login —
+no public URL and no new auth was built for this.
+
+**The dashboard** is the one to open first. It carries frontend hits,
+backend hits, Lambda's health, and the scan success-rate query on a single
+page, instead of the four separate console tabs this used to take:
+
+```
+https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=marks-scanner
+```
+
+```bash
+AWS_PROFILE=marks-scanner ./deploy.sh dashboard   # create or update it; idempotent
+```
+
+**The X-Ray trace map** is the actual node graph — Lambda and the calls it
+makes, drawn from real traces. CloudWatch console, left nav: **X-Ray
+traces → Trace Map** (the documented route; the deep link is
+`…/cloudwatch/home?region=us-east-1#xray:traces/map`). A `/api/scan`
+renders as just the Lambda box, because recognition runs entirely
+in-process and never touches S3. A `/api/harvest` also lights up an **S3**
+edge — one call per field written, so a full harvest shows thirteen.
+
+Two things the graph will never show, both by design rather than
+oversight:
+
+- **API Gateway.** X-Ray tracing is a REST-API-only feature; this project
+  uses an HTTP API, chosen for its lower cost. Its request count is a
+  dashboard widget instead.
+- **CloudFront.** Serving a static file from cache is not a traced call at
+  all. Same answer: a dashboard widget.
+
+**The two hit counts do not move together, and shouldn't.** CloudFront's
+is file-level — opening the app pulls the bundle, CSS, icons and the
+service worker, so one visit is several hits. API Gateway's is
+request-level and runs roughly *double* your scan count, because the
+review screen fires `/api/harvest` on every Confirm, separately from the
+`/api/scan` the photo already made. Telling those two kinds of backend hit
+apart is exactly what the trace map is for.
+
+Tracing is off unless a deployment turns it on: `XRAY_ENABLED` defaults to
+false, `deploy.sh` sets it only on the real Lambda, and the laptop never
+installs `aws-xray-sdk` at all (it lives in `requirements-deploy.txt`).
+Leave it off locally — outside a real Lambda invocation there is no parent
+segment to attach to, so every subsegment is discarded. Harmless, but it
+buys nothing and logs a warning per request.
+
+Watching it from a terminal instead of the console:
+
+```bash
+AWS_PROFILE=marks-scanner \
+  aws logs tail /aws/lambda/marks-scanner-api --since 30m --region us-east-1 --format short
+```
+
+```bash
+# Windows (Git Bash) — MSYS_NO_PATHCONV is required, not optional
+export AWS_PROFILE=marks-scanner MSYS_NO_PATHCONV=1
+aws logs tail /aws/lambda/marks-scanner-api --since 30m --region us-east-1 --format short
+```
+
+Without `MSYS_NO_PATHCONV=1`, Git Bash rewrites the log-group name
+`/aws/lambda/...` into a filesystem path before `aws.exe` sees it, and the
+failure names a path you never typed:
+`AccessDenied ... log-group:C:/Program Files/Git/aws/lambda/marks-scanner-api`.
+
+Pulling one trace back by id, to see its structure rather than its
+picture — useful for confirming the S3 edge is really being recorded:
+
+```bash
+aws xray batch-get-traces --trace-ids 1-xxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx \
+  --region us-east-1 --output json
+```
+
+Trace ids appear on every `REPORT` line in the Lambda log group
+(`XRAY TraceId: 1-...`). Note this needs X-Ray *read* permission, which
+the `marks-scanner` deploy profile deliberately does not have — it can
+configure tracing but not read traces, since reading is a console-and-human
+operation rather than a deploy-time one.
+
+[aws/MONITORING.md](aws/MONITORING.md) has the saved Logs Insights queries
+(success rate, stage timings, which field the model struggles with, cold
+starts, rate limiting) and the retention and cost notes.
+
 ### Tests
 
 ```bash
-cd backend && source venv/bin/activate && pytest   # 259 tests, fully offline
-                                                   # (257 pass, 2 skip without Tesseract)
+cd backend && source venv/bin/activate && pytest   # 264 tests, fully offline
+                                                   # (262 pass, 2 skip without Tesseract)
 cd frontend && npx vitest run                      # 408 tests (npx vitest for watch mode)
 cd frontend && npm run lint                        # oxlint
 cd frontend && npm run build

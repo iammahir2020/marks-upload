@@ -19,6 +19,55 @@ of the sensitive one. See `app/observability.py` for how that is enforced,
 and `tests/test_observability.py` for the test that reads real emitted
 output and fails if a recognised ID appears in it.
 
+## One page instead of four tabs: the dashboard
+
+`./deploy.sh dashboard` (also run by `all`) builds a private CloudWatch
+Dashboard named **marks-scanner** — private meaning AWS Console only, your
+own login, no new URL and no new auth built for it, same as everything
+below:
+
+```
+https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=marks-scanner
+```
+
+It has frontend hits (CloudFront requests), backend hits (API Gateway
+requests), Lambda's own health metrics, and the success-rate query below,
+all on one page. **What it deliberately does NOT have**: an embedded
+X-Ray service map. CloudWatch dashboards have no widget type for one —
+checked against AWS's own Dashboard Body Structure docs, not assumed; the
+valid types are `metric`, `text`, `log`, `alarm`, `explorer`, `chart` and
+nothing else. The dashboard's top widget links straight to the X-Ray
+trace map instead, which is the real node graph — Lambda and its calls to
+S3, live, auto-drawn from actual traces — one click away rather than a
+bookmark you have to remember:
+
+```
+https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#xray:traces
+```
+
+**Why API Gateway never shows up in that graph, and never will**: X-Ray
+tracing is a REST-API-only feature of API Gateway. This project uses an
+HTTP API (`apigatewayv2`), chosen for its lower cost, and HTTP APIs have
+no tracing support at all — confirmed against AWS's own X-Ray docs, which
+only ever document REST APIs, and a still-open CDK issue noting the HTTP
+API construct never got the option the REST one has. So the graph starts
+at Lambda; API Gateway's own request count is the dashboard's job, not
+the graph's. Migrating to a REST API to close that gap was considered and
+set aside — it would touch live, working infrastructure for a monitoring
+nice-to-have, and costs more per request besides.
+
+**What the two numbers actually mean, since they don't move together**:
+CloudFront's count is file-level — loading the app pulls several files at
+once (the bundle, CSS, icons, the service worker), so it's a proxy for
+traffic, not a visitor count. API Gateway's count is request-level, and
+runs roughly DOUBLE your scan count on ordinary use: the review screen
+fires `/api/harvest` automatically on every Confirm, separately from the
+`/api/scan` call the photo already made. The X-Ray graph is what tells
+those two kinds of backend hit apart — a `/api/scan` request never
+touches S3 (recognition runs entirely in-process), so it shows as just
+the Lambda box; a `/api/harvest` request shows Lambda *and* the S3 edge
+lighting up, with its own latency.
+
 ## The deployed stack, and which part to look at
 
 ```

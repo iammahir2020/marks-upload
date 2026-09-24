@@ -53,6 +53,21 @@ class MarksResult(BaseModel):
     # low_confidence_fields already uses — never "serial", which N32
     # addresses separately and is unaffected by this.
     unmatched_fields: list[str] = []
+    # Step 15 — fields where the CNN found a crossed-out glyph ("serial",
+    # "q1".."qN", "total"). Every one is also in low_confidence_fields with
+    # its value left None: a crossed-out cell is never decoded into a stored
+    # value, whatever is left once the struck glyphs are dropped. What IS
+    # left goes in `suggestions` instead, for the instructor to accept or
+    # not. Deliberately separate from unmatched_fields rather than folded
+    # into it: that list's vocabulary and its "no legal value matches"
+    # message are pinned to a different situation. cnn path only.
+    crossed_out_fields: list[str] = []
+    # A one-tap candidate for a field left blank, from either of two
+    # causes: a crossed-out cell (the glyphs left after dropping the struck
+    # ones), or an unmatched mark whose decimal point was lost ("2 5" read
+    # as 2.5 — local.py's _missing_point). Never a key for a field whose
+    # value is set.
+    suggestions: dict[str, str] = {}
 
 
 def legal_values(max_mark: float) -> set[float]:

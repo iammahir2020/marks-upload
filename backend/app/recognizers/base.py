@@ -35,6 +35,12 @@ class IdResult:
     named here so both Recognizer implementations return the same shape."""
     student_id: str
     low_confidence_fields: list[str] = field(default_factory=list)
+    # Step 15 — ["student_id"] when any ID box held a crossed-out glyph
+    # (that position is "?" in student_id). No suggestion is offered for
+    # the ID: the correction is squeezed into the same box or written
+    # outside it, where nothing reads it, and a class list's own
+    # one-candidate match (rosterMatch.ts) already covers a single "?".
+    crossed_out_fields: list[str] = field(default_factory=list)
 
 
 class Recognizer(Protocol):

@@ -60,11 +60,14 @@ describe('Review — legal value check (7.4)', () => {
     const q1 = screen.getByDisplayValue('4');
     fireEvent.change(q1, { target: { value: '5.25' } });
 
-    expect(screen.getByText(/Must be a multiple of 0.5/)).toBeInTheDocument();
+    // The field says one word; the rule is stated once for the card.
+    expect(q1.closest('.field')).toHaveTextContent('Invalid');
+    expect(screen.getByRole('alert')).toHaveTextContent(/steps of 0.5/);
     expect(screen.getByRole('button', { name: /Confirm & next/ })).toBeDisabled();
 
     fireEvent.change(q1, { target: { value: '5' } });
-    expect(screen.queryByText(/Must be a multiple of 0.5/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Invalid')).not.toBeInTheDocument();
+    expect(screen.queryByText(/steps of 0.5/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Confirm & next/ })).not.toBeDisabled();
   });
 });
@@ -191,6 +194,7 @@ describe('Review — harvesting on confirm (step 3r.6c)', () => {
       questions: [4, 3],
       total: 7,
       unmatchedFields: [], // issues.md N31 — okResult carries none
+      crossedOutFields: [], // step 15 — nor any crossed-out field
     });
     expect(confirmed).toEqual({
       studentId: '1912345',
@@ -198,6 +202,7 @@ describe('Review — harvesting on confirm (step 3r.6c)', () => {
       questions: [4, 4],
       total: 7,
       unmatchedFields: [], // meaningless on this side — see api.ts's comment
+      crossedOutFields: [],
     });
 
     vi.unstubAllGlobals();
@@ -487,10 +492,12 @@ describe('Review — an unmatched mark is explained, not just blank (issues.md N
     unmatched_fields: ['q1', 'total'],
   };
 
-  it('shows a specific message on the flagged field instead of an unexplained blank', () => {
+  it('marks each flagged field with a short status and explains once for the card', () => {
     render(<Review result={result} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
 
-    expect(screen.getAllByText(/couldn't match this to a legal value/i)).toHaveLength(2);
+    expect(screen.getAllByText('Unclear')).toHaveLength(2);
+    // One sentence for the whole card, not one per field.
+    expect(screen.getAllByText(/check the highlighted marks against the script/i)).toHaveLength(1);
   });
 
   it('says nothing about a field that is merely blank, not unmatched', () => {
@@ -498,16 +505,16 @@ describe('Review — an unmatched mark is explained, not just blank (issues.md N
     // not flagged at all — the message must not appear for it.
     render(<Review result={result} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
     const q2 = screen.getByDisplayValue('3').closest('.field');
-    expect(q2).not.toHaveTextContent(/couldn't match this to a legal value/i);
+    expect(q2).not.toHaveTextContent('Unclear');
   });
 
   it('clears the message the moment the instructor types anything, whether legal or not', () => {
     render(<Review result={result} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
-    const q1Container = screen.getAllByText(/couldn't match this to a legal value/i)[0].closest('.field')!;
+    const q1Container = screen.getAllByText('Unclear')[0].closest('.field')!;
     const q1Input = q1Container.querySelector('input')!;
 
     fireEvent.change(q1Input, { target: { value: '4' } }); // a real, legal value from the script
-    expect(screen.queryAllByText(/couldn't match this to a legal value/i)).toHaveLength(1); // total's remains
+    expect(screen.queryAllByText('Unclear')).toHaveLength(1); // total's remains
   });
 
   it('never blocks Confirm on its own — only an actual illegal value does', () => {
@@ -539,5 +546,158 @@ describe('Review — section context (step.md 13.13)', () => {
   it('renders nothing extra when no section label is given', () => {
     render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
     expect(document.querySelector('.eyebrow')).not.toBeInTheDocument();
+  });
+});
+
+describe('Review — crossed-out writing (step 15)', () => {
+  // The photo that started this: Q1 had a 6 struck out and 5 written
+  // beside it; the total had nothing legible left once its struck glyph
+  // was dropped.
+  const result: ScanResult = {
+    ...okResult,
+    questions: [
+      { q: 1, value: null },
+      { q: 2, value: 3 },
+    ],
+    total: { q: 0, value: null },
+    low_confidence_fields: ['q1', 'total'],
+    crossed_out_fields: ['q1', 'total'],
+    suggestions: { q1: '5' },
+  };
+
+  function renderIt(r: ScanResult = result) {
+    return render(
+      <Review result={r} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />,
+    );
+  }
+
+  it('leaves the field blank and says why, rather than filling in the suggestion', () => {
+    renderIt();
+    const q1 = screen.getByRole('button', { name: 'Use 5' }).closest('.field')!;
+    expect(q1.querySelector('input')!).toHaveValue('');
+    expect(screen.getAllByText('Crossed out')).toHaveLength(2);
+  });
+
+  it('fills the field only when the instructor taps Use', () => {
+    renderIt();
+    const use = screen.getByRole('button', { name: 'Use 5' });
+    const q1Input = use.closest('.field')!.querySelector('input')!;
+    fireEvent.click(use);
+    expect(q1Input).toHaveValue('5');
+    // The note belongs to a blank field; once filled, it goes.
+    expect(screen.getAllByText('Crossed out')).toHaveLength(1);
+  });
+
+  it('offers no button when nothing legible was left', () => {
+    renderIt();
+    expect(screen.getAllByRole('button', { name: /^Use / })).toHaveLength(1);
+  });
+
+  it('says nothing on a field that was not crossed out', () => {
+    renderIt();
+    expect(screen.getByDisplayValue('3').closest('.field')).not.toHaveTextContent(/crossed out/i);
+  });
+
+  it('offers a crossed-out serial the same way', () => {
+    renderIt({ ...okResult, serial: null, crossed_out_fields: ['serial'], suggestions: { serial: '12' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Use 12' }));
+    expect(screen.getByDisplayValue('12')).toBeInTheDocument();
+  });
+
+  it('points at the script for a crossed-out ID digit, with no suggestion', () => {
+    renderIt({ ...okResult, student_id: '19?2345', crossed_out_fields: ['student_id'] });
+    expect(screen.getByText(/a digit was crossed out/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Use / })).toBeNull();
+  });
+
+  it('sends the crossed-out fields with the original values, so harvest refuses those crops', async () => {
+    const blob = new Blob(['fake image bytes']);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      if (typeof input === 'string' && input === 'blob:fake-preview') {
+        return { blob: async () => blob } as Response;
+      }
+      return { ok: true, json: async () => ({ harvested: true }) } as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const onSaved = vi.fn();
+    render(
+      <Review
+        result={result}
+        config={config}
+        assessmentId="test-assessment"
+        imagePreviewUrl="blob:fake-preview"
+        onRetake={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Use 5' }));
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(fetchMock.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes('/api/harvest'))).toBe(true),
+    );
+
+    const call = fetchMock.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('/api/harvest'));
+    const form = call?.[1]?.body as FormData;
+    expect(JSON.parse(form.get('original') as string).crossedOutFields).toEqual(['q1', 'total']);
+    expect(JSON.parse(form.get('confirmed') as string).crossedOutFields).toEqual([]);
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('Review — field status overhaul (2026-09-24)', () => {
+  it('offers a lost-decimal-point reading on an unclear mark, filling it only on Use', () => {
+    const result: ScanResult = {
+      ...okResult,
+      questions: [
+        { q: 1, value: null },
+        { q: 2, value: 3 },
+      ],
+      total: { q: 0, value: null },
+      low_confidence_fields: ['q1', 'total'],
+      unmatched_fields: ['q1', 'total'],
+      suggestions: { q1: '2.5' },
+    };
+    render(<Review result={result} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+
+    const use = screen.getByRole('button', { name: 'Use 2.5' });
+    const q1Input = use.closest('.field')!.querySelector('input')!;
+    expect(q1Input).toHaveValue('');
+    expect(screen.getByText(/or tap Use to accept a reading/i)).toBeInTheDocument();
+
+    fireEvent.click(use);
+    expect(q1Input).toHaveValue('2.5');
+    expect(screen.getAllByText('Unclear')).toHaveLength(1); // only the total's remains
+  });
+
+  it('calls a crossed-out field crossed out, not unclear, when both apply', () => {
+    const result: ScanResult = {
+      ...okResult,
+      questions: [
+        { q: 1, value: null },
+        { q: 2, value: 3 },
+      ],
+      low_confidence_fields: ['q1'],
+      unmatched_fields: ['q1'],
+      crossed_out_fields: ['q1'],
+    };
+    render(<Review result={result} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByText('Crossed out')).toBeInTheDocument();
+    expect(screen.queryByText('Unclear')).not.toBeInTheDocument();
+  });
+
+  it('marks an illegal Total as Invalid, with the rule stated once', () => {
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByDisplayValue('7'), { target: { value: '11' } });
+    expect(screen.getByText('Invalid')).toBeInTheDocument();
+    expect(screen.getAllByText(/steps of 0.5/)).toHaveLength(1);
+  });
+
+  it('shows no card note at all on a clean scan', () => {
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.queryByText(/check the highlighted marks/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/steps of 0.5/)).not.toBeInTheDocument();
   });
 });

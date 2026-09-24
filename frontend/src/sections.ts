@@ -183,15 +183,20 @@ export function otherSemesters(sections: Section[], currentSemester: string): st
   return [...new Set(sections.map((s) => s.semester))].filter((s) => s !== currentSemester);
 }
 
-// An assessment blocks a delete only when it would actually cost real,
-// unrecovered student data — never exported AND holding at least one
-// record. Deliberately narrower than "exportedAt === null" alone: a
-// brand-new assessment created by mistake is ALSO never exported, and
-// blocking on that would make it impossible to ever delete the exact
-// thing this whole family of delete flows exists to let go of. There is
-// nothing to lose deleting an empty one; the guard is for work, not for
-// paperwork.
-function isBlocking(assessment: Assessment, recordCounts: Record<string, number>): boolean {
+// True when deleting this assessment would cost real, unrecovered student
+// data — never exported AND holding at least one record. Deliberately
+// narrower than "exportedAt === null" alone (issues.md N36): a brand-new
+// assessment created by mistake is ALSO never exported, and there is
+// nothing to lose deleting an empty one.
+//
+// What callers DO with it differs, on purpose. The semester purge blocks
+// on it outright: that is offered unprompted and takes every section at
+// once. Deleting one section or one quiz only WARNS (step 15 follow-up,
+// 2026-09-24, at the user's request): it is a deliberate act on a named
+// item, already behind a typed-name confirm, and the block made a
+// deliberate delete of scanned-but-unwanted work impossible without a
+// pointless export first.
+function hasUnexportedWork(assessment: Assessment, recordCounts: Record<string, number>): boolean {
   return assessment.exportedAt === null && (recordCounts[assessment.id] ?? 0) > 0;
 }
 
@@ -222,7 +227,7 @@ export function purgePreview(
   const semesterAssessments = assessments.filter((a) => sectionIds.has(a.sectionId));
   const recordCount = semesterAssessments.reduce((sum, a) => sum + (recordCounts[a.id] ?? 0), 0);
   const blockedBy = semesterAssessments
-    .filter((a) => isBlocking(a, recordCounts))
+    .filter((a) => hasUnexportedWork(a, recordCounts))
     .map((a) => ({ section: semesterSections.find((s) => s.id === a.sectionId)!, assessment: a }));
 
   return {
@@ -238,18 +243,16 @@ export interface SectionDeletePreview {
   section: Section;
   assessmentCount: number;
   recordCount: number;
-  // Same guard as PurgePreview.blockedBy, scoped to one section instead
-  // of a whole semester — deleting unrecovered work silently is the one
-  // outcome neither delete path may ever produce.
-  blockedBy: Assessment[];
+  // Assessments whose records were never exported. Shown as a WARNING in
+  // the confirm, not a block (see hasUnexportedWork) — deleting
+  // unrecovered work *silently* is the outcome this still prevents.
+  unexported: Assessment[];
 }
 
 // The single-section counterpart to purgePreview, for "delete this one
 // section" (a mis-created section, or one no longer needed) rather than
-// "purge a whole semester." Deliberately reuses the same
-// unexported-work guard: a section deleted by mistake is exactly as
-// unrecoverable as a purged semester, and there's no reason this path
-// should be less careful than that one just because it deletes less.
+// "purge a whole semester." Reuses the same unexported-work check, but to
+// warn rather than block — see hasUnexportedWork.
 export function sectionDeletePreview(
   section: Section,
   assessments: Assessment[],
@@ -257,24 +260,22 @@ export function sectionDeletePreview(
 ): SectionDeletePreview {
   const sectionAssessments = assessments.filter((a) => a.sectionId === section.id);
   const recordCount = sectionAssessments.reduce((sum, a) => sum + (recordCounts[a.id] ?? 0), 0);
-  const blockedBy = sectionAssessments.filter((a) => isBlocking(a, recordCounts));
+  const unexported = sectionAssessments.filter((a) => hasUnexportedWork(a, recordCounts));
 
   return {
     section,
     assessmentCount: sectionAssessments.length,
     recordCount,
-    blockedBy,
+    unexported,
   };
 }
 
 export interface AssessmentDeletePreview {
   assessment: Assessment;
   recordCount: number;
-  // Same guard, narrowed one level further — one quiz instead of one
-  // section. True exactly when this assessment holds real, unexported
-  // records; false for the common "created it by mistake, no scans yet"
-  // case this feature exists for.
-  blocked: boolean;
+  // True exactly when this assessment holds real, unexported records —
+  // a warning in the confirm, never a block (see hasUnexportedWork).
+  unexported: boolean;
 }
 
 // The single-assessment counterpart to sectionDeletePreview, for "delete
@@ -290,6 +291,6 @@ export function assessmentDeletePreview(
   return {
     assessment,
     recordCount,
-    blocked: isBlocking(assessment, recordCounts),
+    unexported: hasUnexportedWork(assessment, recordCounts),
   };
 }

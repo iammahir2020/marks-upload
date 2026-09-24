@@ -58,6 +58,60 @@ function marksFromResult(config: QuizConfig, result: ScanResult): Record<number,
   return map;
 }
 
+// What one field needs to tell the instructor, if anything. A mark field is
+// 4.5rem wide, so this is a word or two, never a sentence: the sentence is
+// said once for the whole card (see the notes above the marks grid).
+type FieldStatus =
+  | { tone: 'danger'; label: 'Invalid' }
+  | { tone: 'warning'; label: 'Unclear' | 'Crossed out'; suggestion?: string }
+  | null;
+
+// Precedence: something the instructor typed that can't be saved beats
+// anything the scan said. A scan note only shows while the field is still
+// blank (issues.md N33's rule) — once a value is typed, that value is the
+// answer and the note has done its job.
+function fieldStatus(
+  key: string,
+  value: string,
+  error: string | null,
+  unmatched: Set<string>,
+  crossedOut: Set<string>,
+  suggestions: Record<string, string>,
+): FieldStatus {
+  if (error) return { tone: 'danger', label: 'Invalid' };
+  if (value) return null;
+  // Step 15 — crossed out is the more specific reason, so it wins.
+  if (crossedOut.has(key)) return { tone: 'warning', label: 'Crossed out', suggestion: suggestions[key] };
+  if (unmatched.has(key)) return { tone: 'warning', label: 'Unclear', suggestion: suggestions[key] };
+  return null;
+}
+
+// The status word, plus a one-tap Use when the scan has a candidate
+// reading. The field itself stays empty until Use is tapped: a suggestion
+// is never a value filled in on the instructor's behalf.
+function FieldStatusView({
+  status,
+  onUse,
+  inline = false,
+}: {
+  status: FieldStatus;
+  onUse: (value: string) => void;
+  inline?: boolean;
+}) {
+  if (!status) return null;
+  const suggestion = status.tone === 'warning' ? status.suggestion : undefined;
+  return (
+    <span className={`field-status${inline ? ' field-status-inline' : ''}`}>
+      <span className={`field-status-label tone-${status.tone}`}>{status.label}</span>
+      {suggestion !== undefined && (
+        <button type="button" className="btn btn-secondary btn-use" onClick={() => onUse(suggestion)}>
+          Use {suggestion}
+        </button>
+      )}
+    </span>
+  );
+}
+
 export default function Review({
   result,
   config,
@@ -86,6 +140,11 @@ export default function Review({
   // workaround value (which N31 fixes on the harvesting side; this is
   // the other half — telling them why, so they don't need to guess).
   const unmatched = useMemo(() => new Set(result.unmatched_fields), [result]);
+  // Step 15 — the student struck something out in these fields. The value
+  // was left blank on purpose; `suggestions` holds what the rest of the
+  // cell reads as, applied only by an explicit tap, never pre-filled.
+  const crossedOut = useMemo(() => new Set(result.crossed_out_fields ?? []), [result]);
+  const suggestions = result.suggestions ?? {};
 
   // Step.md 12.10 — recomputed on every render from the live field value,
   // the same "derive, don't store" discipline the sum check already
@@ -115,6 +174,20 @@ export default function Review({
   );
 
   const hasMarkErrors = Object.keys(markErrors).length > 0 || totalError !== null;
+
+  const questionStatus: Record<number, FieldStatus> = {};
+  for (const qc of config.questions) {
+    questionStatus[qc.q] = fieldStatus(
+      `q${qc.q}`, marks[qc.q] ?? '', markErrors[qc.q] ?? null, unmatched, crossedOut, suggestions,
+    );
+  }
+  const totalStatus = fieldStatus('total', totalStr, totalError, unmatched, crossedOut, suggestions);
+  const markStatuses = [...Object.values(questionStatus), totalStatus];
+  // One explanation per card, not per field — the 4.5rem fields only have
+  // room for the status word.
+  const anyInvalid = markStatuses.some((s) => s?.tone === 'danger');
+  const anyUnread = markStatuses.some((s) => s?.tone === 'warning');
+  const anySuggestion = markStatuses.some((s) => s?.tone === 'warning' && s.suggestion !== undefined);
 
   const questionValues = config.questions.map((qc) => ({
     q: qc.q,
@@ -158,6 +231,9 @@ export default function Review({
         // issues.md N31 — the backend refuses to harvest any of these
         // regardless of what commitSave's confirmed values below say.
         unmatchedFields: result.unmatched_fields,
+        // Step 15 — likewise refused: the crop still holds the struck-out
+        // answer, whatever the confirmed value below is.
+        crossedOutFields: result.crossed_out_fields ?? [],
       };
       const confirmed: HarvestFields = {
         studentId: candidate.studentId,
@@ -165,6 +241,7 @@ export default function Review({
         questions: questionValues.map((qv) => qv.value),
         total,
         unmatchedFields: [], // meaningless on this side — see api.ts's comment
+        crossedOutFields: [],
       };
       fetch(imagePreviewUrl)
         .then((r) => r.blob())
@@ -322,6 +399,12 @@ export default function Review({
               )}
             </div>
           )}
+          {/* Step 15 — no suggestion for the ID: the correction goes in the
+              same box or outside it, where nothing reads it. A class list's
+              own one-candidate match above covers a single "?". */}
+          {crossedOut.has('student_id') && studentId.includes('?') && (
+            <span className="field-status-label tone-warning">A digit was crossed out — check the script</span>
+          )}
         </label>
         <label className="field identity-field">
           <span className="field-label">Serial</span>
@@ -330,6 +413,11 @@ export default function Review({
             value={serial}
             onChange={(e) => editIdentity(setSerial, e.target.value)}
             inputMode="numeric"
+          />
+          <FieldStatusView
+            status={fieldStatus('serial', serial, null, new Set(), crossedOut, suggestions)}
+            onUse={(v) => editIdentity(setSerial, v)}
+            inline
           />
         </label>
       </div>
@@ -350,7 +438,23 @@ export default function Review({
           />
         )}
         <div className="card" style={{ flex: 1, padding: 14 }}>
-          <div className="row" style={{ flexWrap: 'wrap', rowGap: 14 }}>
+          {/* The explanation, said once. Each field below carries only a
+              status word; this is where the instructor learns what the
+              words mean and what to do about them. */}
+          {anyInvalid && (
+            <p role="alert" className="review-note tone-danger">
+              Marks go from 0 up to the max shown, in steps of 0.5.
+            </p>
+          )}
+          {anyUnread && (
+            <p className="review-note tone-warning">
+              Check the highlighted marks against the script{anySuggestion ? ', or tap Use to accept a reading' : ''}.
+            </p>
+          )}
+          {/* flex-start, not the row's default centring: a field with a
+              status line under it is taller than one without, and centring
+              pushed their inputs out of line with each other. */}
+          <div className="row" style={{ flexWrap: 'wrap', rowGap: 14, alignItems: 'flex-start' }}>
             {config.questions.map((qc) => (
               <div key={qc.q} className="field" style={{ width: '4.5rem' }}>
                 <span className="field-hint">
@@ -362,19 +466,13 @@ export default function Review({
                   onChange={(e) => setMarks((m) => ({ ...m, [qc.q]: e.target.value }))}
                   style={{ height: 40, padding: '6px 8px', textAlign: 'center' }}
                   inputMode="decimal"
+                  aria-label={`Q${qc.q}, out of ${qc.max}`}
+                  aria-invalid={markErrors[qc.q] ? true : undefined}
                 />
-                {markErrors[qc.q] && (
-                  <span role="alert" className="error-text">
-                    {markErrors[qc.q]}
-                  </span>
-                )}
-                {/* issues.md N33 — only shown while the field is still
-                    blank; the instant the instructor types anything,
-                    markErrors (or a plain confirmed value) takes over,
-                    same as every other flagged field on this screen. */}
-                {!markErrors[qc.q] && !marks[qc.q] && unmatched.has(`q${qc.q}`) && (
-                  <span className="warning-text">Couldn't match this to a legal value — check the script.</span>
-                )}
+                <FieldStatusView
+                  status={questionStatus[qc.q]}
+                  onUse={(v) => setMarks((m) => ({ ...m, [qc.q]: v }))}
+                />
               </div>
             ))}
             <div className="field" style={{ width: '4.5rem' }}>
@@ -387,15 +485,10 @@ export default function Review({
                 onChange={(e) => setTotalStr(e.target.value)}
                 style={{ height: 40, padding: '6px 8px', textAlign: 'center' }}
                 inputMode="decimal"
+                aria-label={`Total, out of ${config.totalMax}`}
+                aria-invalid={totalError ? true : undefined}
               />
-              {totalError && (
-                <span role="alert" className="error-text">
-                  {totalError}
-                </span>
-              )}
-              {!totalError && !totalStr && unmatched.has('total') && (
-                <span className="warning-text">Couldn't match this to a legal value — check the script.</span>
-              )}
+              <FieldStatusView status={totalStatus} onUse={setTotalStr} />
             </div>
           </div>
 
