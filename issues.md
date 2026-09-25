@@ -173,7 +173,9 @@ Two halves, because they have different lifetimes:
 
 **Deployed and verified live 2026-09-25**: all six headers present on the
 site and on `/api/*` (`curl -I`), and `node e2e-prod/live-check.mjs` loads
-the live site in a real browser with zero CSP violations.
+the live site in a real browser with zero CSP violations. That check is now
+the last step of `./deploy.sh frontend` and `all` (`verify_live_site`), so
+every future deploy repeats it and fails loudly if the live page breaks.
 
 Verified in a real browser against the production build
 (`npm run test:e2e:prod`): the landing page, service worker, camera,

@@ -11,8 +11,8 @@
 # in a real account and costs real (if tiny) money — invoke it deliberately.
 #
 #   ./deploy.sh backend     # ECR build+push, Lambda, API Gateway
-#   ./deploy.sh frontend    # Vite build, S3 sync, CloudFront invalidate
-#   ./deploy.sh all
+#   ./deploy.sh frontend    # Vite build, S3 sync, CloudFront invalidate, live check
+#   ./deploy.sh all         # every step, ending with the live browser check
 #
 # Prerequisites, none of which this script will do for you:
 #   - 11.6.0's billing decision (Paid plan + budget alarm) already made
@@ -433,9 +433,13 @@ deploy_frontend() {
     DISTRIBUTION_ID="$(find_distribution)"
   fi
   if [ -n "$DISTRIBUTION_ID" ]; then
-    aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" \
-      --paths "/index.html" "/sw.js" "/registerSW.js" >/dev/null
-    echo "    invalidated $DISTRIBUTION_ID"
+    local invalidation
+    invalidation="$(aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" \
+      --paths "/index.html" "/sw.js" "/registerSW.js" --query 'Invalidation.Id' --output text)"
+    echo "    invalidated $DISTRIBUTION_ID ($invalidation); waiting for it to complete"
+    # Waited for, not fired and forgotten: verify_live_site below must test
+    # the page this deploy just uploaded, not a copy still cached at the edge.
+    aws cloudfront wait invalidation-completed --distribution-id "$DISTRIBUTION_ID" --id "$invalidation"
   else
     echo "    no distribution yet — run './deploy.sh cdn' first"
   fi
@@ -708,6 +712,27 @@ apply_allowed_origins() {
   aws lambda wait function-updated-v2 --function-name "$FUNCTION" --region "$REGION"
 }
 
+# --- Live check (issues.md N43) --------------------------------------------
+#
+# The last step of every deploy that touches the frontend, run by this script
+# rather than remembered by a person: loads the LIVE site in a real browser
+# (frontend/e2e-prod/live-check.mjs) and fails the deploy if the served page
+# lacks its Content-Security-Policy or the browser blocks anything the app
+# does on the way from the landing page into the app. Sends no scans.
+# Needs Playwright's Chromium, as `npm run test:e2e` already does.
+verify_live_site() {
+  say "Live check in a real browser (N43)"
+  local dist domain
+  dist="${DISTRIBUTION_ID:-$(find_distribution)}"
+  domain="$(aws cloudfront get-distribution --id "$dist" --query 'Distribution.DomainName' --output text)"
+  if ! ( cd "$HERE/frontend" && node e2e-prod/live-check.mjs "https://$domain/" ); then
+    echo "    ✗ LIVE CHECK FAILED for https://$domain/ — the deploy went out, but the site" >&2
+    echo "      is not right. If Chromium is missing: cd frontend && npx playwright install chromium" >&2
+    exit 1
+  fi
+  echo "    ✓ https://$domain/ serves its CSP and runs with zero violations"
+}
+
 # --- Monitoring (step 11.8) -------------------------------------------------
 
 # One CloudWatch Dashboard, private (AWS Console only — no public URL, no
@@ -814,8 +839,8 @@ JSON
 case "${1:-all}" in
   backend)   deploy_backend ;;
   cdn)       deploy_cdn ;;
-  frontend)  deploy_frontend ;;
+  frontend)  deploy_frontend; verify_live_site ;;
   dashboard) deploy_dashboard ;;
-  all)       deploy_backend; deploy_cdn; apply_allowed_origins; deploy_frontend; deploy_dashboard ;;
+  all)       deploy_backend; deploy_cdn; apply_allowed_origins; deploy_frontend; deploy_dashboard; verify_live_site ;;
   *) echo "usage: $0 [backend|cdn|frontend|dashboard|all]" >&2; exit 2 ;;
 esac

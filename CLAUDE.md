@@ -1162,7 +1162,8 @@ python generate_collection_sheet.py --out ../collection_sheet.docx
 # backend edit does nothing until `backend` rebuilds and pushes the image.
 export AWS_PROFILE=marks-scanner
 ./deploy.sh backend      # backend/ changed
-./deploy.sh frontend     # frontend/ changed (builds, syncs S3, invalidates CDN)
+./deploy.sh frontend     # frontend/ changed (builds, syncs S3, invalidates CDN,
+                         # waits for it, then the live browser check)
 ./deploy.sh all          # both + the distribution
 
 # Pull harvested crops into ONE training set, from whichever of the three
@@ -1223,8 +1224,11 @@ cd frontend && npm run test:e2e
 # with `vite preview`, and fails on any Content-Security-Policy violation
 # across the landing page, camera, Confirm, Results and Excel export.
 cd frontend && npm run test:e2e:prod
-# After a deploy: the LIVE site in a real browser — CSP <meta> present,
-# landing -> app -> service worker with zero CSP violations. Sends no scans.
+# The LIVE site in a real browser — CSP <meta> present, landing -> app ->
+# service worker with zero CSP violations. Sends no scans. deploy.sh RUNS
+# THIS ITSELF as the last step of `frontend` and `all` (verify_live_site,
+# after waiting for the CloudFront invalidation) and fails the deploy if it
+# fails; run it by hand only to re-check without deploying.
 cd frontend && node e2e-prod/live-check.mjs
 ```
 
