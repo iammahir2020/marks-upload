@@ -153,7 +153,8 @@ fact stated twice.
   the retention section above.
 - **It CAN read the crops bucket** (`s3:GetObject`), which is a deliberate
   convenience rather than an oversight: it lets
-  `AWS_PROFILE=marks-scanner ./fetch-crops.sh s3 <bucket>` pull training
+  `AWS_PROFILE=marks-scanner ./fetch-crops.sh s3 <bucket>` (and
+  `review <bucket>` for the hosted site's `unverified/` crops) pull training
   data without reaching for admin credentials. The trade is that this key
   can download every collected crop. That is student handwriting, so if you
   would rather it couldn't, drop `s3:GetObject` and `s3:DeleteObject` from

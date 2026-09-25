@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build && node scripts/prerender-landing.mjs",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:prod": "playwright test --config playwright.prod.config.ts"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

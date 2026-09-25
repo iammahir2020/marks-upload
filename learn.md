@@ -8893,3 +8893,99 @@ crop's fixed timestamp (the one that stops a student's digits being put
 back in order by date). A run with nothing left to fold says nothing. The
 two local folders were folded once: 105 and 408 crops moved, totals
 unchanged.
+
+### Crops from the hosted site are held apart (issues.md N40, N45)
+
+When you tap Confirm, the app sends the photo and the values you confirmed
+to `/api/harvest`, and the backend saves each cell labelled with that value.
+On the laptop, only you can send those requests. On the hosted site, anyone
+with the URL can send one straight to the server, with any picture and any
+labels they like. A crop labelled "7" that actually shows a "3" would
+quietly teach a future model the wrong thing, and nothing would tell it
+apart from a real one.
+
+So the hosted site now files its crops under **`unverified/`** in the S3
+bucket instead of `harvested/`. It's the same layout, one folder per
+browser (source), just in a place no training step reads. When you want
+them:
+
+```bash
+# Download them into a separate folder, with a count per source:
+AWS_PROFILE=marks-scanner ./fetch-crops.sh review marks-scanner-crops-105322541848
+
+# Look through backend/training_data/unverified/<source-id>/. Each filename
+# starts with its label, so "7_ab12....png" should show a 7. Then:
+./fetch-crops.sh promote <source-id>
+```
+
+`promote` copies one source into the training set, and only that one, so a
+browser whose crops look wrong can simply be left out. It refuses anything
+that isn't a plain source id (a name like `../etc` is rejected), and it
+keeps each crop's fixed timestamp.
+
+Separately, the Library screen has a **"Share anonymised cells to help
+improve recognition"** switch, on by default. Turned off, Confirm sends
+nothing to `/api/harvest` at all. The choice is saved on the device and
+survives "Reset everything", so clearing marks can't quietly turn sharing
+back on.
+
+### Security headers (issues.md N43)
+
+Security headers are instructions a site gives the browser about itself:
+"only ever reach me over HTTPS", "don't let another site put me inside a
+frame", "only run scripts that came from me". The app sent none.
+
+They now come in two halves:
+
+- **Which scripts and styles may run** goes inside the page, as a `<meta>`
+  tag written at build time by
+  [`frontend/scripts/csp.mjs`](frontend/scripts/csp.mjs). The landing page
+  has one small inline script and one inline stylesheet, and the policy
+  names exactly those two by their SHA-256 fingerprint, so anything else
+  inline would be refused. Because the fingerprints are written into the
+  same file they describe, they can't get out of date: change the landing
+  CSS and the next build writes a new fingerprint with it. `blob:` is
+  allowed for the two things that use it: the photo preview, and Confirm
+  re-reading that photo to send it for harvesting.
+- **Everything a `<meta>` can't do** comes from CloudFront as real headers
+  ([`aws/headers_policy.py`](aws/headers_policy.py)):
+  - HTTPS only
+  - never inside another site's frame (so no one can overlay invisible
+    buttons on the app)
+  - no guessing file types
+  - the camera allowed for this site only
+
+The proof is a browser test against the real production build
+(`npm run test:e2e:prod`). It opens the landing page, lets the offline cache
+register, scans with a fake camera, confirms, opens Results and downloads
+the Excel file, and fails if the browser reports a single blocked thing.
+To check that it can fail, `blob:` was removed from the policy once: the
+Confirm step was blocked and the test went red.
+
+One trap for later: a `style="..."` attribute added to the landing page's
+markup would be blocked in production but work fine in `npm run dev`, which
+has no policy. `npm run test:e2e:prod` is what catches it.
+
+### The laptop is private unless you ask (issues.md N44)
+
+For the phone to reach the laptop, the laptop's two servers used to listen
+on the whole Wi-Fi network, every time. On campus Wi-Fi that's everyone on
+campus: anyone could send the laptop scans, write crops with any labels
+into its trusted `harvested/` folder, or poke at the Vite dev server.
+
+You grade on the deployed site, and use the laptop with the phone only to
+test. So the default flipped:
+
+```bash
+./dev.sh            # this machine only — the phone can't connect
+./dev.sh --lan      # a phone testing session: the whole network, until Ctrl+C
+```
+
+(`.\dev.ps1` and `.\dev.ps1 -Lan` on Windows.)
+
+A `--lan` session also sends its crops to `training_data/unverified/`, like
+the hosted site's, so test scans never feed the training set by accident.
+Checked by running both scripts and asking Windows what each server was
+listening on: `127.0.0.1` by default, every interface with `-Lan`. A test
+harvest during a `-Lan` session landed 14 crops in `unverified/` and none in
+`harvested/`.

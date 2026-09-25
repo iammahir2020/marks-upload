@@ -43,6 +43,15 @@
 # then on every reload worker it spawns is born into the job, so the pass
 # never has to repeat. Verified twice by hard-killing this script and
 # confirming both ports come back bindable.
+# issues.md N44 — by default both servers listen on THIS machine only.
+# To test with the phone, start a LAN session explicitly:
+#   .\dev.ps1 -Lan
+# That binds both servers to every interface (on campus Wi-Fi that is
+# everyone on it), and sends harvested crops to training_data\unverified\
+# instead of the trusted harvested\ — review/promote them with
+# fetch-crops.sh like the hosted site's.
+param([switch]$Lan)
+
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 
@@ -140,6 +149,20 @@ if ($job -eq [IntPtr]::Zero) {
     Write-Warning 'Could not create a Job object; servers may outlive this script if it is killed rather than stopped.'
 }
 
+$backendHost = '127.0.0.1'
+if ($Lan) {
+    $backendHost = '0.0.0.0'
+    $env:MARKS_LAN = '1'
+    $unverified = Join-Path $PSScriptRoot 'backend\training_data\unverified'
+    New-Item -ItemType Directory -Force -Path $unverified | Out-Null
+    $env:HARVEST_DIR = $unverified
+    Write-Host 'LAN session: reachable by every device on this network until Ctrl+C.'
+    Write-Host 'Crops from it go to backend\training_data\unverified\ (review, then promote).'
+} else {
+    Remove-Item Env:MARKS_LAN -ErrorAction SilentlyContinue
+    Write-Host 'Local only (this machine). For the phone: .\dev.ps1 -Lan'
+}
+
 $procs = @()
 try {
     # -NoNewWindow keeps both children attached to THIS console, which is
@@ -148,7 +171,7 @@ try {
     $procs += Start-Process -FilePath $venvPython -NoNewWindow -PassThru `
         -WorkingDirectory (Join-Path $PSScriptRoot 'backend') `
         -ArgumentList @(
-            '-m', 'uvicorn', 'app.main:app', '--reload', '--host', '0.0.0.0',
+            '-m', 'uvicorn', 'app.main:app', '--reload', '--host', $backendHost,
             '--ssl-keyfile', 'certs/key.pem', '--ssl-certfile', 'certs/cert.pem'
         )
 

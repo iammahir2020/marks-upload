@@ -321,7 +321,9 @@ marks-upload/
 │                            # CloudWatch queries, the dashboard and the
 │                            # X-Ray trace map for a live session
 ├── fetch-crops.sh           # Pulls harvested crops (disk/MinIO/S3) into one
-│                            # training set and reports its class balance
+│                            # training set and reports its class balance;
+│                            # `review`/`promote` for the hosted site's
+│                            # unverified/ crops
 │
 ├── backend/
 │   ├── app/
@@ -403,7 +405,8 @@ marks-upload/
 
 Gitignored and not in the repo: `venv/`, `node_modules/`, `.env`,
 `certs/`, `debug/`, `comparison_log/`,
-`backend/training_data/harvested/`, the EMNIST download, and
+`backend/training_data/harvested/`, `backend/training_data/all/`,
+`backend/training_data/unverified/`, the EMNIST download, and
 `synthetic_scripts/fonts/`.
 
 ## Stack
@@ -513,9 +516,25 @@ needs the fresh terminal.
 .\dev.ps1         # Windows
 ```
 
-Starts the backend (HTTPS, bound to all interfaces) and the Vite dev
-server together, generating the backend cert first if it's missing. Ctrl+C
-stops both.
+Starts the backend (HTTPS) and the Vite dev server together, generating
+the backend cert first if it's missing. Ctrl+C stops both.
+
+**By default both listen on this machine only** (issues.md N44). On campus
+Wi-Fi "the network" is everyone on it, and grading happens on the deployed
+site anyway. To test with the phone, start a LAN session explicitly:
+
+```bash
+./dev.sh --lan         # Linux / macOS
+```
+
+```powershell
+.\dev.ps1 -Lan         # Windows
+```
+
+In a LAN session both servers accept connections from the whole network
+until Ctrl+C, and harvested crops go to `backend/training_data/unverified/`
+rather than the trusted `harvested/`, so testing never feeds the training
+set; `./fetch-crops.sh promote <source-id>` if you want any of them.
 
 The two scripts do the same job by different means, because process groups
 are a POSIX idea: `dev.sh` broadcasts with `kill 0`, while `dev.ps1` relies
@@ -535,7 +554,8 @@ Get-NetTCPConnection -State Listen -LocalPort 8000,5173 |
   ForEach-Object { taskkill /PID $_.OwningProcess /T /F }
 ```
 
-**Then open the frontend's HTTPS URL on the phone**, on the same network.
+**Then open the frontend's HTTPS URL on the phone**, on the same network
+(a `--lan` / `-Lan` session — without it the phone can't connect).
 `dev.sh` and `dev.ps1` both print the LAN IP on startup. Visit the **API**
 first and accept its certificate there:
 
@@ -582,10 +602,12 @@ To run the servers separately:
 # plain-HTTP endpoint over the LAN (mixed content), and the phone reaches
 # the backend by LAN IP, not localhost.
 cd backend && source venv/bin/activate
+# --host 0.0.0.0 makes it reachable by the phone — and by everyone else on
+# the network (issues.md N44); use 127.0.0.1 when the phone isn't needed.
 uvicorn app.main:app --reload --host 0.0.0.0 \
   --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
 
-# Frontend — HTTPS and LAN binding are already on via vite.config.ts
+# Frontend — HTTPS is on via vite.config.ts; add MARKS_LAN=1 for the phone
 cd frontend && npm run dev
 ```
 
@@ -694,7 +716,30 @@ d6ca05c6-519d-4fe4-833b-184e3051a3b4         34   # one phone
 30770caf-442c-4a04-87d0-87f673f17f98         28   # another
 ```
 
-Everything lands in `backend/training_data/all/` (gitignored), laid out as
+**Crops from the hosted site are held apart** (issues.md N40). Anyone
+with the site's URL can post any image with any labels to `/api/harvest`,
+so the deployed Lambda writes to the bucket's `unverified/` prefix, not
+`harvested/`, and none of the commands above download it. To use them:
+
+```bash
+# 1. Download into backend/training_data/unverified/ — a separate,
+#    gitignored folder that training never reads — with a per-source summary.
+AWS_PROFILE=marks-scanner \
+  ./fetch-crops.sh review marks-scanner-crops-105322541848
+
+# 2. Open a source's folders and check each image matches the value in its
+#    filename. Then copy that one source into the training set:
+./fetch-crops.sh promote <source-id>
+```
+
+A source is one browser (one faculty member's phone or laptop), so a bad
+one can be left out whole. Your own sessions on the hosted site land in
+`unverified/` too, under your own source id; the laptop always writes
+straight to its trusted `harvested/`. Crops harvested before 2026-09-25
+are already in `harvested/` and stay there.
+
+Everything that is promoted or merged lands in `backend/training_data/all/`
+(gitignored), laid out as
 
 ```
 <source-id>/<field>/<confirmed|corrected>/<value>_<uuid>.png

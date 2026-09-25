@@ -28,6 +28,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { build } from 'vite';
 import { buildBootstrapScript, injectLandingShell } from './landing-shell.mjs';
+import { addCspMeta } from './csp.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 // Reuses Vite's own conventional SSR output name — already gitignored
@@ -78,7 +79,9 @@ async function main() {
     throw new Error(`prerender-landing: injection into ${distDir}/index.html failed`);
   }
 
-  await writeFile(distIndexPath, html, 'utf8');
+  // issues.md N43 — last, so the hashes cover the final inline script and
+  // styles exactly as shipped (scripts/csp.mjs).
+  await writeFile(distIndexPath, addCspMeta(html), 'utf8');
   await rm(ssrOutDir, { recursive: true, force: true });
 
   const { gzipSync } = await import('node:zlib');

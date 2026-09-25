@@ -525,6 +525,55 @@ grant_cdn_access() { # grant_cdn_access <distribution-arn>
 
 }
 
+# --- Security headers (issues.md N43) --------------------------------------
+#
+# One CloudFront response headers policy, created or brought up to date on
+# every deploy, with its values defined in aws/headers_policy.py. Needs four
+# cloudfront:*ResponseHeadersPolic* grants (aws/deploy-policy.json, added
+# 2026-09-25); without them this reports and the deploy carries on. The
+# page's own script/style CSP ships inside index.html and needs nothing here.
+SECURITY_HEADERS_ID=""
+ensure_security_headers() {
+  local name existing etag tmp err
+  name="$($PY_CMD -c 'import sys; sys.path.insert(0, sys.argv[1]); import headers_policy; print(headers_policy.NAME)' "$HERE_NATIVE/aws")"
+  tmp="$(mktemp -t "$PROJECT-headers.XXXXXX.json")"
+  $PY_CMD "$HERE_NATIVE/aws/headers_policy.py" config > "$tmp"
+  if ! existing="$(aws cloudfront list-response-headers-policies --type custom \
+      --query "ResponseHeadersPolicyList.Items[?ResponseHeadersPolicy.ResponseHeadersPolicyConfig.Name=='$name'].ResponseHeadersPolicy.Id | [0]" \
+      --output text 2>&1)"; then
+    echo "    ! security headers NOT applied: ${existing##*: }"
+    echo "      Apply the updated aws/deploy-policy.json from an admin profile, then re-run."
+    rm -f "$tmp"; return 0
+  fi
+  if [ -n "$existing" ] && [ "$existing" != "None" ]; then
+    etag="$(aws cloudfront get-response-headers-policy --id "$existing" --query ETag --output text)"
+    aws cloudfront update-response-headers-policy --id "$existing" --if-match "$etag" \
+      --response-headers-policy-config "file://$(native_path "$tmp")" >/dev/null
+    SECURITY_HEADERS_ID="$existing"
+  else
+    SECURITY_HEADERS_ID="$(aws cloudfront create-response-headers-policy \
+      --response-headers-policy-config "file://$(native_path "$tmp")" \
+      --query 'ResponseHeadersPolicy.Id' --output text)"
+  fi
+  rm -f "$tmp"
+  echo "    security headers policy $SECURITY_HEADERS_ID"
+}
+
+# Attaches that policy to every behaviour of an EXISTING distribution.
+attach_security_headers() {
+  local dist="$1" tmp etag
+  [ -n "$SECURITY_HEADERS_ID" ] || return 0
+  tmp="$(mktemp -t "$PROJECT-dist-headers.XXXXXX.json")"
+  etag="$(aws cloudfront get-distribution-config --id "$dist" --query ETag --output text)"
+  if aws cloudfront get-distribution-config --id "$dist" --output json \
+      | $PY_CMD "$HERE_NATIVE/aws/headers_policy.py" attach "$SECURITY_HEADERS_ID" "$(native_path "$tmp")"; then
+    aws cloudfront update-distribution --id "$dist" --if-match "$etag" \
+      --distribution-config "file://$(native_path "$tmp")" >/dev/null
+    echo "    attached to the site and /api/* (propagates in a few minutes)"
+  fi
+  rm -f "$tmp"
+}
+
 deploy_cdn() {
   say "Site bucket"
   ensure_site_bucket
@@ -540,6 +589,9 @@ deploy_cdn() {
     # permission below are idempotent, and re-applying them is how a
     # partially-failed first run repairs itself.
     grant_cdn_access "$arn"
+    say "Security headers (N43)"
+    ensure_security_headers
+    attach_security_headers "$existing"
     echo
     echo "CDN_URL=https://$domain"
     echo "DISTRIBUTION_ID=$DISTRIBUTION_ID"
@@ -557,6 +609,11 @@ deploy_cdn() {
   local s3_oac
   s3_oac="$(oac_id "$PROJECT-s3" s3)"
   echo "    s3=$s3_oac"
+
+  say "Security headers (N43)"
+  ensure_security_headers
+  local rhp=""
+  [ -n "$SECURITY_HEADERS_ID" ] && rhp="\"ResponseHeadersPolicyId\": \"$SECURITY_HEADERS_ID\","
 
   say "Creating distribution (this takes several minutes to propagate)"
   local dist_config
@@ -588,6 +645,7 @@ deploy_cdn() {
     "AllowedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"],
       "CachedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]}},
     "CachePolicyId": "$CACHE_OPTIMIZED",
+    $rhp
     "Compress": true
   },
   "CacheBehaviors": {"Quantity": 1, "Items": [
@@ -598,6 +656,7 @@ deploy_cdn() {
        "CachedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]}},
      "CachePolicyId": "$CACHE_DISABLED",
      "OriginRequestPolicyId": "$ORIGIN_REQ_ALL_EXCEPT_HOST",
+     $rhp
      "Compress": false}
   ]},
   "//": "NO CustomErrorResponses on purpose. The usual SPA fallback (403 -> /index.html, 200) applies DISTRIBUTION-WIDE, not per behaviour, so it silently rewrites API errors into an HTML page with a 200 status - a failed scan would look like a successful one returning gibberish. This app has no client-side routing and no deep links, so it needs no fallback at all.",

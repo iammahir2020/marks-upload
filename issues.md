@@ -147,6 +147,39 @@ throttling reads back 2/s, burst 10.
 | **N38** | API Gateway stage throttling (2 req/s, bursts of 10), verified live. A Lambda concurrency cap of 5 was attempted after the owner applied the updated deploy policy; AWS refused it because the account's TOTAL concurrency is the new-account default (~10) and 10 must stay unreserved — which caps concurrency by itself, below 5 x 2. Budget alarm `marks-scanner-guard`, $5/month (confirmed 2026-09-25). Revisit the reservation only if AWS raises the account quota. |
 | **N23** | Already fixed before this pass (`mktemp`, deploy.sh); this register was stale. |
 
+### Fixed 2026-09-25 — N44, laptop mode on shared Wi-Fi
+
+Owner's context: grading happens on the deployed site; the laptop and
+phone are used together only for local testing. So laptop mode is now
+**local-only by default**: `dev.sh`/`dev.ps1` bind uvicorn to `127.0.0.1`
+and Vite to `localhost` (`vite.config.ts`, `MARKS_LAN`). A phone session is
+an explicit `./dev.sh --lan` / `.\dev.ps1 -Lan`, which binds every
+interface, says so on start, and sends that session's crops to
+`training_data/unverified/` instead of the trusted `harvested/` (the same
+review-then-promote path as N40). Verified by running both scripts: default
+listens on 127.0.0.1 only, `-Lan` on all interfaces, and a `-Lan` harvest
+put 14 crops in `unverified/` with `harvested/` unchanged. Not done: serving
+the built app instead of the dev server during LAN sessions — the dev
+server's reload is what testing needs, and it's now only exposed on demand.
+
+### Fixed 2026-09-25 — N43, security headers
+
+Two halves, because they have different lifetimes:
+
+| Half | What | Where |
+|---|---|---|
+| The page's CSP | `script-src`/`style-src` allow only this site plus the SHA-256 of the exact inline bootstrap script and critical CSS this build produced; `img-src`/`connect-src` add `blob:` (capture preview, harvest re-read); `object-src 'none'`, `base-uri`/`form-action 'self'`; no `unsafe-inline`, no `unsafe-eval`, no outside host. Written into `dist/index.html` as a `<meta>` at build time, so page and policy can never be out of step. | `frontend/scripts/csp.mjs`, called by `prerender-landing.mjs`. Build only. |
+| Response headers | HSTS (1 year), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` + CSP `frame-ancestors 'none'` (what a `<meta>` can't carry), `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(self)` and nothing else. One CloudFront response headers policy on the site AND `/api/*`. | `aws/headers_policy.py`, applied by deploy.sh; needs four `cloudfront:*ResponseHeadersPolic*` grants (added to `aws/deploy-policy.json`, applied by an admin). |
+
+**Deployed and verified live 2026-09-25**: all six headers present on the
+site and on `/api/*` (`curl -I`), and `node e2e-prod/live-check.mjs` loads
+the live site in a real browser with zero CSP violations.
+
+Verified in a real browser against the production build
+(`npm run test:e2e:prod`): the landing page, service worker, camera,
+Confirm (with its `blob:` harvest), Results and Excel export report **zero**
+CSP violations — and the test was shown to fail when `blob:` was removed.
+
 ### Fixed 2026-09-25 — N40 and N45, the owner's choices
 
 | # | Fix |

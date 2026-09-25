@@ -163,6 +163,13 @@ bucket's `unverified/` prefix (`HARVEST_PREFIX=unverified`, deploy.sh) and
 only reach training via `fetch-crops.sh review` + `promote`; the Library
 has a "share anonymised cells" switch, on by default, stored in IndexedDB's
 `meta` store (`getShareCrops`/`setShareCrops`, spared by Reset everything).
+**N43, same day**: a build-time CSP `<meta>` with exact inline-block hashes
+(`frontend/scripts/csp.mjs`) plus a CloudFront response headers policy
+(`aws/headers_policy.py`, deploy.sh) for HSTS, anti-framing, nosniff,
+Referrer- and Permissions-Policy; `npm run test:e2e:prod` proves nothing
+the app does is blocked. **N44, same day**: `dev.sh`/`dev.ps1` and Vite are local-only by
+default; `--lan`/`-Lan` opts a phone testing session in, and routes its
+crops to `training_data/unverified/`. The owner grades on the deployed site.
 
 **Step 17 (2026-09-25, code-done; phone checks remain)** — plan.md §22,
 step.md step 17. Two strands from live use. **Partial scans**: a
@@ -633,6 +640,9 @@ marks-upload/
 │   │                           # (debug_uploads/ lived here until step 11.0.1
 │   │                           # deleted it — see "The backend is stateless")
 │   ├── training_data/all/      # gitignored — fetch-crops.sh's merged training set
+│   ├── training_data/unverified/ # gitignored — the HOSTED site's crops, downloaded by
+│   │                           # `fetch-crops.sh review` for a look; never trained on
+│   │                           # until `fetch-crops.sh promote <source-id>` (issues.md N40)
 │   ├── training_data/pages/    # gitignored — step 15's photographed practice pages
 │   │                           # (loose digits in rows, clean and crossed out) plus
 │   │                           # pages.json, the per-row labels cnn/pages.py reads
@@ -1075,6 +1085,13 @@ change in code):
 # self-signal re-entrancy bug in the cleanup trap itself).
 ./dev.sh          # Linux
 #  .\dev.ps1     # Windows — same job, console signal + taskkill /T + a Job object
+# Both are LOCAL ONLY by default (issues.md N44): this machine can use
+# them, the phone can't. For a phone testing session, opt in explicitly —
+# both servers then bind every interface, and crops go to
+# training_data/unverified/ (review + promote) instead of harvested/:
+./dev.sh --lan
+#  .\dev.ps1 -Lan
+# Real grading uses the deployed site, not the laptop.
 
 # Detection harness — the primary loop for steps 1–3
 cd backend && source venv/bin/activate && python detect.py <image-path> --questions 5 --id-digits 7 --out ../testset/debug/<name>
@@ -1183,10 +1200,11 @@ python3 generate.py        # reads _recs/, writes generated/ground_truth.json
 # you intend to run RECOGNIZER=remote/both.
 cd backend && source venv/bin/activate
 python gen_dev_cert.py   # only when certs/ is missing or the LAN IP changed
-uvicorn app.main:app --reload --host 0.0.0.0 --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
+uvicorn app.main:app --reload --host 127.0.0.1 --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
+#   (--host 0.0.0.0 only for a phone session; ./dev.sh --lan does that for you)
 
-# Frontend — HTTPS and LAN binding are on by default via vite.config.ts,
-# no --host flag needed
+# Frontend — HTTPS is on via vite.config.ts; it binds localhost only unless
+# MARKS_LAN=1 (set by ./dev.sh --lan / .\dev.ps1 -Lan), issues.md N44
 cd frontend && npm run dev
 cd frontend && npx vitest run   # 456 as of step 17 (2026-09-25); 421 at step 15's follow-ups (2026-09-24); 408 at the 2026-09-22 Windows port (moduleNames.test.ts);
                                  # 407 at the 2026-09-12 share-QR-code addition (dev-mode landing
@@ -1201,6 +1219,13 @@ cd frontend && npm run build
 # for eyeballing land in frontend/test-results/screens/ (gitignored).
 cd frontend && npx playwright install chromium   # once per machine
 cd frontend && npm run test:e2e
+# The PRODUCTION build in a real browser (issues.md N43): builds, serves
+# with `vite preview`, and fails on any Content-Security-Policy violation
+# across the landing page, camera, Confirm, Results and Excel export.
+cd frontend && npm run test:e2e:prod
+# After a deploy: the LIVE site in a real browser — CSP <meta> present,
+# landing -> app -> service worker with zero CSP violations. Sends no scans.
+cd frontend && node e2e-prod/live-check.mjs
 ```
 
 The dev server serves HTTPS via `@vitejs/plugin-basic-ssl`, not `mkcert` —
@@ -1581,6 +1606,20 @@ all-blank result as if it were a normal scan.
   than handwriting. Dedupe must stay keyed on **content, never on the
   label** — two students' `7`s must both survive, or the corpus loses the
   variation it exists to capture.
+- **Don't add a `style="…"` attribute or a new inline `<script>`/`<style>`
+  to the prerendered landing page and assume it works in production**
+  (issues.md N43). `scripts/csp.mjs` hashes the inline blocks that exist at
+  build time, so new `<style>`/`<script>` blocks are covered automatically,
+  but style ATTRIBUTES are blocked by the policy and `vite dev` has no policy
+  at all, so it will look fine locally. `npm run test:e2e:prod` is the check:
+  it runs the real production build in a browser and fails on any CSP
+  violation. The response headers (HSTS, framing, Permissions-Policy) are
+  `aws/headers_policy.py`'s, applied by deploy.sh.
+- **Don't point the hosted Lambda's `HARVEST_PREFIX` back at `harvested/`,
+  and don't promote an unverified source without looking.** `/api/harvest`
+  is public and takes the labels from the caller, so a hosted crop's label
+  is a claim (issues.md N40). `deploy.sh` sets `HARVEST_PREFIX=unverified`;
+  `fetch-crops.sh review` then `promote <source-id>` is the only way in.
 - **Don't harvest test data into the real namespace.** Sources prefixed
   `test-` (`harvest.py`'s `TEST_SOURCE_PREFIX`) are dropped by
   `fetch-crops.sh` unless `INCLUDE_TEST=1`. Verification crops previously

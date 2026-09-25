@@ -131,7 +131,11 @@
         "cloudfront:GetOriginAccessControl",
         "cloudfront:ListOriginAccessControls",
         "cloudfront:TagResource",
-        "cloudfront:ListFunctions"
+        "cloudfront:ListFunctions",
+        "cloudfront:CreateResponseHeadersPolicy",
+        "cloudfront:GetResponseHeadersPolicy",
+        "cloudfront:UpdateResponseHeadersPolicy",
+        "cloudfront:ListResponseHeadersPolicies"
       ],
       "Resource": "*"
     },

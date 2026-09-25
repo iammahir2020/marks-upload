@@ -1256,6 +1256,16 @@ writer entirely. It must be random and client-generated — a per-scan id
 would regroup one student's digits and undo the unlinkability described in
 section 12.
 
+**Trust, added 2026-09-25 (issues.md N40).** Once hosted, `/api/harvest`
+takes the image AND the labels from anyone with the URL, so a hosted crop's
+label is a claim, not a confirmation. The hosted Lambda therefore writes to
+`unverified/<source-id>/...` (same layout, different prefix), which no
+training pull reads. `fetch-crops.sh review` downloads it to a separate
+`training_data/unverified/`; `promote <source-id>` admits one source after
+a person has checked its images against their labels. The per-source split
+above is what makes that review possible at all: a bad writer is left out
+whole. The laptop's own crops stay trusted and go straight to `harvested/`.
+
 **Fine-tuning:** freeze the conv layers, retrain the classifier head at a
 low learning rate (~1e-4), hold out a real, unseen-writer photo set to
 measure against. Two separate fine-tuned heads on the same base model —

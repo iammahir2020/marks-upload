@@ -91,7 +91,10 @@ phone ──► CloudFront ──┬──► S3 (frontend)
 - **Traffic and errors at the edge** — CloudFront → `E31IWW3STVXMSN` →
   Monitoring. Useful for "is anyone hitting it at all".
 - **Crops arriving** — S3 → `marks-scanner-crops-105322541848` →
-  `harvested/<source-id>/…`, one prefix per faculty browser.
+  `unverified/<source-id>/…` since 2026-09-25 (issues.md N40: the hosted
+  site's crops are held apart until reviewed with
+  `./fetch-crops.sh review` and `promote`); older crops are under
+  `harvested/<source-id>/…`. One prefix per faculty browser either way.
 
 ### Watching a scan happen, live
 

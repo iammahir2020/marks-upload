@@ -25,4 +25,5 @@ dist-ssr
 
 # Playwright (npm run test:e2e)
 test-results
+test-results-prod
 playwright-report

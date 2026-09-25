@@ -3223,6 +3223,42 @@ question's max, which varies by quiz and isn't stored). `marks_total/` is
 unchanged. `fetch-crops.sh` folds legacy `marks_qN/` crops in after syncing;
 S3 and MinIO keep their old copies.
 
+### 17.7 Hosted crops held apart for review (done — issues.md N40, N45)
+
+The hosted Lambda writes harvested crops to the bucket's `unverified/`
+prefix (`HARVEST_PREFIX=unverified`, deploy.sh), because `/api/harvest` is
+public and accepts any labels. They reach the training set only through:
+
+```bash
+AWS_PROFILE=marks-scanner ./fetch-crops.sh review marks-scanner-crops-105322541848
+./fetch-crops.sh promote <source-id>     # after checking that source's images
+```
+
+`review` downloads to `backend/training_data/unverified/` (gitignored,
+never read by training) and summarises by source; `promote` copies one
+source into `training_data/all/`. Separately, the Library has a "Share
+anonymised cells" switch, on by default; off, Confirm sends nothing.
+Verified live: a harvest through CloudFront put 14 crops under
+`unverified/` and none under `harvested/`.
+
+### 17.8 Security headers (done — issues.md N43)
+
+A Content-Security-Policy `<meta>` written into `dist/index.html` at build
+time with the exact SHA-256 of that build's inline script and CSS
+(`frontend/scripts/csp.mjs`), plus a CloudFront response headers policy
+(`aws/headers_policy.py`) for HSTS, `frame-ancestors`/`X-Frame-Options`,
+nosniff, Referrer-Policy and Permissions-Policy. Proven in a real browser
+against the production build: `npm run test:e2e:prod` (landing, service
+worker, camera, Confirm + harvest, Results, Excel export) reports no
+violation, and fails when the policy is deliberately broken.
+
+### 17.9 Laptop mode is local-only by default (done — issues.md N44)
+
+`./dev.sh` / `.\dev.ps1` bind both servers to this machine only. A phone
+testing session is `./dev.sh --lan` / `.\dev.ps1 -Lan`, which binds every
+interface and routes crops to `training_data/unverified/`. Grading uses
+the deployed site.
+
 ### Test
 
 - `cnn/half_marks_accuracy.py` — the instructor's practice page

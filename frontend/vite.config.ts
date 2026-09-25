@@ -120,14 +120,19 @@ export default defineConfig({
     }),
   ],
   server: {
-    host: true, // bind all interfaces so the phone can reach it over LAN
+    // issues.md N44 — this machine only, unless the dev script was started
+    // with --lan / -Lan (which sets MARKS_LAN=1) for a phone testing
+    // session. Bound to every interface, campus Wi-Fi is "the LAN": anyone
+    // on it could reach the dev server, and Vite has had file-read bugs.
+    host: process.env.MARKS_LAN === '1',
   },
   test: {
     environment: 'jsdom',
     // e2e/ holds Playwright's real-browser specs (playwright.config.ts). Its
     // *.spec.ts names match Vitest's default pattern too, and they cannot
     // run under jsdom.
-    exclude: [...configDefaults.exclude, 'e2e/**'],
+    // e2e-prod/ likewise (playwright.prod.config.ts, issues.md N43).
+    exclude: [...configDefaults.exclude, 'e2e/**', 'e2e-prod/**'],
     setupFiles: ['./src/setupTests.ts'],
     globals: true,
   },
