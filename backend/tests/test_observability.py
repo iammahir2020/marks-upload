@@ -162,3 +162,40 @@ def test_a_failed_scan_is_logged_with_its_reason(client, capsys):
     assert scans[0]["status"] in {"ok", "failed"}
     if scans[0]["status"] == "failed":
         assert scans[0]["failure_reason"]
+
+
+# --- 2026-09-25: labels the dashboard counts by --------------------------------
+
+def _scan_events(capsys):
+    return [json.loads(line) for line in capsys.readouterr().out.splitlines()
+            if line.startswith("{") and json.loads(line).get("event") == "scan"]
+
+
+def test_the_deploy_smoke_test_is_marked_so_the_dashboard_can_leave_it_out(client, capsys):
+    """deploy.sh's smoke test sends quizName "smoke"; real scans must NOT be
+    marked, or the dashboard would drop them."""
+    photo = TESTSET / "images" / "filled_file.jpeg"
+    if not photo.exists():
+        pytest.skip("filled_file.jpeg not present")
+    smoke = dict(CONFIG, quizName="smoke")
+    with open(photo, "rb") as f:
+        client.post("/api/scan", files={"image": (photo.name, f, "image/jpeg")},
+                    data={"config": json.dumps(smoke)})
+    assert _scan_events(capsys)[0].get("origin") == "smoke"
+    _scan(client, photo)
+    assert "origin" not in _scan_events(capsys)[0]
+
+
+def test_a_failed_dark_scan_logs_its_lighting_label(client, capsys):
+    import cv2
+    import numpy as np
+    photo = TESTSET / "images" / "filled_file.jpeg"
+    if not photo.exists():
+        pytest.skip("filled_file.jpeg not present")
+    dark = np.clip(cv2.imread(str(photo)).astype(np.float32) * 0.2, 0, 255).astype(np.uint8)
+    data = cv2.imencode(".jpg", dark)[1].tobytes()
+    client.post("/api/scan", files={"image": ("c.jpg", data, "image/jpeg")},
+                data={"config": json.dumps(CONFIG)})
+    event = _scan_events(capsys)[0]
+    assert event["status"] == "failed"
+    assert event["lighting"] == "too_dark"

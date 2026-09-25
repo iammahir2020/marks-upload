@@ -165,6 +165,7 @@ def _log_scan(
     quiz: QuizConfig,
     image_bytes: bytes,
     low_confidence_fields: list[str],
+    lighting: str | None = None,
 ) -> None:
     """One line per scan, carrying facts about the request and never its
     content. `low_confidence_fields` is a list of FIELD NAMES ("q1",
@@ -185,6 +186,11 @@ def _log_scan(
         ms_total=int((time.perf_counter() - started) * 1000),
         flagged_count=len(low_confidence_fields),
         flagged=low_confidence_fields,
+        # A label, never content (the dashboard counts dark/shadowed photos).
+        lighting=lighting,
+        # The deploy's own smoke test sends quizName "smoke": marked so the
+        # dashboard can leave it out of real-use numbers. Absent otherwise.
+        **({"origin": "smoke"} if quiz.quizName == "smoke" else {}),
     )
 
 
@@ -421,7 +427,8 @@ async def scan(
         # composite is never built and Gemini is never reached on either
         # path. Only a matched marks table is ever sent.
         if det["status"] != "ok" and not _is_partial(det, quiz):
-            _log_scan("failed", det["failure_reason"], ms, started, quiz, image_bytes, [])
+            _log_scan("failed", det["failure_reason"], ms, started, quiz, image_bytes, [],
+                      lighting=det.get("lighting"))
             return ScanResult(status="failed", failure_reason=det["failure_reason"],
                               lighting=det.get("lighting"))
 
@@ -477,7 +484,8 @@ async def scan(
         total = QuestionMark(q=0, value=marks_result.total)
 
         if mismatches:
-            _log_scan("partial", det["failure_reason"], ms, started, quiz, image_bytes, low_confidence_fields)
+            _log_scan("partial", det["failure_reason"], ms, started, quiz, image_bytes, low_confidence_fields,
+                      lighting=det.get("lighting"))
         else:
             _log_scan("ok", None, ms, started, quiz, image_bytes, low_confidence_fields)
 

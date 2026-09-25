@@ -779,13 +779,15 @@ deploy_dashboard() {
   # as a command, not printed. (Found exactly that way: a backticked
   # "/api/scan" became "No such file or directory" and shipped an empty
   # string into the dashboard.) Keep the markdown backtick-free.
+  # Keep it ASCII too: an em dash arrived in the console as "â€\"" (seen
+  # 2026-09-25), mangled somewhere between this file and the dashboard API.
   cat > "$dashboard_config" <<JSON
 {
   "widgets": [
     {
       "type": "text", "x": 0, "y": 0, "width": 24, "height": 2,
       "properties": {
-        "markdown": "**$PROJECT** — frontend and backend hit counts below. The live request-flow graph (Lambda -> S3) is a separate page, not a widget: [X-Ray trace map](https://$REGION.console.aws.amazon.com/cloudwatch/home?region=$REGION#xray:traces/map). If that link ever moves, the documented route is the CloudWatch left nav: **X-Ray traces -> Trace Map**. A scan shows just the Lambda box; a harvest also lights up the S3 edge."
+        "markdown": "**$PROJECT** - frontend and backend hit counts below. The live request-flow graph (Lambda -> S3) is a separate page, not a widget: [X-Ray trace map](https://$REGION.console.aws.amazon.com/cloudwatch/home?region=$REGION#xray:service-map/map). If that link ever moves, the documented route is the CloudWatch left nav: **X-Ray traces -> Trace Map**. A scan shows just the Lambda box; a harvest also lights up the S3 edge. Graphs are 5-minute totals in UTC, with quiet periods drawn as 0. The table counts real scans only (the deploy's smoke tests are left out); a failed scan is a normal answer, not a Lambda error."
       }
     },
     {
@@ -793,7 +795,11 @@ deploy_dashboard() {
       "properties": {
         "title": "Frontend hits (CloudFront requests)",
         "view": "timeSeries", "stacked": false, "region": "us-east-1",
-        "metrics": [["AWS/CloudFront", "Requests", "DistributionId", "${distribution_id:-none}", "Region", "Global", {"stat": "Sum"}]]
+        "period": 300,
+        "metrics": [
+          [{"expression": "FILL(m1, 0)", "label": "Requests", "id": "e1"}],
+          ["AWS/CloudFront", "Requests", "DistributionId", "${distribution_id:-none}", "Region", "Global", {"stat": "Sum", "id": "m1", "visible": false}]
+        ]
       }
     },
     {
@@ -801,7 +807,11 @@ deploy_dashboard() {
       "properties": {
         "title": "Backend hits (API Gateway requests)",
         "view": "timeSeries", "stacked": false, "region": "$REGION",
-        "metrics": [["AWS/ApiGateway", "Count", "ApiId", "${api_id:-none}", {"stat": "Sum"}]]
+        "period": 300,
+        "metrics": [
+          [{"expression": "FILL(m1, 0)", "label": "Requests", "id": "e1"}],
+          ["AWS/ApiGateway", "Count", "ApiId", "${api_id:-none}", {"stat": "Sum", "id": "m1", "visible": false}]
+        ]
       }
     },
     {
@@ -809,18 +819,21 @@ deploy_dashboard() {
       "properties": {
         "title": "Lambda health",
         "view": "timeSeries", "stacked": false, "region": "$REGION",
+        "period": 300,
         "metrics": [
-          ["AWS/Lambda", "Invocations", "FunctionName", "$FUNCTION", {"stat": "Sum"}],
-          ["AWS/Lambda", "Errors", "FunctionName", "$FUNCTION", {"stat": "Sum"}]
+          [{"expression": "FILL(m1, 0)", "label": "Invocations", "id": "e1"}],
+          [{"expression": "FILL(m2, 0)", "label": "Errors (crashes/timeouts, not failed scans)", "id": "e2"}],
+          ["AWS/Lambda", "Invocations", "FunctionName", "$FUNCTION", {"stat": "Sum", "id": "m1", "visible": false}],
+          ["AWS/Lambda", "Errors", "FunctionName", "$FUNCTION", {"stat": "Sum", "id": "m2", "visible": false}]
         ]
       }
     },
     {
       "type": "log", "x": 0, "y": 8, "width": 24, "height": 6,
       "properties": {
-        "title": "Scan success rate, by hour (aws/MONITORING.md)",
+        "title": "Real scans by hour, UTC: outcome and why (smoke tests excluded)",
         "region": "$REGION", "view": "table",
-        "query": "SOURCE '/aws/lambda/$FUNCTION' | fields @timestamp\n| filter event = \"scan\"\n| stats count() as scans, sum(status = \"failed\") as failed, sum(status = \"failed\") * 100 / count() as pct_failed by bin(1h)"
+        "query": "SOURCE '/aws/lambda/$FUNCTION' | fields @timestamp\n| filter event = \"scan\" and not ispresent(origin)\n| stats count() as scans, sum(status = \"ok\") as ok, sum(status = \"partial\") as partial, sum(status = \"failed\") as failed, sum(status = \"failed\" and failure_reason = \"table_not_found\") as no_grid, sum(status = \"failed\" and failure_reason = \"blurry\") as blurry, sum(status = \"failed\" and failure_reason = \"column_count_mismatch\") as col_mismatch, sum(lighting = \"too_dark\") as too_dark, sum(lighting = \"uneven\") as shadow by bin(1h)\n| sort bin(1h) desc"
       }
     }
   ]

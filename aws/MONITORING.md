@@ -124,12 +124,25 @@ fields @timestamp, status, failure_reason, ms_total, flagged_count, image_kb
 
 ```
 fields @timestamp
-| filter event = "scan"
+| filter event = "scan" and not ispresent(origin)
 | stats count() as scans,
+        sum(status = "ok") as ok,
+        sum(status = "partial") as partial,
         sum(status = "failed") as failed,
-        sum(status = "failed") * 100 / count() as pct_failed
+        sum(status = "failed" and failure_reason = "table_not_found") as no_grid,
+        sum(status = "failed" and failure_reason = "blurry") as blurry,
+        sum(status = "failed" and failure_reason = "column_count_mismatch") as col_mismatch,
+        sum(lighting = "too_dark") as too_dark,
+        sum(lighting = "uneven") as shadow
         by bin(1h)
+| sort bin(1h) desc
 ```
+
+The dashboard's table (2026-09-25). `not ispresent(origin)` drops the deploy's
+own smoke-test scans, which log `"origin": "smoke"`; real scans carry no
+`origin` at all. `lighting` is logged on failed and partial scans only. A
+failed scan is a normal answer from the backend, so it never shows in the
+Lambda Errors graph — that counts crashes and timeouts.
 
 ```
 fields @timestamp
