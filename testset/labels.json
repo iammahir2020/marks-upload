@@ -576,8 +576,8 @@
     "real_class_10.jpeg": {
       "condition": "adjacent_scripts_in_frame",
       "handwriting_by": "real student (CSE211L pilot class, anonymous)",
-      "expected_success": false,
-      "expected_failure_reason": "blurry",
+      "expected_success": true,
+      "expected_failure_reason": null,
       "student_id": "6692127",
       "serial": "129",
       "questions": [
@@ -596,7 +596,7 @@
       ],
       "total": 3.0,
       "quiz": "3q_5each",
-      "note": "Real photo #10 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. Detection genuinely fails on this photo (status: failed, failure_reason: blurry) -- a real image-quality issue, not a logic bug; kept as a known failing case rather than dropped."
+      "note": "Real photo #10 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. Detection genuinely fails on this photo (status: failed, failure_reason: blurry) -- a real image-quality issue, not a logic bug; kept as a known failing case rather than dropped. UPDATED 2026-09-25: no longer expected to fail. The up-front blur gate was removed after it rejected readable photos twice over (a raw Laplacian floor that measured darkness, then a normalised floor that rejected the instructor's sharp phone photos). Tried, this photo reads: all marks, total and serial right, the ID right with one digit honestly flagged."
     },
     "real_class_11.jpeg": {
       "condition": "adjacent_scripts_in_frame",

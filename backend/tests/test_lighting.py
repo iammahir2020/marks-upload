@@ -1,10 +1,13 @@
 """Blur vs darkness vs shadow (2026-09-25).
 
 The old blur check (Laplacian variance < 50) measured brightness as much as
-focus, so a sharp photo taken in a dim room failed as "blurry" — the
-instructor hit it live, and on the testset 18 of 28 photos at half
-brightness were rejected though detection read all 28. These tests take a
-real photo, change only its lighting or focus, and go through /api/scan.
+focus, so a sharp photo taken in a dim room failed as "blurry". Its first
+replacement (a contrast-normalised score, floor 0.115) then rejected sharp
+photos from the instructor's own phone. Neither gate protected anything: soft
+photos read, flag, or don't find a grid — never a wrong unflagged value. So
+every photo is now tried, and "blurry" only explains a scan whose grid could
+not be found. These tests take a real photo, change only its lighting or
+focus, and go through /api/scan.
 """
 import json
 import sys
@@ -70,9 +73,22 @@ def test_a_very_dark_photo_fails_and_says_it_is_too_dark(photo):
     assert body["lighting"] == "too_dark"
 
 
-def test_a_heavy_shadow_fails_and_says_the_light_is_uneven(photo):
+def test_a_heavy_shadow_is_not_read_in_full_and_says_the_light_is_uneven(photo):
+    """At 0.85 the shaded marks table goes unread (a partial scan), the ID
+    still reads with the doubtful digit flagged, and the note says why."""
     body = scan(shadow(photo, 0.85))
+    assert body["status"] == "failed" or body["table_mismatches"]
+    assert body["lighting"] == "uneven"
+    if body["student_id"]:
+        assert all(got in (want, "?") for got, want in zip(body["student_id"], "2632711"))
+
+
+def test_a_shadow_that_defeats_the_reader_is_blamed_on_the_light_not_blur(photo):
+    """A deep shadow flattens contrast and would score as blurry; the note
+    that helps is the one about light."""
+    body = scan(shadow(photo, 0.95))
     assert body["status"] == "failed"
+    assert body["failure_reason"] != "blurry"
     assert body["lighting"] == "uneven"
 
 
@@ -82,10 +98,48 @@ def test_an_out_of_focus_photo_is_still_blurry(photo):
     assert body["failure_reason"] == "blurry"
 
 
+def test_a_slightly_soft_photo_is_read_not_rejected(photo):
+    """Scores ~0.04 — far below the 0.115 floor that rejected the
+    instructor's sharp phone photos — and reads normally."""
+    soft = cv2.GaussianBlur(photo, (0, 0), 1.0)
+    assert detection._sharpness(cv2.cvtColor(soft, cv2.COLOR_BGR2GRAY)) < 0.115
+    body = scan(soft)
+    assert body["status"] == "ok"
+
+
 @pytest.mark.skipif(not BLURRY.exists(), reason="real_class_10.jpeg not present")
-def test_the_real_blurry_photo_is_still_rejected():
-    body = scan(cv2.imread(str(BLURRY)))
-    assert body["failure_reason"] == "blurry"
+def test_the_photo_labelled_blurry_is_read_correctly():
+    """real_class_10 was rejected as blurry from the start. Tried, it reads:
+    every mark, the total and the serial right, and the ID right except
+    where a digit is flagged "?" — never a wrong digit."""
+    config = {"quizName": "q", "idDigits": 7, "totalMax": 15.0,
+              "questions": [{"q": i, "max": 5.0} for i in range(1, 4)]}
+    data = BLURRY.read_bytes()
+    body = client.post("/api/scan", files={"image": ("c.jpg", data, "image/jpeg")},
+                       data={"config": json.dumps(config)}).json()
+    assert body["status"] == "ok"
+    assert [q["value"] for q in body["questions"]] == [1.0, 1.0, 1.0]
+    assert body["total"]["value"] == 3.0
+    assert body["serial"] == "129"
+    assert all(got in (want, "?") for got, want in zip(body["student_id"], "6692127"))
+
+
+PRIVATE = Path(__file__).parent.parent.parent / "testset" / "private"
+
+
+@pytest.mark.parametrize("name", ["phone_fail_1.jpg", "phone_fail_3.jpg", "phone_fail_4.jpg"])
+def test_the_instructors_rejected_phone_photos_now_scan(name):
+    """Sharp, well-lit photos from the instructor's own phone, rejected live
+    by the 0.115 floor. Real scripts, so they live in gitignored
+    testset/private/ and this skips wherever they don't exist."""
+    path = PRIVATE / name
+    if not path.exists():
+        pytest.skip(f"{name} is private (testset/private/) and not on this machine")
+    config = {"quizName": "q", "idDigits": 7, "totalMax": 15.0,
+              "questions": [{"q": i, "max": 5.0} for i in range(1, 4)]}
+    body = client.post("/api/scan", files={"image": ("c.jpg", path.read_bytes(), "image/jpeg")},
+                       data={"config": json.dumps(config)}).json()
+    assert body["status"] == "ok"
 
 
 def test_a_good_photo_carries_no_lighting_note(photo):
@@ -100,7 +154,7 @@ def test_darkening_raises_sharpness_instead_of_lowering_it(photo):
     g = lambda im: cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
     assert detection._sharpness(g(dim(photo, 0.5, 0))) >= 0.95 * detection._sharpness(g(photo))
     assert detection._sharpness(g(dim(photo, 0.5, 3))) >= detection._sharpness(g(photo))
-    assert detection._sharpness(g(photo)) >= detection.SHARPNESS_FLOOR
+    assert detection._sharpness(g(photo)) >= detection.BLUR_DIAGNOSIS_FLOOR
 
 
 def test_a_flat_image_has_zero_sharpness():

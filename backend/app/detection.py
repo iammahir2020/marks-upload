@@ -20,18 +20,21 @@ ADAPTIVE_C = -2
 KERNEL_DIVISOR = 20            # kernel length = image dimension // this
 MIN_TABLE_AREA_FRAC = 0.01     # a table contour must cover at least this much of the image
 APPROX_EPSILON_FRAC = 0.02     # approxPolyDP epsilon as a fraction of contour perimeter
-SHARPNESS_FLOOR = 0.115  # "blurry" below this: the Laplacian's variance DIVIDED BY the
-                          # image's own grey-level variance (_sharpness). Replaced a raw
-                          # Laplacian-variance floor of 50 on 2026-09-25, because that one
-                          # measured brightness as much as focus: a photo taken in a dim
-                          # room has weaker edges everywhere just from lower contrast, so a
-                          # SHARP but dark photo scored "blurry" — 18 of the 28 testset photos
-                          # at half brightness were rejected though detection read all 28.
-                          # (The instructor hit exactly that live: 10 "blurry" failures in 5
-                          # minutes, gone once the lights went on.) Dividing by the grey-level
-                          # variance cancels exposure. Measured: the 28 good photos score
-                          # >= 0.134; real_class_10, the real blurry photo, 0.101; slight
-                          # defocus ~0.02; darkened photos score HIGHER, never lower.
+BLUR_DIAGNOSIS_FLOOR = 0.03  # a scan whose grid could not be found is reported "blurry" when its
+                              # sharpness (_sharpness) is below this. A DIAGNOSIS, never a gate.
+# History, 2026-09-25, twice in one day:
+#  - The original gate (raw Laplacian variance < 50) measured brightness as much as
+#    focus: 18/28 testset photos at half brightness were rejected though all 28 read.
+#  - Its replacement, the same variance divided by the grey variance with a floor of
+#    0.115, depends on page CONTENT too: three sharp, well-lit photos from the
+#    instructor's own phone scored 0.093-0.107 and were rejected; the grid read all
+#    three. No single number separates "sharp" from "blurry" across phones and pages.
+# And the gate protected nothing: blurring every labelled testset photo (gate off,
+# full recognizer vs ground truth) gave ZERO wrong unflagged digits or marks at any
+# blur level — soft photos read, flag, or don't find a grid. Even real_class_10, the
+# photo labelled "blurry", reads correctly. So every photo is now tried, and "blurry"
+# only explains a failure: grids stop being found below ~0.02 (0.024 -> 16/22 read,
+# 0.009 -> 2/22); the instructor's phone photos score ~0.09-0.11.
 
 # Lighting diagnosis (2026-09-25): WHY a scan failed, attached to
 # failed/partial results only, so a passing result.json is unchanged. The
@@ -444,7 +447,7 @@ def _repair_columns(cand: TableCandidate, expected_cols: int, table: str) -> str
 
 
 def _sharpness(gray: np.ndarray) -> float:
-    """Edge strength relative to the image's own contrast — see SHARPNESS_FLOOR."""
+    """Edge strength relative to the image's own contrast — see BLUR_DIAGNOSIS_FLOOR."""
     contrast = float(gray.astype(np.float64).var())
     if contrast < 1e-6:
         return 0.0  # a flat image has no edges at all
@@ -452,7 +455,7 @@ def _sharpness(gray: np.ndarray) -> float:
 
 
 def _is_blurry(gray: np.ndarray) -> bool:
-    return _sharpness(gray) < SHARPNESS_FLOOR
+    return _sharpness(gray) < BLUR_DIAGNOSIS_FLOOR
 
 
 def paper_level(gray: np.ndarray) -> float:
@@ -540,13 +543,6 @@ def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path, has_
         return result
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    if _is_blurry(gray):
-        result["failure_reason"] = "blurry"
-        result["lighting"] = lighting_problem(gray)
-        cv2.imwrite(str(out_dir / "overlay.jpg"), img)
-        (out_dir / "result.json").write_text(json.dumps(result, indent=2))
-        return result
 
     horizontal, vertical = _line_masks(gray)
     cv2.imwrite(str(out_dir / "mask_horizontal.jpg"), horizontal)
@@ -830,6 +826,17 @@ def detect_any_orientation(
     finally:
         shutil.rmtree(attempt_dir, ignore_errors=True)
 
+    # Nothing found a grid in any orientation. If the photo is genuinely very
+    # soft, say so; otherwise it stays table_not_found (plus any lighting note).
+    # A lighting problem wins: a shadow or darkness also flattens contrast and
+    # would score "blurry", but light is what the instructor can actually fix.
+    if (
+        result["failure_reason"] == "table_not_found"
+        and result.get("lighting") is None
+        and _is_blurry(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+    ):
+        result["failure_reason"] = "blurry"
+        (out_dir / "result.json").write_text(json.dumps(result, indent=2))
     return result  # nothing worked — out_dir still holds the 0-degree failure
 
 

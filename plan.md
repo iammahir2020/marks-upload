@@ -2655,3 +2655,16 @@ capabilities, never assumed.
 
 Real low light often shows up as genuine motion blur (the camera lengthens
 its exposure), which the torch — a shorter exposure — also fixes.
+
+**Revised the same day: no blur gate at all.** The normalised floor (0.115)
+then rejected three sharp, well-lit photos from the instructor's own phone
+(scores 0.093-0.107; the grid read all three). The score depends on page
+content — how much paper, how much ink — so no single number separates sharp
+from blurry across phones and pages. And the gate protected nothing: blurring
+every labelled testset photo and running the full recognizer against ground
+truth gave **zero** wrong unflagged digits or marks at every blur level.
+`real_class_10`, the photo labelled "blurry" since step 0, reads correctly
+too. So every photo is now tried; `blurry` is reported only when no grid was
+found in any orientation, the sharpness is under 0.03, and the light was
+fine (a shadow or darkness flattens contrast too, and is the more useful
+explanation).

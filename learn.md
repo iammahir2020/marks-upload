@@ -9035,3 +9035,29 @@ camera videos: an evenly lit page, a dark one, and one with a shadow over
 half of it. It showed the right hint each time. A fourth test pretended the
 camera had a torch and checked that it only switched on when the button was
 tapped.
+
+### Then the new blur check was wrong too — so there isn't one any more
+
+Your first test session after the fix still had 12 "blurry" failures. The
+four photos you saved told the story: three of them were sharp, well lit,
+and the grid reader could read all three. They were rejected by the *new*
+blur score (0.093–0.107, under its 0.115 limit).
+
+That score compares edge strength with the photo's overall contrast. It
+turns out that depends on the page itself: how much white paper is in view,
+how much ink, how the page fills the frame. Your phone's clean photos simply
+scored lower than the older test photos. No single number cleanly separates
+"sharp" from "blurry" across different phones and pages.
+
+The bigger question was whether a blur check was needed at all. So every
+labelled test photo was blurred by increasing amounts and run through the
+whole recognizer, comparing with the true values. At every level, **not one
+wrong value came back unflagged**. A soft photo either read correctly,
+flagged the doubtful digit, or the grid simply wasn't found. Even
+`real_class_10`, labelled "blurry" since the very first test set, reads
+correctly (one ID digit flagged, everything else right).
+
+So now **every photo is tried**. "Blurry" is only an explanation: when no
+grid could be found in any orientation, the photo is very soft (under
+0.03), and the light looked fine. A shadow or darkness flattens contrast
+too, and the light is what you can actually fix, so that explanation wins.

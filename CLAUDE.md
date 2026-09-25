@@ -150,9 +150,9 @@ exam sheet from the class list by it. Frontend suite 421 -> 450 (+3
 skipped: the hidden ID-digits field's tests, kept for when it returns).
 
 **Step 18 (2026-09-25, code-done; real-phone check needed)** — plan.md §23:
-the blur check is exposure-independent now (`detection._sharpness`,
-`SHARPNESS_FLOOR` 0.115) after a live session's "blurry" failures turned out
-to be darkness; failed/partial scans carry `lighting` (`too_dark`/`uneven`);
+there is no up-front blur check any more: every photo is tried, and
+`blurry` only explains a scan whose grid wasn't found (`BLUR_DIAGNOSIS_FLOOR`
+0.03), after two blur gates rejected readable photos in one day; failed/partial scans carry `lighting` (`too_dark`/`uneven`);
 `frontend/src/lighting.ts` gives a live hint over the viewfinder and a Light
 (torch) button that only the instructor's tap switches on.
 
@@ -1626,12 +1626,15 @@ all-blank result as if it were a normal scan.
   it runs the real production build in a browser and fails on any CSP
   violation. The response headers (HSTS, framing, Permissions-Policy) are
   `aws/headers_policy.py`'s, applied by deploy.sh.
-- **Don't go back to a raw Laplacian-variance blur floor, and don't switch the
-  torch on automatically.** The raw variance falls with brightness, so it
-  rejected sharp photos taken in dim rooms (plan.md §23: 18/28 at half
-  brightness, all readable). `_sharpness` divides by the photo's own
-  contrast. The torch stays a manual Light button by the owner's decision —
-  it hotspots on glossy paper and costs battery over a class.
+- **Don't reintroduce an up-front blur gate, and don't switch the torch on
+  automatically.** Two blur gates in one day rejected readable photos: a raw
+  Laplacian floor (it measured darkness) and a contrast-normalised one (it
+  rejected the instructor's own sharp phone photos, since the score depends
+  on page content). Blurring every labelled photo gave zero wrong unflagged
+  values at any blur level — the recognizer's confidence floors already
+  protect correctness — so every photo is tried and `blurry` only explains a
+  failed one (`BLUR_DIAGNOSIS_FLOOR`, plan.md §23). The torch stays a manual
+  Light button by the owner's decision.
 - **Don't point the hosted Lambda's `HARVEST_PREFIX` back at `harvested/`,
   and don't promote an unverified source without looking.** `/api/harvest`
   is public and takes the labels from the caller, so a hosted crop's label
