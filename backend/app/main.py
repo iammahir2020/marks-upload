@@ -9,6 +9,7 @@ implementation of that protocol, not a second call site here.
 """
 from __future__ import annotations
 
+import hmac
 import os
 import tempfile
 import time
@@ -30,6 +31,7 @@ from starlette.requests import Request
 # broke .env-based selection as a side effect. One module, loaded once,
 # before anything reads a variable (step 11.1).
 from . import config as config_module  # noqa: E402
+from . import imagecheck  # noqa: E402
 from . import harvest as harvest_module  # noqa: E402
 from . import observability as obs  # noqa: E402
 from . import ratelimit  # noqa: E402
@@ -40,7 +42,9 @@ from .models import HarvestFields, QuestionMark, QuizConfig, ScanResult, TableMi
 from .recognizers.base import IdResult, Recognizer
 from .recognizers.remote import RemoteRecognizer
 
-app = FastAPI()
+# No /docs, /redoc or /openapi.json (issues.md N42): nothing in this app
+# uses them, and on the public URL they were a ready-made map of the API.
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
 def _resolve_recognizer() -> Recognizer:
@@ -115,6 +119,15 @@ async def guard(request: Request, call_next):
     runs after FastAPI has already parsed the multipart form — by which
     point an oversized upload is in memory and the cap has done nothing.
     """
+    # issues.md N42 — first, before any other work: when deployed, only a
+    # request that came through CloudFront (which adds the secret header)
+    # reaches the API. Compared in constant time.
+    if config_module.ORIGIN_SECRET and request.url.path.startswith("/api/"):
+        sent = request.headers.get("x-origin-verify", "")
+        if not hmac.compare_digest(sent.encode(), config_module.ORIGIN_SECRET.encode()):
+            obs.log_event("rejected_origin", path=request.url.path)
+            return JSONResponse({"detail": "Forbidden."}, status_code=403)
+
     if request.method == "POST" and request.url.path in _LIMITED_PATHS:
         # Content-Length is a claim, not a fact — but rejecting on it is
         # free and catches the honest oversized upload. The real
@@ -130,7 +143,7 @@ async def guard(request: Request, call_next):
             )
 
         if config_module.RATE_LIMIT_ENABLED:
-            retry_after = limiter.check(ratelimit.client_ip(request))
+            retry_after = limiter.check(ratelimit.client_ip(request, config_module.CLIENT_IP_SOURCE))
             if retry_after is not None:
                 obs.log_event("rate_limited", path=request.url.path,
                               retry_after_s=int(retry_after) + 1)
@@ -205,6 +218,27 @@ def _reject_oversized(image_bytes: bytes) -> None:
     big" apart from "the scan failed"."""
     if len(image_bytes) > config_module.MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Image too large.")
+    _reject_unsafe_image(image_bytes)
+
+
+def _reject_unsafe_image(image_bytes: bytes) -> None:
+    """issues.md N39/N47, before OpenCV sees a byte: only JPEG and PNG (415
+    otherwise), and a pixel count read from the header (413 when it's more
+    than a phone photo could need). Runs inside _reject_oversized so both
+    endpoints that decode an upload — /api/scan and /api/harvest — get it
+    from the one call they already make."""
+    try:
+        info = imagecheck.sniff(image_bytes)
+    except imagecheck.UnsupportedImage:
+        raise HTTPException(status_code=415, detail="Only JPEG and PNG images are accepted.")
+    except imagecheck.UnreadableImage:
+        raise HTTPException(status_code=400, detail="The image file is damaged or incomplete.")
+    if (
+        info.width <= 0 or info.height <= 0
+        or max(info.width, info.height) > config_module.MAX_IMAGE_SIDE
+        or info.width * info.height > config_module.MAX_IMAGE_PIXELS
+    ):
+        raise HTTPException(status_code=413, detail="Image dimensions too large.")
 
 # The phone (LAN) and the dev machine (localhost) are different origins even
 # on the same laptop (plan.md §9 "Running locally") — allow both without

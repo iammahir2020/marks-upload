@@ -21,6 +21,8 @@ per-instance limitation on Lambda, so it buys nothing this does not.
 """
 from __future__ import annotations
 
+import ipaddress
+
 import time
 from collections import defaultdict, deque
 from typing import Deque
@@ -28,29 +30,46 @@ from typing import Deque
 from starlette.requests import Request
 
 
-def client_ip(request: Request) -> str:
-    """The originating client, as well as it can be known.
+def client_ip(request: Request, source: str = "socket") -> str:
+    """The client to charge a request to — from a source that CAN'T be
+    forged by the caller, chosen per deployment (config.CLIENT_IP_SOURCE).
 
-    Behind a Lambda Function URL and CloudFront, `request.client.host` is
-    the *proxy*, so every caller would share one bucket and the limit
-    would effectively become global. AWS sets `X-Forwarded-For` with the
-    real client first, so that is what we key on.
+    issues.md N41. This used to key on the first X-Forwarded-For entry,
+    which is whatever the caller wrote there: CloudFront keeps a
+    viewer-sent X-Forwarded-For and only appends the real address after it,
+    so a new fake value per request gave an unlimited budget. It is never
+    read now, on either path.
 
-    This is spoofable — anyone can send an X-Forwarded-For header — which
-    would let an attacker evade the limit by varying it. That is accepted
-    deliberately: the alternative (keying on the proxy IP) rate-limits
-    every legitimate user as though they were one person, which is a
-    guaranteed outage rather than a possible evasion. Given the honest
-    threat model in this module's docstring, the trade goes this way.
+    "cloudfront" (the hosted app): CloudFront-Viewer-Address, which
+    CloudFront sets itself from the TCP connection ("198.51.100.10:46532")
+    and forwards through the managed AllViewerExceptHostHeader policy. It is
+    only trustworthy while CloudFront is the ONLY way in — deploy.sh turns
+    off API Gateway's direct execute-api URL for exactly that reason (N42).
+    Missing or malformed, it falls back to the socket (the proxy's address):
+    one shared bucket, which fails safe — throttled, never unlimited.
+
+    "socket" (the laptop, the default): there is no proxy, so the peer
+    address IS the client; a forwarded-for header there is just text anyone
+    on the Wi-Fi can type.
     """
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        first = forwarded.split(",")[0].strip()
-        if first:
-            return first
+    if source == "cloudfront":
+        viewer = _viewer_address(request.headers.get("cloudfront-viewer-address", ""))
+        if viewer:
+            return viewer
     if request.client and request.client.host:
         return request.client.host
     return "unknown"
+
+
+def _viewer_address(value: str) -> str | None:
+    """"198.51.100.10:46532" or "2001:db8::1:46532" -> the IP, dropping the
+    source port (a new port per connection would otherwise be a new bucket).
+    None for anything that isn't an IP address."""
+    host = value.strip().rsplit(":", 1)[0].strip("[]")
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return None
 
 
 class SlidingWindowLimiter:

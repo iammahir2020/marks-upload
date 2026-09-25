@@ -66,8 +66,64 @@ have() { "$@" >/dev/null 2>&1; }
 # copies of this list would mean the second call silently dropping whatever
 # the first one had that it didn't know about.
 #   $1 — the site origin, or empty to leave ALLOWED_ORIGINS unset
+# --- CloudFront-only access (issues.md N42) --------------------------------
+#
+# API Gateway's execute-api URL is also CloudFront's origin, so it cannot be
+# switched off without a custom domain. Instead CloudFront sends a secret
+# X-Origin-Verify header on every request it forwards, and the backend
+# (ORIGIN_SECRET) refuses /api/* without it. The secret is created once and
+# then READ BACK on every later deploy — from the distribution first, then
+# the Lambda — so the two ends never drift apart. Resolved in the parent
+# shell before any $(lambda_env) subshell: generated inside one, it would
+# be a different secret on every call.
+ORIGIN_SECRET=""
+resolve_origin_secret() {
+  [ -n "$ORIGIN_SECRET" ] && return 0
+  local dist
+  dist="$(find_distribution)"
+  if [ -n "$dist" ]; then
+    ORIGIN_SECRET="$(aws cloudfront get-distribution-config --id "$dist" --output json \
+      | $PY_CMD "$HERE_NATIVE/aws/origin_header.py" read)"
+  fi
+  if [ -z "$ORIGIN_SECRET" ]; then
+    ORIGIN_SECRET="$(aws lambda get-function-configuration --function-name "$FUNCTION" --region "$REGION" \
+      --query 'Environment.Variables.ORIGIN_SECRET' --output text 2>/dev/null | grep -v '^None$' || true)"
+  fi
+  if [ -z "$ORIGIN_SECRET" ]; then
+    # URL-safe alphabet only: no ',' or '=' to break Lambda's Variables={...}.
+    ORIGIN_SECRET="$($PY_CMD -c 'import secrets; print(secrets.token_urlsafe(32))')"
+    echo "    generated a new CloudFront origin secret"
+  fi
+}
+
+# Puts the secret on an EXISTING distribution's API origin and waits for
+# CloudFront to finish deploying it — BEFORE the Lambda is told to require
+# it. The other order would 403 every real request for the minutes a
+# CloudFront change takes to propagate; a header the backend doesn't check
+# yet is harmless. A no-op once it's already there.
+ensure_origin_header() {
+  local dist; dist="$(find_distribution)"
+  [ -n "$dist" ] || return 0
+  local tmp etag
+  tmp="$(mktemp -t "$PROJECT-dist-update.XXXXXX.json")"
+  etag="$(aws cloudfront get-distribution-config --id "$dist" --query ETag --output text)"
+  if aws cloudfront get-distribution-config --id "$dist" --output json \
+      | SECRET="$ORIGIN_SECRET" $PY_CMD "$HERE_NATIVE/aws/origin_header.py" write "$(native_path "$tmp")"; then
+    say "CloudFront: adding the origin secret to the API origin (N42)"
+    aws cloudfront update-distribution --id "$dist" --if-match "$etag" \
+      --distribution-config "file://$(native_path "$tmp")" >/dev/null
+    echo "    waiting for CloudFront to deploy it (several minutes) before the backend requires it"
+    aws cloudfront wait distribution-deployed --id "$dist"
+  fi
+  rm -f "$tmp"
+}
+
 lambda_env() {
-  local vars="RECOGNIZER=cnn,HARVEST_BACKEND=s3,HARVEST_BUCKET=$CROPS_BUCKET,HARVEST_PREFIX=harvested,XRAY_ENABLED=true"
+  [ -n "$ORIGIN_SECRET" ] || { echo "lambda_env: ORIGIN_SECRET not resolved" >&2; exit 1; }
+  # CLIENT_IP_SOURCE=cloudfront (N41): the rate limit keys on the address
+  # CloudFront writes, trustworthy only because ORIGIN_SECRET makes
+  # CloudFront the only way in.
+  local vars="RECOGNIZER=cnn,HARVEST_BACKEND=s3,HARVEST_BUCKET=$CROPS_BUCKET,HARVEST_PREFIX=harvested,XRAY_ENABLED=true,CLIENT_IP_SOURCE=cloudfront,ORIGIN_SECRET=$ORIGIN_SECRET"
   [ -n "${1:-}" ] && vars="$vars,ALLOWED_ORIGINS=$1"
   echo "$vars"
 }
@@ -153,6 +209,8 @@ deploy_backend() {
   # ALLOWED_ORIGINS is set only once the site URL is known, so a first
   # backend-only deploy leaves it unset and the app keeps its LAN regex.
   # apply_allowed_origins() fills it in after the distribution exists.
+  resolve_origin_secret
+  ensure_origin_header
   local env_vars
   env_vars="$(lambda_env "${SITE_URL:-}")"
 
@@ -247,6 +305,40 @@ deploy_backend() {
 
   API_URL="https://$API_ID.execute-api.$REGION.amazonaws.com"
 
+  # issues.md N38 — caps on what an anonymous caller can make this account
+  # spend, enforced by AWS itself and account-wide (ratelimit.py's per-IP
+  # limit is per container and in memory). The budget alarm is set in the
+  # console, outside this script.
+  say "Spending caps (N38)"
+  # Requests per second across EVERY caller. Real use is ~0.1/s per grading
+  # instructor (a scan plus a harvest per script), so 2/s covers a dozen or
+  # more grading at once. Above it API Gateway answers 429 without ever
+  # invoking — or billing — the function.
+  aws apigatewayv2 update-stage --api-id "$API_ID" --stage-name '$default' --region "$REGION" \
+    --default-route-settings "ThrottlingBurstLimit=${API_BURST_LIMIT:-10},ThrottlingRateLimit=${API_RATE_LIMIT:-2}" \
+    >/dev/null
+  echo "    API Gateway: ${API_RATE_LIMIT:-2} requests/s, bursts of ${API_BURST_LIMIT:-10}"
+  # How many scans may run at once, which bounds compute cost directly.
+  # Needs lambda:PutFunctionConcurrency (added to aws/deploy-policy.json
+  # 2026-09-25); applying that policy takes an admin profile, so a denial is
+  # reported, not fatal. So is an account too small to reserve from (AWS
+  # keeps 10 unreserved).
+  local conc_err
+  if conc_err="$(aws lambda put-function-concurrency --function-name "$FUNCTION" --region "$REGION" \
+      --reserved-concurrent-executions "${LAMBDA_MAX_CONCURRENCY:-5}" 2>&1 >/dev/null)"; then
+    echo "    Lambda: at most ${LAMBDA_MAX_CONCURRENCY:-5} scans at once"
+  elif printf '%s' "$conc_err" | grep -q "UnreservedConcurrentExecution"; then
+    # Seen on this account 2026-09-25: its TOTAL Lambda concurrency is the
+    # new-account default (~10), and AWS keeps 10 unreserved, so nothing can
+    # be reserved — but that small total already caps concurrency, below
+    # this script's own number. Revisit only if AWS raises the quota.
+    echo "    Lambda: account concurrency is already at AWS's small new-account limit,"
+    echo "      which caps concurrent scans by itself; nothing to reserve"
+  else
+    echo "    ! Lambda concurrency cap NOT set: ${conc_err##*: }"
+    echo "      If that is AccessDenied, apply the updated aws/deploy-policy.json from an admin profile."
+  fi
+
   say "Smoke test + warm-up through the real endpoint"
   # 11.6.5's warm-up and a genuine end-to-end check in one. Measured cold
   # start on this function is ~9s (the adapter logs "app is not ready after
@@ -262,13 +354,36 @@ deploy_backend() {
   # deployed the backend and then silently stopped, never reaching cdn,
   # frontend or dashboard. The `[ -f ]` guard below does not catch it —
   # bash reads MSYS paths fine; only curl cannot.
+  #
+  # issues.md N22: this used to skip silently when the photo was missing and
+  # never looked at the answer, so a deploy whose only end-to-end check never
+  # ran, or failed, looked exactly like one that passed. Both now stop the
+  # deploy. $HERE (not HERE_NATIVE) for bash's own -f test.
   local photo="$HERE_NATIVE/testset/images/filled_file.jpeg"
-  if [ -f "$photo" ]; then
-    curl -s --max-time 90 -X POST "$API_URL/api/scan" \
-      -F "image=@$photo" \
-      -F 'config={"quizName":"smoke","idDigits":7,"totalMax":25,"questions":[{"q":1,"max":5},{"q":2,"max":5},{"q":3,"max":5},{"q":4,"max":5},{"q":5,"max":5}]}' \
-      | head -c 200; echo
+  local smoke_config='{"quizName":"smoke","idDigits":7,"totalMax":25,"questions":[{"q":1,"max":5},{"q":2,"max":5},{"q":3,"max":5},{"q":4,"max":5},{"q":5,"max":5}]}'
+  if [ ! -f "$HERE/testset/images/filled_file.jpeg" ]; then
+    echo "    ✗ smoke test photo testset/images/filled_file.jpeg is missing — nothing was checked" >&2
+    exit 1
   fi
+  local reply
+  reply="$(curl -s --max-time 90 -X POST "$API_URL/api/scan" -H "X-Origin-Verify: $ORIGIN_SECRET" \
+    -F "image=@$photo" -F "config=$smoke_config" || true)"
+  echo "    ${reply:0:200}"
+  if ! printf '%s' "$reply" | grep -q '"status":"ok"'; then
+    echo "    ✗ smoke test FAILED: the deployed backend did not return status ok" >&2
+    exit 1
+  fi
+  echo "    ✓ a real scan succeeds"
+  # N42's proof: the same call WITHOUT the secret — what anyone calling the
+  # execute-api URL directly would send — must be refused.
+  local direct
+  direct="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST "$API_URL/api/scan" \
+    -F "image=@$photo" -F "config=$smoke_config" || true)"
+  if [ "$direct" != "403" ]; then
+    echo "    ✗ a direct call without the CloudFront secret returned $direct, expected 403" >&2
+    exit 1
+  fi
+  echo "    ✓ a direct call without the CloudFront secret is refused (403)"
 
   echo
   echo "API_URL=$API_URL"
@@ -426,6 +541,7 @@ deploy_cdn() {
   fi
 
   : "${API_URL:?set API_URL (run ./deploy.sh backend first)}"
+  resolve_origin_secret
   local api_host; api_host="${API_URL#https://}"; api_host="${api_host%/}"
 
   say "Origin access control (S3 only)"
@@ -453,6 +569,8 @@ deploy_cdn() {
      "OriginAccessControlId": "$s3_oac",
      "S3OriginConfig": {"OriginAccessIdentity": ""}},
     {"Id": "api", "DomainName": "$api_host",
+     "CustomHeaders": {"Quantity": 1, "Items": [
+       {"HeaderName": "X-Origin-Verify", "HeaderValue": "$ORIGIN_SECRET"}]},
      "CustomOriginConfig": {"HTTPPort": 80, "HTTPSPort": 443,
        "OriginProtocolPolicy": "https-only",
        "OriginSslProtocols": {"Quantity": 1, "Items": ["TLSv1.2"]},
@@ -517,6 +635,7 @@ apply_allowed_origins() {
     return 0
   fi
 
+  resolve_origin_secret
   say "ALLOWED_ORIGINS=https://$domain"
   aws lambda wait function-updated-v2 --function-name "$FUNCTION" --region "$REGION"
   aws lambda update-function-configuration --function-name "$FUNCTION" --region "$REGION" \

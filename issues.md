@@ -129,6 +129,24 @@ other faculty.**
 | **N56** | Low | Backend | **The upload size cap has a gap on the laptop.** The early check only runs when a `Content-Length` header is sent. A chunked upload is parsed in full before `_reject_oversized` sees it. On AWS, API Gateway's 10 MB and Lambda's 6 MB payload limits bound this; laptop mode has no such bound. | `main.py:123`, `:205`. |
 | **N57** | Info | Backend | **A caller-supplied trace header is copied into the process environment.** With X-Ray on, `trace` copies `X-Amzn-Trace-Id` into `os.environ`. Only trace grouping can be polluted, and SDK errors are swallowed, but it's a value from outside ending up in process state. | `main.py:303-305`. |
 
+### Fixed 2026-09-25 — the pre-sharing pass (N39, N47, N41, N42, N22, most of N38)
+
+Code-done, tested (backend 352 -> 410 tests, frontend and Playwright
+unchanged, preflight 0 blockers) and **deployed and verified live
+2026-09-25**: a scan through CloudFront is ok; a direct execute-api call
+gets 403; /docs and /openapi.json 404; a non-JPEG/PNG upload 415; stage
+throttling reads back 2/s, burst 10.
+
+| # | Fix |
+|---|---|
+| **N39** | `app/imagecheck.py` reads the pixel size from the file header before OpenCV decodes anything; over 16 MP or 8000 px a side is refused with 413 (`MAX_IMAGE_PIXELS`/`MAX_IMAGE_SIDE`). The audit's attack image is refused in milliseconds without detection running. A 4K capture still scans; every test photo passes with its true size. |
+| **N47** | Same gate: only JPEG and PNG, by magic bytes (415 otherwise; 400 for a damaged header). TIFF, BMP, PPM and WebP are tested as refused. |
+| **N41** | `ratelimit.client_ip` no longer reads `X-Forwarded-For` at all. Hosted (`CLIENT_IP_SOURCE=cloudfront`, set by deploy.sh) it keys on `CloudFront-Viewer-Address`, which CloudFront writes itself and the existing AllViewerExceptHostHeader policy forwards (checked against AWS's docs); the laptop keys on the socket. The audit's rotating-header attack is a test. |
+| **N42** | Not the audit's suggested fix: the execute-api URL can't be disabled without a custom domain, because it is also CloudFront's origin. Instead CloudFront sends a secret `X-Origin-Verify` header (`aws/origin_header.py`) and the backend refuses `/api/*` without it (`ORIGIN_SECRET`, constant-time compare, before any other work). deploy.sh adds the header to CloudFront and waits for it to deploy BEFORE the Lambda requires it, so the rollout has no outage window. `/docs`, `/redoc` and `/openapi.json` are gone. |
+| **N22** | The smoke test fails the deploy if its photo is missing or the scan isn't `ok`, and also proves a direct call without the secret gets 403. |
+| **N38** | API Gateway stage throttling (2 req/s, bursts of 10), verified live. A Lambda concurrency cap of 5 was attempted after the owner applied the updated deploy policy; AWS refused it because the account's TOTAL concurrency is the new-account default (~10) and 10 must stay unreserved — which caps concurrency by itself, below 5 x 2. Budget alarm `marks-scanner-guard`, $5/month (confirmed 2026-09-25). Revisit the reservation only if AWS raises the account quota. |
+| **N23** | Already fixed before this pass (`mktemp`, deploy.sh); this register was stale. |
+
 ### Checked and clean
 
 These are recorded so that "not listed" isn't mistaken for "not checked":

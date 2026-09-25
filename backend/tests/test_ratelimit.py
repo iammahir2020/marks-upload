@@ -89,20 +89,49 @@ def _request(headers: dict[str, str], client=("10.0.0.1", 1234)) -> Request:
     })
 
 
-def test_client_ip_prefers_the_originating_address_not_the_proxy():
-    """Behind a Function URL and CloudFront, request.client.host is the
-    proxy — keying on it would put every caller in one bucket and turn the
-    limit into a global one."""
-    req = _request({"x-forwarded-for": "203.0.113.7, 70.1.1.1, 130.176.1.1"})
-    assert client_ip(req) == "203.0.113.7"
+def test_a_forwarded_for_header_is_never_trusted_in_either_mode():
+    """issues.md N41. The first X-Forwarded-For entry is whatever the caller
+    wrote; keying on it gave an unlimited budget to anyone who varied it."""
+    req = _request({"x-forwarded-for": "203.0.113.7, 70.1.1.1"})
+    assert client_ip(req) == "10.0.0.1"
+    assert client_ip(req, "cloudfront") == "10.0.0.1"
 
 
-def test_client_ip_falls_back_to_the_socket_when_unproxied():
-    assert client_ip(_request({})) == "10.0.0.1"
+def test_cloudfront_mode_keys_on_the_address_cloudfront_wrote():
+    req = _request({"cloudfront-viewer-address": "198.51.100.10:46532", "x-forwarded-for": "1.2.3.4"})
+    assert client_ip(req, "cloudfront") == "198.51.100.10"
 
 
-def test_client_ip_ignores_a_blank_forwarded_header():
-    assert client_ip(_request({"x-forwarded-for": "  "})) == "10.0.0.1"
+def test_the_source_port_is_dropped_so_new_connections_share_a_bucket():
+    a = _request({"cloudfront-viewer-address": "198.51.100.10:1111"})
+    b = _request({"cloudfront-viewer-address": "198.51.100.10:2222"})
+    assert client_ip(a, "cloudfront") == client_ip(b, "cloudfront")
+
+
+def test_an_ipv6_viewer_address_is_parsed():
+    req = _request({"cloudfront-viewer-address": "2001:db8::1:46532"})
+    assert client_ip(req, "cloudfront") == "2001:db8::1"
+
+
+def test_a_missing_or_malformed_viewer_address_falls_back_to_the_socket():
+    """The proxy's own address: one shared bucket — throttled, never unlimited."""
+    assert client_ip(_request({}), "cloudfront") == "10.0.0.1"
+    assert client_ip(_request({"cloudfront-viewer-address": "evil:80"}), "cloudfront") == "10.0.0.1"
+
+
+def test_socket_mode_ignores_the_cloudfront_header():
+    """On the laptop no CloudFront exists, so anyone on the Wi-Fi could type
+    that header; only the connection's own address counts."""
+    req = _request({"cloudfront-viewer-address": "198.51.100.10:1"})
+    assert client_ip(req) == "10.0.0.1"
+
+
+def test_an_unknown_ip_source_setting_refuses_to_start(monkeypatch):
+    monkeypatch.setenv("CLIENT_IP_SOURCE", "x-forwarded-for")
+    with pytest.raises(ValueError):
+        importlib.reload(config_module)
+    monkeypatch.delenv("CLIENT_IP_SOURCE")
+    importlib.reload(config_module)
 
 
 # --- Endpoint behaviour ----------------------------------------------------
@@ -112,15 +141,28 @@ def client(monkeypatch):
     """A fresh limiter per test, so ordering cannot leak a spent budget."""
     monkeypatch.setattr(main_module, "limiter", SlidingWindowLimiter(3, 60))
     monkeypatch.setattr(config_module, "RATE_LIMIT_ENABLED", True)
+    # The hosted configuration: the TestClient's socket address is the same
+    # for every request, so clients are told apart the way CloudFront does it.
+    monkeypatch.setattr(config_module, "CLIENT_IP_SOURCE", "cloudfront")
     return TestClient(main_module.app)
 
 
-def _scan(client, ip="203.0.113.9", image=b"not really an image"):
+# A real (blank) JPEG. These tests are about the limiter, so any quick,
+# non-429 answer will do — a blank page fails fast as "blurry". Arbitrary
+# bytes no longer reach the scan at all: they are refused as not-an-image
+# (issues.md N47), which would be a different 4xx for the wrong reason.
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
+
+TINY_JPEG = cv2.imencode(".jpg", np.full((60, 80, 3), 255, np.uint8))[1].tobytes()
+
+
+def _scan(client, ip="203.0.113.9", image=TINY_JPEG):
     return client.post(
         "/api/scan",
         files={"image": ("capture.jpg", image, "image/jpeg")},
         data={"config": json.dumps(CONFIG)},
-        headers={"x-forwarded-for": ip},
+        headers={"cloudfront-viewer-address": f"{ip}:443"},
     )
 
 
@@ -140,6 +182,20 @@ def test_a_different_ip_is_unaffected_by_a_neighbours_burst(client):
     assert _scan(client, ip="198.51.100.4").status_code == 200
 
 
+def test_rotating_a_fake_forwarded_for_header_no_longer_escapes_the_limit(client):
+    """The audit's actual attack (N40/N41 probe): a new X-Forwarded-For value
+    per request, from one real viewer."""
+    for i in range(3):
+        r = client.post("/api/scan", files={"image": ("c.jpg", TINY_JPEG, "image/jpeg")},
+                        data={"config": json.dumps(CONFIG)},
+                        headers={"cloudfront-viewer-address": "203.0.113.9:443", "x-forwarded-for": f"10.9.9.{i}"})
+        assert r.status_code == 200
+    r = client.post("/api/scan", files={"image": ("c.jpg", TINY_JPEG, "image/jpeg")},
+                    data={"config": json.dumps(CONFIG)},
+                    headers={"cloudfront-viewer-address": "203.0.113.9:443", "x-forwarded-for": "10.9.9.99"})
+    assert r.status_code == 429
+
+
 def test_a_429_still_carries_cors_headers(client):
     """Without them a browser reports an opaque CORS failure instead of
     the real status, so the frontend can never tell the user to slow down.
@@ -151,7 +207,7 @@ def test_a_429_still_carries_cors_headers(client):
         "/api/scan",
         files={"image": ("capture.jpg", b"x", "image/jpeg")},
         data={"config": json.dumps(CONFIG)},
-        headers={"x-forwarded-for": "203.0.113.9", "origin": "http://localhost:5173"},
+        headers={"cloudfront-viewer-address": "203.0.113.9:443", "origin": "http://localhost:5173"},
     )
     assert refused.status_code == 429
     assert refused.headers["access-control-allow-origin"] == "http://localhost:5173"
@@ -166,7 +222,7 @@ def test_preflights_are_never_rate_limited(client):
             headers={
                 "origin": "http://localhost:5173",
                 "access-control-request-method": "POST",
-                "x-forwarded-for": "203.0.113.9",
+                "cloudfront-viewer-address": "203.0.113.9:443",
             },
         )
         assert resp.status_code == 200

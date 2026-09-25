@@ -47,7 +47,9 @@
         "lambda:CreateFunctionUrlConfig",
         "lambda:GetFunctionUrlConfig",
         "lambda:UpdateFunctionUrlConfig",
-        "lambda:DeleteFunction"
+        "lambda:DeleteFunction",
+        "lambda:PutFunctionConcurrency",
+        "lambda:GetFunctionConcurrency"
       ],
       "Resource": "arn:aws:lambda:*:ACCOUNT_ID:function:marks-scanner-api"
     },

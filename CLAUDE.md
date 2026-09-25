@@ -149,6 +149,17 @@ blank there on purpose, because `roster.ts`'s `hasExamSignature` tells an
 exam sheet from the class list by it. Frontend suite 421 -> 450 (+3
 skipped: the hidden ID-digits field's tests, kept for when it returns).
 
+**Pre-sharing security pass (2026-09-25)** — issues.md "Fixed 2026-09-25":
+N39/N47 (`app/imagecheck.py`, header-read pixel cap + JPEG/PNG only), N41
+(rate limit never reads `X-Forwarded-For`; hosted keys on
+`CloudFront-Viewer-Address`), N42 (CloudFront sends `X-Origin-Verify`, the
+backend refuses `/api/*` without it; `ORIGIN_SECRET` — **don't remove it
+while `CLIENT_IP_SOURCE=cloudfront` is set**, the two are only sound
+together; API docs pages off), N22 (smoke test fails loudly), N38 (API
+throttling 2/s; the account's own ~10 total Lambda concurrency is the cap,
+nothing reservable; budget alarm `marks-scanner-guard` exists). Deployed and
+verified live 2026-09-25.
+
 **Step 17 (2026-09-25, code-done; phone checks remain)** — plan.md §22,
 step.md step 17. Two strands from live use. **Partial scans**: a
 column-count mismatch in one table no longer fails the scan — `detect()`

@@ -105,12 +105,29 @@ def allowed_origins() -> list[str] | None:
 # payload through the runtime emulator.
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(4 * 1024 * 1024)))
 
+# issues.md N39 — the byte cap doesn't bound the WORK: a PNG of a plain grid
+# compresses to ~100 KB while claiming 10000x10000 pixels. These are checked
+# from the header before decoding (app/imagecheck.py). The app's own camera
+# capture asks for 1920x1080 (Scan.tsx), and the largest test photo is
+# exactly that; 16 MP still admits 4K (8.3 MP) and a 12 MP phone photo.
+MAX_IMAGE_PIXELS = int(os.getenv("MAX_IMAGE_PIXELS", str(16_000_000)))
+MAX_IMAGE_SIDE = int(os.getenv("MAX_IMAGE_SIDE", "8000"))
+
 # What a Function URL will actually accept, for the check below to test
 # against. Not configurable — it is AWS's number, not ours.
 LAMBDA_PAYLOAD_LIMIT_BYTES = 6 * 1024 * 1024
 BASE64_INFLATION = 4 / 3
 
 RATE_LIMIT_ENABLED = _flag("RATE_LIMIT_ENABLED", True)
+
+# Where the rate limiter learns who a caller is (ratelimit.client_ip,
+# issues.md N41). "socket" — the laptop, no proxy — is the default;
+# deploy.sh sets "cloudfront" for the hosted app, which trusts only the
+# address CloudFront itself writes. Anything else is refused at startup
+# rather than silently treated as one of the two.
+CLIENT_IP_SOURCE = os.getenv("CLIENT_IP_SOURCE", "socket")
+if CLIENT_IP_SOURCE not in ("socket", "cloudfront"):
+    raise ValueError(f"CLIENT_IP_SOURCE must be 'socket' or 'cloudfront', not {CLIENT_IP_SOURCE!r}")
 
 # 30 requests per minute per IP. Chosen against real use rather than picked
 # round: an instructor scanning a class does roughly 3 a minute, so this is
@@ -168,3 +185,11 @@ HARVEST_PREFIX = os.getenv("HARVEST_PREFIX", "harvested")
 # against a parent that was never created — flip it under local-stack.sh
 # to reproduce that failure mode on purpose, not by accident.
 XRAY_ENABLED = _flag("XRAY_ENABLED", False)
+
+# issues.md N42 — the API is reachable at API Gateway's own execute-api URL,
+# skipping CloudFront and anything added there. That URL can't be turned
+# off without a custom domain, because it is also CloudFront's origin. So
+# CloudFront sends this secret as an `X-Origin-Verify` header on every
+# request it forwards (deploy.sh sets both ends), and main.py refuses any
+# /api/* request that doesn't carry it. Unset — the laptop — checks nothing.
+ORIGIN_SECRET = os.getenv("ORIGIN_SECRET") or None
