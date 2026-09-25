@@ -53,9 +53,13 @@ class Recognizer(Protocol):
         (plan.md §10 "flag, never guess")."""
         ...
 
-    def read_marks(self, cells_dir: Path, question_maxes: list[float]) -> MarksResult:
+    def read_marks(self, cells_dir: Path, question_maxes: list[float], has_serial: bool = True) -> MarksResult:
         """serial.png and marks_r1_c*.png in cells_dir -> serial, per-
         question values, and total. Must never open an id_d*.png crop —
         that boundary is plan.md §12's privacy property, and holds for
-        every implementation of this protocol, not just the remote one."""
+        every implementation of this protocol, not just the remote one.
+
+        `has_serial=False` (step 16, plan.md §21): the paper has no Serial
+        box. Return serial=None without flagging it, and never read or send
+        a serial crop."""
         ...

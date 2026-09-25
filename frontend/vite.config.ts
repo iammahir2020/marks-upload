@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import react from '@vitejs/plugin-react'
 import basicSsl from '@vitejs/plugin-basic-ssl'
 import type { Plugin } from 'vite'
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 import { VitePWA } from 'vite-plugin-pwa'
 import { injectLandingShell } from './scripts/landing-shell.mjs'
 
@@ -124,6 +124,10 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    // e2e/ holds Playwright's real-browser specs (playwright.config.ts). Its
+    // *.spec.ts names match Vitest's default pattern too, and they cannot
+    // run under jsdom.
+    exclude: [...configDefaults.exclude, 'e2e/**'],
     setupFiles: ['./src/setupTests.ts'],
     globals: true,
   },

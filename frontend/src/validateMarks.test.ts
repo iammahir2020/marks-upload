@@ -238,3 +238,41 @@ describe('isValidSerial — issues.md N21', () => {
     expect(isValidSerial(null)).toBe(false);
   });
 });
+
+// Step 16 (plan.md §21) — a quiz with no Serial box on its paper.
+describe('crossCheck — no Serial box (step 16)', () => {
+  it('blocks a save with no ID, even if a serial were somehow present', () => {
+    expect(crossCheck({ studentId: null, serial: '7' }, [], false)).toEqual({
+      action: 'block',
+      unverified: false,
+      conflicts: [],
+    });
+  });
+
+  it('allows a new ID, and does not call it unverified for lacking a serial', () => {
+    expect(crossCheck({ studentId: '1912345', serial: null }, [], false)).toEqual({
+      action: 'allow',
+      unverified: false,
+      conflicts: [],
+    });
+  });
+
+  it('treats a second record with the same ID as the same script scanned twice', () => {
+    const existing = record({ serial: null });
+    const result = crossCheck({ studentId: '1912345', serial: null }, [existing], false);
+    expect(result.action).toBe('block');
+    expect(result.conflicts).toEqual([{ reason: 'duplicate', record: existing }]);
+  });
+
+  it('ignores serials entirely, so a stray one can never raise a serial conflict', () => {
+    const existing = record({ studentId: '2000000', serial: '7' });
+    expect(crossCheck({ studentId: '1912345', serial: '7' }, [existing], false).action).toBe('allow');
+  });
+
+  it('leaves the default (Serial box) behaviour unchanged', () => {
+    const existing = record({});
+    expect(crossCheck({ studentId: '1912345', serial: null }, [existing])).toEqual(
+      crossCheck({ studentId: '1912345', serial: null }, [existing], true),
+    );
+  });
+});

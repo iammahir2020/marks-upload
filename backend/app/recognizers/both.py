@@ -125,9 +125,9 @@ class BothRecognizer:
             _log_disagreement("student_id", cnn_result.student_id, remote_result.student_id)
         return cnn_result
 
-    def read_marks(self, cells_dir: Path, question_maxes: list[float]) -> MarksResult:
-        cnn_result = self._cnn.read_marks(cells_dir, question_maxes)
-        remote_result = self._remote.read_marks(cells_dir, question_maxes)
+    def read_marks(self, cells_dir: Path, question_maxes: list[float], has_serial: bool = True) -> MarksResult:
+        cnn_result = self._cnn.read_marks(cells_dir, question_maxes, has_serial=has_serial)
+        remote_result = self._remote.read_marks(cells_dir, question_maxes, has_serial=has_serial)
 
         # If the remote path itself failed (rate_limited/model_error),
         # there is no remote value to compare against — nothing to log,

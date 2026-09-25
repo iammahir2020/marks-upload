@@ -143,7 +143,28 @@ export function assessmentConfig(assessment: Assessment, section: Section): Quiz
     idDigits: section.idDigits,
     questions: assessment.questions,
     totalMax: assessment.totalMax,
+    // Step 16 — only ever present as `false`. A quiz with a Serial box
+    // (every quiz saved before step 16 included) produces exactly the
+    // config object it always did, and the backend reads an absent field
+    // as true.
+    ...(hasSerialBox(assessment) ? {} : { hasSerial: false }),
   };
+}
+
+// Step 16 (plan.md §21) — the ONE place "does this quiz's paper have a
+// Serial box" is decided. Anything but an explicit false is yes, which is
+// what keeps every pre-step-16 assessment on today's behaviour.
+export function hasSerialBox(assessment: Pick<Assessment, 'hasSerial'> | Pick<QuizConfig, 'hasSerial'>): boolean {
+  return assessment.hasSerial !== false;
+}
+
+// Step 16 — what a NEW assessment's "Serial box on paper" toggle starts
+// at: whatever the section's most recently created quiz used, since a
+// course tends to keep one paper layout. Yes when there is none.
+export function defaultHasSerial(sectionAssessments: Assessment[]): boolean {
+  if (sectionAssessments.length === 0) return true;
+  const latest = sectionAssessments.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
+  return hasSerialBox(latest);
 }
 
 // Step.md 13.14 (Phase C) — "opening an assessment last touched before

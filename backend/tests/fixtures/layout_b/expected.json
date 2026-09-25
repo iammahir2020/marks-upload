@@ -1,0 +1,83 @@
+{
+  "_note": "What the UNMODIFIED app (before step 16) read from each source photo as layout A, via /api/scan on the default cnn path. A layout B fixture's ID/marks cells are the same pixels, so a hasSerial=false scan of it must read the same values. Regenerate only together with the fixtures (make_layout_b.py).",
+  "fixtures": {
+    "layout_b_real_class_01.jpg": {
+      "source": "real_class_01.jpeg",
+      "maxes": [
+        5.0,
+        5.0,
+        5.0,
+        5.0,
+        5.0
+      ],
+      "student_id": "6543208",
+      "questions": [
+        5.0,
+        5.0,
+        5.0,
+        5.0,
+        5.0
+      ],
+      "total": 25.0
+    },
+    "layout_b_real_class_07.jpg": {
+      "source": "real_class_07.jpeg",
+      "maxes": [
+        5.0,
+        5.0,
+        5.0
+      ],
+      "student_id": "2842189",
+      "questions": [
+        4.0,
+        4.0,
+        4.0
+      ],
+      "total": 12.0
+    },
+    "layout_b_real_class_12.jpg": {
+      "source": "real_class_12.jpeg",
+      "maxes": [
+        5.0,
+        5.0,
+        5.0,
+        5.0,
+        5.0
+      ],
+      "student_id": "?018112",
+      "questions": [
+        3.0,
+        3.0,
+        3.0,
+        3.0,
+        3.0
+      ],
+      "total": 15.0
+    },
+    "layout_b_real_class_17.jpg": {
+      "source": "real_class_17.jpeg",
+      "maxes": [
+        5.0,
+        5.0,
+        5.0,
+        5.0,
+        5.0,
+        5.0,
+        10.0,
+        10.0
+      ],
+      "student_id": "234?608",
+      "questions": [
+        5.0,
+        5.0,
+        5.0,
+        5.0,
+        5.0,
+        5.0,
+        5.0,
+        5.0
+      ],
+      "total": 40.0
+    }
+  }
+}

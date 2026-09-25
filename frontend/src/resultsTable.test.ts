@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { sortRecords, unverifiedReason } from './resultsTable';
+import type { ParsedRoster } from './roster';
 import type { StudentRecord } from './types';
 
 function record(overrides: Partial<StudentRecord>): StudentRecord {
@@ -65,5 +66,36 @@ describe('unverifiedReason', () => {
   it('does not flag a record with both fields present', () => {
     const r = record({ serial: '5', studentId: '1912377' });
     expect(unverifiedReason(r)).toBeNull();
+  });
+});
+
+// Step 16 (plan.md §21) — no Serial box: an ID is verified by the class list.
+describe('unverifiedReason — no Serial box (step 16)', () => {
+  const roster: ParsedRoster = {
+    sheetName: 'data',
+    headerRow: 1,
+    students: [{ sl: 1, row: 2, studentId: '1912345', studentIdKey: '1912345', studentName: 'Monem Tazwar' }],
+    duplicateIds: [],
+  };
+
+  it('is verified when the ID is on the class list, with no serial at all', () => {
+    expect(unverifiedReason(record({ studentId: '1912345' }), 7, { roster })).toBeNull();
+  });
+
+  it('flags an ID that is not on the class list', () => {
+    expect(unverifiedReason(record({ studentId: '1999999' }), 7, { roster })).toBe('not on list');
+  });
+
+  it('flags every record when there is no class list, since nothing verified it', () => {
+    expect(unverifiedReason(record({ studentId: '1912345' }), 7, { roster: null })).toBe('no list');
+  });
+
+  it('still flags a missing or partial ID first', () => {
+    expect(unverifiedReason(record({ studentId: null }), 7, { roster })).toBe('no ID');
+    expect(unverifiedReason(record({ studentId: '19?2345' }), 7, { roster })).toBe('ID incomplete');
+  });
+
+  it('keeps the Serial-box rule unchanged when the option is absent', () => {
+    expect(unverifiedReason(record({ studentId: '1912345' }), 7)).toBe('no serial');
   });
 });

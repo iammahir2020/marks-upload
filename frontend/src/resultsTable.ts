@@ -2,6 +2,8 @@
 // dependency-free and separate from the component so sorting and the
 // unverified-record rule can be unit-tested without a DOM, matching this
 // project's established pattern (validateMarks.ts, validateConfig.ts).
+import type { ParsedRoster } from './roster';
+import { matchAgainstRoster } from './rosterMatch';
 import { isCompleteId, normalizeSerial } from './validateMarks';
 import type { StudentRecord } from './types';
 
@@ -40,7 +42,26 @@ export function sortRecords(records: StudentRecord[]): StudentRecord[] {
 // at save, so this only surfaces records written before that check existed —
 // but those are exactly the ones nothing else would ever flag, and they
 // export as a literal "12?4567" into the gradebook.
-export function unverifiedReason(record: StudentRecord, idDigits?: number): string | null {
+//
+// `noSerial` is step 16's no-Serial-box paper (plan.md §21), where a
+// missing serial is the norm, not a gap. There, an ID is verified by
+// matching the section's class list; with no list attached, nothing can
+// verify it, and the record says so rather than passing silently.
+// The words are short on purpose: they render as a badge in a table
+// column at phone width, and "no class list" made that column ~30px
+// wider (measured in Playwright). Results' footnote says it in full.
+export function unverifiedReason(
+  record: StudentRecord,
+  idDigits?: number,
+  noSerial?: { roster: ParsedRoster | null },
+): string | null {
+  if (noSerial) {
+    if (!record.studentId) return 'no ID';
+    if (idDigits !== undefined && !isCompleteId(record.studentId, idDigits)) return 'ID incomplete';
+    if (!noSerial.roster) return 'no list';
+    const match = matchAgainstRoster(record.studentId, idDigits ?? record.studentId.length, noSerial.roster);
+    return match.status === 'matched' ? null : 'not on list';
+  }
   if (!record.serial && !record.studentId) return null;
   if (!record.serial) return 'no serial';
   if (!record.studentId) return 'no ID';

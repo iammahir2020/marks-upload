@@ -2946,6 +2946,213 @@ on any line, confidently-wrong counts included.
 
 ---
 
+## Step 16 — A second paper layout, no Serial box
+
+**Goal.** The scanner reads a second paper layout (a one-row Name/Section
+table, then the ID row, then marks, and **no Serial box**) chosen per
+quiz by a "Serial box on paper" setting, while every existing quiz and
+layout A paper scans exactly as it does today. Separately, the section
+form stops asking for ID digits (IUB IDs are always 7).
+
+Specced 2026-09-25 from a discussion about fitting the grid into a real
+question paper. plan.md §21 carries the design, the decisions and the
+paper rules. **Phase A (backend) and Phase B (frontend) both code-done
+2026-09-25; the real printed-page check is still needed.**
+
+### Before you start
+
+Read `app/detection.py`'s `detect()` from the candidate loop to the end,
+especially the id/serial selection block and the `expected` dict;
+`detect_any_orientation`; `main.py`'s `/api/scan` and `/api/harvest`
+handlers; `app/recognizers/` (all three) plus `marks.py`'s crop allowlist
+and `marks_ocr.py`; `harvest.py`'s serial handling. Frontend:
+`types.ts`, `sections.ts`'s `assessmentConfig`, `AssessmentForm.tsx`,
+`SectionForm.tsx`, `Review.tsx`'s save and cross-check path,
+`validateMarks.ts`, `resultsTable.ts`'s `unverifiedReason`, and
+`Results.tsx` (table, inline editing, both export paths).
+
+### Rules this step is bound by
+
+1. **The current flow must not break.** This is the user's hard rule.
+   An absent `hasSerial` means `true`, on the backend (old requests) and
+   in IndexedDB (old assessments). No DB version bump: an optional field
+   read with a default needs no migration.
+2. **Layout A's detection path is branched around, not edited.** With
+   `hasSerial=true`, `detect()` must produce byte-identical `result.json`
+   for every `testset/` photo. Capture a baseline BEFORE the first edit.
+3. **Mismatches fail loudly.** Every setting/paper mismatch ends in
+   `column_count_mismatch`, never `ok` (plan.md §21's table). Tested, not
+   argued.
+4. **The two `QuizConfig` shapes stay in step.** `hasSerial` goes into
+   both `app/models.py`'s `QuizConfig` and `types.ts`'s. The pinned pair
+   `tests/test_models.py` checks is the numeric bounds in
+   `validateConfig.ts`; a boolean has none, so nothing there changes and
+   the test must still pass untouched.
+5. **The ID-digits input is commented out, not deleted**, and
+   `Section.idDigits` stays in the model.
+
+### Substeps
+
+**Phase A — backend (shippable alone: nothing sends `hasSerial=false`
+yet, so behaviour is unchanged by construction) — DONE 2026-09-25**
+
+*What was actually done, and how it was checked.* 16.0's baseline went
+further than `batch_detect.py`, which applies one question count to
+every photo: a scratch script captured, per testset photo and using its
+own labelled question count, `detect()`'s and `detect_any_orientation()`'s
+result.json plus a hash of every crop each wrote, and the full
+`/api/scan` response on the default cnn path. Run twice first to prove
+it deterministic; after every Phase A change it was **byte-identical
+across all 30 photos**, and the 285 existing tests passed unchanged.
+16.7 did not use `generate.py`: `tests/fixtures/layout_b/make_layout_b.py`
+turns four REAL 3-table class photos (3, 5 and 8 questions) into layout
+B — Serial box ink inpainted away, a Name/Section table drawn above the
+ID row — so the ID/marks cells are original pixels and a no-serial scan
+must read exactly what the unmodified app read from the source photo
+(`expected.json`). It does, on all four, including two partial `?` IDs.
+`tests/test_layout_b.py` (25 tests) pins that, all four setting/paper
+combinations, the absent-field default, harvesting, and each remote-path
+function. It disables the rate limiter for itself: main.py's limiter is
+one in-memory window for the whole test process, and its ~17 real
+requests pushed `test_observability.py` into 429s. `types.ts`'s
+`QuizConfig` gained the optional field (type only). Backend 285 -> 310;
+frontend unchanged at 421, build clean.
+
+- **16.0** Baseline: run `batch_detect.py` over `testset/images` and keep
+  the output outside `testset/debug/`, for 16.13's diff.
+- **16.1** `QuizConfig.hasSerial: bool = True` (`models.py`), mirrored as
+  an optional field on `types.ts`'s `QuizConfig`.
+- **16.2** `detection.detect(..., has_serial=True)`: when false, drop
+  `serial` from `expected`, take the closest single-row table above the
+  marks table as the ID, and ignore everything higher. The `True` path
+  is untouched. Thread it through `detect_any_orientation`.
+- **16.3** `main.py`: pass `quiz.hasSerial` to detection in both
+  handlers; skip the serial read when false.
+- **16.4** Recognizers: `read_marks` gets a way to skip the serial (no
+  `serial.png` exists). `local.py`, `remote.py` (and `marks.py`'s
+  composite allowlist, `marks_ocr.py`), `both.py`. Serial returns `None`
+  and is not added to `low_confidence_fields`.
+- **16.5** `harvest.py`: no serial crop when false.
+- **16.6** `detect.py` / `batch_detect.py`: `--no-serial`.
+- **16.7** Synthetic layout B photos: rendered from the template with
+  the Name/Section table, filled with handwriting (`synthetic_scripts/
+  generate.py`'s approach), plus labels, under `testset/`.
+
+**Phase B — frontend — CODE DONE 2026-09-25**
+
+*What was actually done, and two decisions the spec didn't anticipate.*
+`sections.ts` gained `hasSerialBox` (the ONE place "does this paper have a
+Serial box" is decided: anything but an explicit `false` is yes) and
+`defaultHasSerial` (the section's most recently created quiz, yes when
+none). `assessmentConfig` adds `hasSerial: false` only for a no-serial quiz,
+so every existing quiz's config object is exactly what it was.
+`crossCheck` and `unverifiedReason` each took an optional trailing
+parameter; with it absent they are byte-for-byte the old functions.
+
+1. **The class-list workbook's exam sheet KEEPS its Serial column,
+   blank.** 16.11 said to drop it. Reading `roster.ts` showed why not:
+   `hasExamSignature` tells an exam sheet this app wrote apart from the
+   class list *by* its Serial column, and a no-serial exam sheet also has
+   STUDENT ID and STUDENT NAME — without the column it could be taken for
+   the class list the next time the workbook is loaded. Only the plain
+   `.xlsx` drops it (that file has no STUDENT NAME column, so it can never
+   be taken for a class list).
+2. **A repeated ID on a no-serial quiz is a duplicate: block, with
+   Overwrite or Cancel.** On a Serial-box quiz, same ID + different serial
+   is a warning (one of them was misread). With no serial, a second record
+   with the same ID is most likely the same script scanned twice, so it
+   gets plan.md §10's "same serial, same ID" treatment. A genuinely
+   misread ID is fixed by correcting the field, which clears the block.
+
+The three `SectionForm` tests that typed into the ID-digits field are
+`skip`ped with a note to restore them alongside the input, not deleted;
+three new ones pin what is true now (field absent, a new section saves 7,
+an edit keeps the existing value). Frontend 421 -> 450 (+3 skipped), build
+clean, `scan-tells.py` clean.
+
+*Checked in a real browser the same day* — Playwright was added to the
+project for this (`@playwright/test`, `frontend/playwright.config.ts`,
+`frontend/e2e/`, `npm run test:e2e`). `e2e/serial-layouts.spec.ts` walks
+create-section -> create-quiz -> capture (Chromium's fake camera) ->
+Review -> Results on a Pixel 7 viewport, once per layout, with
+`/api/scan` mocked; it also covers the toggle pre-fill through App.tsx
+and the dark theme. It found two things jsdom could not:
+
+1. **A real Phase B miss:** Scan's queue line (behind the Review overlay)
+   said `Serial ?` on every no-serial capture, reading as a failed read.
+   Fixed in `Scan.tsx`; a Serial-box quiz's line is unchanged, and both
+   are pinned by the e2e test.
+2. **The first badge wording was too long for a phone:** "no class list"
+   widened the Results check column by ~30px. Now "no list" / "not on
+   list" (the latter matching the Name column's existing "Not on list").
+
+It also measured something NOT caused by step 16: the Results table on a
+phone already scrolls sideways — by 60px with no badge and 82px with
+layout A's "no serial" badge, with only two questions. Recorded, not
+changed. The layout A e2e test additionally asserts a Serial-box quiz's
+scan request carries no `hasSerial` key at all.
+
+*Deployed 2026-09-25* (`./deploy.sh all`, from Windows — the first time
+`cdn` and `frontend` ran from this machine). Before it: backend 310/310,
+the 30-photo before/after comparison still byte-identical, `cnn/accuracy.py`
+and `cnn/marks_accuracy.py` unchanged from step 15, frontend 450 (+3
+skipped), Playwright 4/4, `preflight.sh` 0 blockers (after starting Docker
+Desktop, which was the only cause of its first 3), and layout A/B scans
+through the built container on a read-only root. Rolled from image
+`sha256:7b8300…331f85` / bundle `index-pKbbJw2n.js` to image
+`sha256:3b6aea…4ca618` / bundle `index-DtPZ2U8-.js`. Live checks through
+CloudFront: layout B + Serial off reads (serial null), layout B + Serial
+on fails `column_count_mismatch`, layout A unchanged (serial "22"),
+`GET /api/scan` 405; and in a real browser against production, the
+ID-digits field is absent and the toggle and warning render.
+
+
+- **16.8** `SectionForm.tsx`: comment out the ID-digits input with a
+  note (IUB-only, always 7). Default and edit behaviour unchanged.
+- **16.9** `Assessment.hasSerial?: boolean` (`types.ts`), read as
+  `?? true` everywhere; `assessmentConfig()` passes it into the
+  `QuizConfig`. `AssessmentForm.tsx`: the toggle, pre-filled from the
+  section's latest assessment, and the no-class-list warning.
+- **16.10** `Review.tsx`: hide Serial; require the ID to save; skip the
+  serial cross-checks (`findRecordsBySerial`), keep the ID one. A
+  `column_count_mismatch` on this screen gets a "check the Serial box
+  setting" hint on both kinds of quiz.
+- **16.11** `resultsTable.ts`/`Results.tsx`: hide the Serial column, sort
+  by ID, and the verified rule (ID on the class list; flagged otherwise
+  or with no list). Inline editing requires the ID. The plain `.xlsx`
+  drops the Serial column. `examSheet.ts`'s matching is by ID already;
+  check it, don't assume it.
+- **16.12** `harvestScan`/`scanImage` send the config as they do today;
+  nothing else in `api.ts` should need to change. Confirm.
+
+### Test
+
+- **16.13** Regression: `batch_detect.py` over `testset/images` again,
+  diffed against 16.0's baseline. Must be identical. Both suites pass.
+- `test_detection_regression.py`: layout B reads with
+  `has_serial=False`; each of plan.md §21's four setting/paper
+  combinations gives its stated result.
+- `test_main.py`: a request with no `hasSerial` behaves as `true`; a
+  no-serial scan returns `serial: null` with no serial flag; harvesting
+  writes no serial crop.
+- `test_models.py`: `hasSerial` defaults to `true` when omitted; the
+  pinned-bounds test passes unchanged.
+- Vitest: an assessment with no `hasSerial` behaves as `true`; the
+  toggle and warning; Review hides Serial and blocks a save without an
+  ID; the serial cross-check is not called; `unverifiedReason` under
+  both settings, with and without a roster; the ID-digits input is gone
+  and a new section still saves 7.
+
+### Done when
+
+16.13's diff is empty and both suites pass; the four-combination table
+holds; and **a real printed, filled and photographed layout B page**
+scans end to end through the live app, including a deliberate mismatch
+showing the hint. A layout A paper scanned the same day still works.
+learn.md gets its section only then.
+
+---
+
 ## Progress
 
 | Step | State |
@@ -2970,6 +3177,7 @@ on any line, confidently-wrong counts included.
 | 13 — Multi-course, multi-section persistence | **ALL FOUR PHASES DONE (2026-09-10).** Specced 2026-09-09 (plan.md §18) from a design discussion grounded in the user's real semester — one section of CSE100, one of CSE200, two of CSE203 — rather than a hypothetical one. **The problem it solves is structural, not cosmetic**: `db.ts`'s `config` store holds a single overwritten value, `StudentRecord` has no quiz or section field, and `resetAll()` is the only transition between sessions, so one round of quizzes across four sections costs eight config entries, eight class-list uploads and eight destructive resets, and the second CSE203 section cannot be graded until the first one's marks have been deleted — before the instructor has opened the exported file to check it. Replaced by two durable entities: a **Section** (course code, label, semester, ID digits, the class list, one workbook file) and an **Assessment** (one quiz's question config plus its records), with course *derived* from `section.courseCode` rather than stored — for a single instructor with no server, a Course store buys a join and nothing else. **Four decisions came from the user rather than from the design**, and each narrowed it: one workbook file per section (so a Section owns exactly one, and §17's existing sheet-collision logic already handles a semester of quizzes landing in it as sibling tabs); no shared quiz template across sections, so the two CSE203 sections are configured independently and a 'duplicate from' affordance is deliberately **not** specced (the seam stays open — it is additive and needs no schema change); records kept until semester end and then purged on a prompt, rather than deleted at export (no recovery if the export was wrong, and a regrade query three weeks later is a real event) or kept forever; and the plain download unchanged, since it is the verification path — download, open, check, file in Drive. **It reverses 12.1's fresh-upload-per-quiz rule on purpose**, and names the reversal rather than quietly editing the sentence: 12.1's reasoning (never write into a stale in-app copy) was correct and stays correct, but at four sections × six quizzes its price is twenty-four uploads, so the rule is *replaced* — staleness is made visible instead of impossible, via a provenance line on every workbook export ("the copy this app produced on 12 Sep, for Quiz 1"), **Re-pick** as a first-class button beside it, and re-caching the bytes just written after each successful export so an instructor who uploads each download back to Drive keeps the chain aligned. The Drive API is explicitly rejected as the alternative: OAuth, a verified app and a Drive scope would trade away the no-auth/nothing-server-side property that makes this app deployable at all, to save one file-picker tap. **Two correctness items ship with the schema rather than after it**, both silent if deferred: duplicate detection must be scoped to the assessment (`findRecordsBySerial`/`findRecordsByStudentId` query a global index today — a CSE100 and a CSE203 student sharing serial `7` is normal, and an identity cross-check that is usually wrong is one the instructor learns to dismiss on the occasion it is right), and the v4 → v5 migration must fold an in-flight session into one Section plus one Assessment rather than drop it, since someone may be mid-quiz when the new bundle loads. `meta`/`getSourceId()` stays untouched by both the migration and the purge, per its own rule. **The new worst failure is scanning thirty scripts into the wrong section** — silent, and indistinguishable from success — which is what Phase C exists for: a persistent context header on Scan and Review, and a confirmation when resuming an assessment last touched before today. **No backend changes at all**: `/api/scan` takes the quiz config per request and stores nothing, so sections, semesters and multi-quiz history are entirely a frontend concern — no API change, no new dependency, no redeploy. The capture → review → confirm loop is untouched by design (plan §11's "don't add a tap"); everything added sits before it (which section am I in) or after it (which file does this export into). Four independently-shippable phases: **A** schema, migration and the library screen (invisible except that a second quiz stops destroying the first); **B** the roster moves onto the section, picked once per semester, plus export provenance; **C** the context header, assessment-scoped duplicates and an identity-carrying filename (`CSE203-2_Quiz-1_2026-09-09.xlsx`); **D** the semester boundary — grouping, the prompted purge, the guard that blocks it while any assessment has `exportedAt === null`, and the disclosure update, since the app will now hold student IDs and marks on the device for a semester rather than a sitting (the same "true but incomplete" shape 11.5 already corrected once). Two things were left open at the time this row was first written — free text vs. a picker for semester labels, and whether the app opens on the library or jumps into the last active assessment — and both are now decided (13.22, 2026-09-10): a Spring/Summer/Autumn + year picker (`sections.ts`'s `SEMESTER_SEASONS`/`formatSemesterLabel`/`parseSemesterLabel`, wired into `SectionForm.tsx`, with a same-day-current fallback for editing a pre-picker label the picker can't parse), and the library, confirmed rather than newly built (`App.tsx` already defaulted there). Frontend suite reached 333 on this follow-up, then 339 after 13.23 added a per-section delete (its own smaller-blast-radius escape hatch alongside the semester purge and the full-wipe reset, reusing `deleteSection()`'s existing cascade), then 358 after 13.24 added a per-ASSESSMENT delete (`deleteAssessment()`, one quiz narrower still) and required the section/assessment delete confirmations to be TYPED, not just tapped — catching and fixing a real gap along the way, where the existing unexported-assessment guard blocked on `exportedAt === null` alone and would have made a brand-new, wrongly-added (and therefore always-unexported) assessment impossible to ever delete; narrowed everywhere to also require real records. See 13.22, 13.23 and 13.24's own entries below for the full account. **Built 2026-09-10**: Phases A (`db.ts` v5 with a three-case-tested migration, `sections.ts`, `Library.tsx`, `SectionForm.tsx`, `AssessmentForm.tsx`, `App.tsx`'s new screen enum, `Setup.tsx` deleted outright) and B (the roster upload ported onto `SectionForm.tsx` unchanged in behaviour, minus the old plain/workbook mode toggle — deliberately simplified once the roster stopped being a per-quiz choice; provenance + Re-pick + re-cache on every workbook export, the last one verified end to end by actually exporting two quizzes in the same section and reloading the real downloaded bytes to confirm both sheets survive). Two items pulled forward from Phase D and already done: 13.20 (`exportedAt` stamped on both export paths) and 13.21 (the disclosure was written fresh with the semester-long wording from the start, so there was no stale sentence to correct). 13.13 (Phase C's context header) is also done, extended to `Review.tsx` itself — its fixed-overlay layout hides Scan's own header at the exact moment a save is confirmed, the highest-value place for the context to be visible. **Phase C, built the same day**: `findRecordsBySerial`/`findRecordsByStudentId` (13.15) now take an `assessmentId` and filter the index lookup to it — verified both at the storage layer and on the actual conflict banner in `Review.tsx`, the latter proving the check still fires correctly WITHIN one assessment while no longer crossing course boundaries. `exportFilename` (13.16) now takes the section, producing `CSE203-2_Quiz-1_2026-09-09.xlsx` — verified by reading the real `.download` attribute `triggerDownload` sets, not just that a mocked download fired. 13.14 (resume confirmation) landed as two pure functions in `sections.ts` — `lastActivityAt` (derived from records already fetched for the scanned count, not a stored field) and `needsResumeConfirmation` (compared by LOCAL calendar day, not a rolling 24-hour window) — with `Library.tsx` showing a confirm banner only when it's earned; a genuinely timezone-fragile first draft of its own test fixtures was caught failing on this machine's real timezone before it could ship as a false negative. **Phase D, built the same week**: the real scoped semester purge (13.18) is triggered exactly where the spec names — creating a section under a genuinely new semester label, detected by `App.tsx` reading every prior section's semester before the save completes, never on a timer and never just from revisiting a multi-semester library. `Library.tsx` offers each OTHER semester separately (`sections.ts`'s new `otherSemesters`/`purgePreview`), comparing labels by EXACT string on purpose — "Fall 2026" and "fall 2026" are two separate candidates, not silently merged, which is what keeps the label-drift risk this section itself names visible rather than papered over inside the one feature that deletes data. The unexported guard (13.19) blocks a semester's purge outright when any assessment still has `exportedAt === null`, named by section and quiz, Cancel only — real data to check against from day one, since 13.20 stamped it back in Phase B. `Library.tsx`'s old full-wipe "Reset everything" stays exactly as it was, as the blunt escape hatch it always was; the new purge is the scoped, safe path alongside it. Frontend suite: 245 → 282 (Phase A/B) → 301 (Phase C) → 322 (Phase D), five consecutive full runs confirmed stable, including a first-ever `App.test.tsx` for the one piece of this step's logic that lives in App.tsx's own routing glue rather than in a screen component. See step.md's own step 13 section for the full account, including a real test-isolation bug caught and fixed in Phase A/B and a real timezone bug caught and fixed in Phase C. |
 | 14 — Landing page | **ALL THREE PHASES CODE-DONE 2026-09-10** (content, tokens, entry/exit; static-first prerendered delivery with zero runtime JS; the five-state scroll-linked scan animation with its reduced-motion/unsupported-browser fallback). What's left is real-device verification the spec itself says jsdom cannot do — see Phase C's own write-up below for exactly what that covers. plan.md §19 carries the rationale; this file's step 14 carries the build order, in three independently-shippable phases. **The problem**: the link opens straight into `Library.tsx`'s "Your sections", a screen that assumes the reader already knows why they'd want a section — so a colleague sent the link has no way to find out what this is, how it works, or what it refuses to do. **Six decisions came from the user**: "Open the app" pinned at the top at every scroll position; dark theme unconditionally (not `prefers-color-scheme`-aware the way the app is); an animated scan rather than screenshots as the hero; Raycast's design system as the structural reference; lightweight/static-first so it works on 3G and a flaky connection; and **mobile-first, then responsive upward** — the phone is the primary target, which amends rather than sits beside the others: the type ramp becomes fluid `clamp()` rooted at ~32px instead of a 64px desktop size scaled down, the section rhythm starts at 48px and grows via `min-width`, the pinned bar must stay one compact row, and the scan animation cannot use the two-column desktop scrollytelling layout at all (on a phone the graphic pins to the top at a bounded height with captions scrolling beneath, and the grid it draws is reduced so it stays legible at 320px). Two hard rules come with it, both from bugs this repo already shipped: no horizontal overflow at 320px, and nothing depending on `100vh` since iOS Safari changes it mid-scroll. Because jsdom has no layout engine, **real-device verification is part of the Done-when bar rather than a nice-to-have** — the mode-toggle overflow, the "No file chosen" input and the rows running off the right edge were all desktop-fine, phone-broken, and all three were found by using it on a phone. **It reverses the letter of one of those requests on purpose and says so**: server-side rendering was asked for, and is rejected, because the frontend is static-on-CloudFront and the backend is Python-on-Lambda — rendering per request puts a possibly-cold Lambda into the critical path of the first paint, which on a flaky connection is the worst available place for it, and breaks both the stateless-backend invariant (§9) and step 11's single-origin static shape. The goal is kept and the mechanism replaced: **pre-rendered at build time** via `renderToStaticMarkup` (from `react-dom`, already a dependency — no new package), so first paint needs one round trip and the existing service worker makes a repeat visit need zero network. **The landing page ships no runtime JavaScript at all**: its markup lives outside `#root` so React never owns it, visibility is a class on `<html>` set before first paint by a synchronous `localStorage` read (deliberately not the async IndexedDB `meta` store, which would paint the page and then yank it away), and ~15 lines of inline script handle the CTA so it works before the bundle arrives. **From Raycast: structure only** — the surface ladder with hairline borders and no shadows, 96/64/48 section rhythm, a 64/56/40/24 display ramp, one accent spent sparingly. **Not its skin**: not its cool-black palette (this app is deliberately warm, and the seam would land exactly at the tap that leaves the page), not its white primary CTA (the CTA is teal, the colour of the thing it hands off to), not its red hero stripe (that is their brand signature, and red means `--danger` here), not Inter (a webfont costs ~100KB of service-worker precache in an offline-capable PWA for a page seen once), not the keycap treatment. **Seven sections**, one argument each: hero (the marking is already done — what's left is transcription) → the problem in real numbers → how it works, told by the animation → what it refuses to do (blank-and-flagged over a confident guess; loud failure over writing Q4's mark into Q3) → where your work actually goes → why it exists → close. **The animation is one pinned inline SVG through five scroll-linked states**, and its fourth state resolves one cell to a flag rather than a number — it *demonstrates* "flag, never guess" instead of claiming it. Inline SVG and CSS only; video and PNG sequences are ruled out for weight up front rather than discovered later. This does not violate the design skill's frequency-gate animation rule — that rule is about the loop run thirty times a class, and this page is seen once, so by its own logic motion is earned here. **Budget: under ~10KB gzipped for a complete first paint**, against the current 75KB-gzip JS-before-anything, enforced by a test against the real build output rather than remembered. Named risks: a prerender step can silently drift from its component (guarded by a test that reads the built `index.html`), the component must stay purely presentational or `renderToStaticMarkup` throws in Node, there must be a way back to the page for someone who wants to show a colleague, and the landing tokens must stay scoped or they break the app's own theming. No backend changes, no new dependency. **Phase A shipped**: `landing.ts` (the `hasSeenLanding`/`markLandingSeen` pair, failing toward showing the page rather than crashing if storage throws), `landing.css` (the full `.landing`-scoped token set, verified to declare nothing on `:root`), `Landing.tsx` and `ScanGraphic.tsx` (a static illustration built as separately-animatable SVG groups, for Phase C to extend rather than replace), and `App.tsx`/`Library.tsx` wiring for entry and the way-back link. 25 new tests, frontend suite 358 → 383, three consecutive full runs stable. **The built bundle grew in Phase A** (CSS +3.6KB, main JS +7.6KB raw) because `Landing.tsx` shipped as an ordinary eagerly-imported screen — expected and recorded rather than hidden, since §19's <10KB weight budget is a claim about Phase B's own shape, not Phase A's. **Phase B reverses it and delivers the budget for real**: `scripts/prerender-landing.mjs` (new — runs after `vite build`, wired into `npm run build`) bundles a new `src/prerenderEntry.tsx` via Vite's own SSR build (no new dependency — reuses the bundler already doing this JSX/TS transform), calls `renderToStaticMarkup` in Node, and injects the markup plus `landing.css`'s raw text plus a ~15-line inline bootstrap script into the real `dist/index.html`, outside `#root`. `App.tsx`'s `'landing'` screen and `landing.ts`'s `hasSeenLanding`/`markLandingSeen` are retired outright — the pre-load decision is the static shell's job now, and the "way back" (`Library.tsx`'s unchanged `onShowLanding` prop) just clears the `ms-app-visible` class the bootstrap script sets, revealing the same always-present static markup rather than switching to a client-rendered component. The built numbers land back at 10.42KB/2.89KB gzip CSS and 244.95KB/75.74KB gzip JS — Phase A's growth fully reversed — with the actual first-paint cost (injected markup + critical CSS + bootstrap script, gzip-measured against the real build) at **~5.7KB**, under the ~10KB budget. `prerender.test.ts` (new, 5 cases) runs a real `npm run build` and reads the actual `dist/index.html` to guard the exact failure mode plan.md §19 names — a silently-empty prerender that every component test would still pass. Frontend suite: 383 → 385. Verified by hand with a jsdom smoke script against the real built HTML: a first-time visitor gets no visible class, a returning visitor gets `ms-app-visible` immediately, and clicking "Open the app" sets both the class and the storage flag. **Phase C adds the scan animation**: a new `ScanAnimation.tsx` (used by "How it works", section 3) draws all five §19 states — photographed/rotated, straightened/detected, cells separated, digits resolved with Q3 flagged, and the export as a mini spreadsheet row — sharing one grid (now including a serial row the Phase A hero graphic doesn't have) so they crossfade via opacity with no layout shift. Scroll-linking is pure CSS: `view-timeline-name`/`animation-timeline` on `.lp-scan-scroller`, gated behind `@supports (animation-timeline: view()) and (prefers-reduced-motion: no-preference)` so an unsupported browser or a reduced-motion reader gets state 5 (the settled export) statically by default — doing double duty for 14.7's progressive enhancement and 14.8's hard requirement in one guard, shipped in the same change. Phone pins the graphic to `top: 0` bounded at 45vh with captions scrolling beneath (reusing the app's own `.lp-step`/`.lp-list`, not a new list type); wide switches to a row with `align-items: flex-start` — load-bearing, since a plain flex row would stretch the short pin to the tall captions column's height and break `position: sticky` outright. Frontend suite: 385 → 394 (`ScanAnimation.test.tsx`'s 8 structural/drift-guard cases, plus one more `prerender.test.ts` case confirming all five states reach the real built HTML); weight budget test still passes at ~7.9KB gzip against the ~10KB bar, tighter than Phase B's ~5.7KB but with headroom left. **What's honestly still open**: the crossfade percentages are a reasoned first pass, not a device-tuned result, and the spec's own Test section names real-phone scrolling — not jsdom, which can check neither layout nor scroll-driven-animation behavior — as where 14.7/14.8 are actually verified: crossfade timing while actually scrolling, the pin never overlapping its own caption at 320px, iOS Safari with the address bar both expanded and collapsed, and a throttled 3G connection. **14.9 (2026-09-10) fixed three real bugs found by actually using it**: `vite dev` (the everyday `./dev.sh` workflow) never served the landing page's static shell at all — only `vite build` ran the prerender injection, so a real dev-mode visit never saw it, on any visit, ever — fixed with a dev-mode Vite plugin (`landingShellDevPlugin`, `apply: 'serve'`) using `server.ssrLoadModule` to run the identical injection logic (now shared via new `scripts/landing-shell.mjs`, imported by both the build script and the dev plugin so they cannot drift). Separately, even where the shell existed, the "way back" link lived inside a `<details>` that collapses itself the instant a first section exists — undiscoverable for any Library anyone would actually be using — moved to an always-visible "About" button in the header. **A third bug, reported with screenshots**: the scan animation's pin (and the pinned topbar) never actually stuck to anything — `body`/`.landing`'s `overflow-x: hidden` silently computed `overflow-y: auto` too (a real CSS Overflow spec coupling), turning both into scroll containers that confine every `position: sticky` descendant to a box that never itself scrolls, breaking `.lp-topbar` (since Phase A) and `.lp-scan-pin` identically, and very likely the real app's own `.data-table thead th` sticky header too. Fixed with `overflow: clip visible` instead, which clips the same horizontal overflow without the coupling; verified with a real Playwright/Chromium browser (jsdom cannot render layout at all) — before the fix, sticky elements' positions drifted in lockstep with scroll; after, they stayed pinned through 2000px of scrolling, the five scan states genuinely crossfade in order, and no horizontal overflow reappeared at a real 320px viewport. **14.10 (2026-09-10) fixed a second, phone-specific problem reported with screenshots**: even with 14.9's sticky fix, the single-column phone layout's `min-height: 55vh` per-caption spacer produced multiple screens of dead black space per caption — technically-correct sticky behavior that nonetheless read as broken. Verified first with a real Playwright `devices['iPhone 13']` profile (per explicit instruction — render it, don't guess), confirmed the diagnosis, then fixed by dropping scroll-driving entirely on phone: the graphic now plays as a plain, self-contained, infinitely-looping CSS animation (same five keyframes, retimed onto a 10s clock, no `@supports` check needed since it needs no scroll-timeline support at all), with the captions kept as an ordinary compact list below it rather than removed outright (removing them would have traded the layout bug for a real accessibility regression, since the graphic is `aria-hidden` and the captions are this section's only text). The wide scroll-linked version is unchanged. Re-verified both sizes with the same real-browser method: phone's `.lp-scan-scroller` height dropped from ~2197px to ~914px and the whole page now reads at one consistent density; desktop's scroll-crossfade and sticky pin still work exactly as before. Frontend suite: 397 (unchanged — a real-browser layout fix, not jsdom-expressible). See step.md's own step 14 Phase B, Phase C, 14.9, and 14.10 write-ups (and learn.md) for the full account. |
 | 15 — Crossed-out glyphs | **Code-done 2026-09-24; real-scan verification still needed.** Raised from a real photo (Q1 "~~6~~ 5", Q2 "~~4~~ 3"). The 10-class model called 95 of 164 real crossed-out glyphs (58%) a CONFIDENT digit. Now an 11th class, CROSSED_OUT (`cnn/classes.py`), trained from synthetic strikes over EMNIST (`cnn/strikes.py`) plus four photographed practice pages (`cnn/pages.py`, `training_data/pages/`, gitignored), warm-started from the old checkpoint (`train.py --init-from`, two runs: 6 epochs, then 3 more after the barred-7 fix). **Measured** (`cnn/crossed_accuracy.py`): 33/36 held-out crossings-out caught at `CROSSED_OUT_FLOOR` 0.8; 1/328 clean testset glyphs called crossed out, and that one is a serial "99" whose 9s touch and segment as one blob. The first model called a real continental barred 7 crossed out at 0.79; `strikes.py` now renders barred 7s as clean 7s and it fell to 0.58. **Nothing got worse**: ID per-digit 91.8% → 93.4%, whole-ID 55.2% → 58.6%, marks 98.1% (unchanged), serial 63.2% → 68.4%, total 89.5% → 94.7%, marks confidently-wrong 1 → 0, ID confidently-wrong unchanged at 1. The template photo decodes end to end through the real `/api/scan` to suggestions {q1: 5, q2: 3}; Q3 (correction touching its crossing-out) is flagged crossed out with no suggestion. A crossed-out ID box is `?`, which rosterMatch.ts's existing unique-candidate match already resolves. Harvest refuses every crossed-out cell. Backend 264 → 281, frontend 408 → 417. **Open**: all crossed-out training data is one writer (the instructor, which is the right writer for marks but not for student-written IDs/serials); a correction touching its crossing-out is not split; no real phone session yet. **Follow-ups the same day (2026-09-24), after live testing:** (1) "Half marks now missing" — measured, not assumed: on 120 synthetic half marks built from the instructor's own digits, the new model reads a clean d.5 at 116/120 (old: 114), but BOTH models fail when the pen dot is tiny (3/120, dropped by segment.py's noise floor) or touches a digit (17/120) — and there the OLD model had filled in a wrong number (2 for 2.5) 78 times, which is what made half marks look like they worked. Added `local.py`'s `_missing_point`: an unmatched "2 5" with no point found is offered as a 2.5 SUGGESTION when 25 is illegal and 2.5 legal — tiny dot 3→93/120, small 62→107, touching 17→38, zero wrong suggestions. Known and NOT changed: a "0.5" whose dot is lost reads "05", which N35 decodes as a filled-in 5 (the sum check shows it). (2) Deleting one section or one quiz no longer BLOCKS on never-exported work — it warns inside the typed confirm (`sections.ts`'s `hasUnexportedWork`, renamed from `isBlocking`); the semester purge still blocks, since it is offered unprompted and takes every section at once. (3) Review's per-field messages overhauled: a status word per field (Invalid / Unclear / Crossed out) plus a Use button, with the explanation said once per card; the marks row is top-aligned so fields with and without a status line stay level (checked in a real headless-Edge render at phone width, both themes). Backend 285, frontend 421. |
+| 16 — Second paper layout, no Serial box | **Both phases CODE-DONE 2026-09-25; a real printed layout B page still needs scanning.** Phase B: the per-quiz toggle (pre-filled from the section's latest quiz) with a no-class-list warning; ID-digits input hidden; Review hides Serial, requires the ID, treats a repeated ID as a duplicate; Results/plain export drop Serial and verify by class list — but the workbook exam sheet KEEPS a blank Serial column, because roster.ts's hasExamSignature depends on it (frontend 421 -> 450). Phase A verified by a byte-identical before/after capture of detection, crops and `/api/scan` over all 30 testset photos, plus 25 new tests on layout B fixtures made from real photos (backend 285 -> 310). A per-quiz "Serial box on paper" setting (`hasSerial`, default on) lets the scanner read a second layout (one-row Name/Section table, ID row, marks; no Serial box) alongside today's, which must keep scanning byte-identically — the user's hard rule. Every setting/paper mismatch fails as `column_count_mismatch`, never a silent wrong read. No-serial quizzes are allowed without a class list (with a warning); "verified" there means the ID is on the class list. The section form's ID-digits input is hidden (IUB IDs are always 7). Per-question display labels were considered and dropped. Design and paper rules: plan.md §21. |
 
 ---
 

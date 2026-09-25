@@ -2381,3 +2381,158 @@ not real access control. The shape discussed:
 Whether to actually build this at all. Filed here as reference for if/when
 it's picked up, in the same spirit as §18's semester-purge decisions were
 filed as open questions before being resolved.
+
+## 21. A second paper layout — no Serial box (specced and built 2026-09-25)
+
+Raised while working out how the marks grid fits into a real question
+paper (the CSE 211L / CSE 203L quiz papers). The instructor settled on
+**two layouts the scanner must read**, and on one simplification to the
+setup screen. Build steps are step.md step 16. **Both phases are built
+(2026-09-25); a real printed layout B page has not been scanned yet.**
+
+### The two layouts
+
+**Layout A, today's, unchanged.** Name and Section as underlined text,
+then three separate bordered tables stacked top to bottom: ID, Serial,
+Marks.
+
+**Layout B, new.** A one-row bordered `Name | ____ | Section | ____`
+table, then the ID row, then the marks table. **No Serial box.**
+
+```
+Layout A                              Layout B
+Name: ________  Section: ____         ┌────┬──────────────┬───────┬────┐
+┌──┬─┬─┬─┬─┬─┬─┬─┐                     │Name│              │Section│    │
+│ID│ │ │ │ │ │ │ │                     └────┴──────────────┴───────┴────┘
+└──┴─┴─┴─┴─┴─┴─┴─┘                     ┌──┬─┬─┬─┬─┬─┬─┬─┐
+┌──────┬─────┐                         │ID│ │ │ │ │ │ │ │
+│Serial│     │                         └──┴─┴─┴─┴─┴─┴─┴─┘
+└──────┴─────┘                         ┌─────┬─────┬─────┬─────┬───────┐
+┌─────┬─────┬───────┐                  │Q1(5)│Q2(5)│Q3(5)│Q4(5)│Tot(20)│
+│Q1(5)│Q2(5)│Tot(10)│                  ├─────┼─────┼─────┼─────┼───────┤
+├─────┼─────┼───────┤                  │     │     │     │     │       │
+│     │     │       │                  └─────┴─────┴─────┴─────┴───────┘
+└─────┴─────┴───────┘
+```
+
+### The hard rule
+
+**The current scanning flow must not break.** Everything in this section
+is additive. Every new field defaults to exactly today's behaviour when
+it is absent: an assessment saved before this change, and an API request
+from a frontend that predates it, are both treated as "Serial box on
+paper". Layout A's detection path is not edited, only branched around.
+Proven by re-running the whole `testset/` set before and after and
+diffing the results, not by reasoning about the diff.
+
+### Why a setting, not auto-detection
+
+The detector could try to infer the layout from the column count of the
+box nearest the marks table. It doesn't, on purpose. §5's selection
+comment (`detection.py`, "Select id/serial by *position*, not column
+count") records why counts are the wrong signal: a real line-detection
+shortfall on the student's own ID row would make a count-based guess pick
+the wrong box and read the wrong digits without failing.
+
+An explicit per-quiz setting instead turns every mismatch into a loud
+failure, because the two layouts put a different column count where the
+other expects its box:
+
+| Setting | Paper | What the detector sees | Result |
+|---|---|---|---|
+| Serial on | A | Serial (2 cols), ID above it | ok, as today |
+| Serial off | B | ID (idDigits+1 cols) directly above marks | ok |
+| Serial on | B | "Serial" = the ID row (8 cols ≠ 2) | `column_count_mismatch` |
+| Serial off | A | "ID" = the Serial box (2 cols ≠ 8) | `column_count_mismatch` |
+
+No combination reads a wrong box and returns `ok`. The mismatch message
+shown on Review gains a hint to check the setting.
+
+### Decisions taken from the user, not inferred
+
+1. **The setting lives on the Assessment** ("Serial box on paper",
+   `hasSerial`), not the Section: the paper is per quiz, and a course can
+   switch layouts mid-semester. A new assessment pre-fills it from the
+   section's most recent one.
+2. **A no-serial quiz is allowed without a class list, with a warning.**
+   §2 names the serial as the check that catches a misread ID when there
+   is no roster; dropping both leaves nothing to catch it. The form says
+   so rather than forbidding it.
+3. **"Verified" on a no-serial quiz means the ID matches the class
+   list.** Today a record with an ID and no serial is "unverified"
+   (`resultsTable.ts`'s `unverifiedReason`); on a no-serial quiz that
+   would flag every student. With a roster, `rosterMatch.ts`'s match is
+   the stronger identity check anyway. With no roster, every record stays
+   flagged, which is honest: nothing verified it.
+4. **The ID-digits field is hidden from the section form.** This is an
+   IUB-only tool and IUB IDs are always 7 digits. The input is commented
+   out, not deleted; `SectionForm.tsx` already defaults a new section to
+   7 and keeps an existing section's saved value on edit, and
+   `Section.idDigits` stays in the data model, because detection, the
+   roster parser and the recognizer all still read it.
+5. **Per-question display labels ("Part 1" instead of "Q1") were
+   considered and dropped.** The header row is never read (only
+   `marks_r1_c*` crops are), so the paper can say anything already; the
+   export keeping "Q1" was judged acceptable.
+
+### What changes on a no-serial assessment
+
+- **Detection:** the closest single-row table above the marks table is
+  the ID. Anything higher is ignored, which is what makes layout B's
+  Name/Section table harmless. Only the `hasSerial=false` branch is new.
+- **Recognition and harvesting:** no serial is read (it comes back
+  `null`, not flagged); no serial crop is harvested.
+- **Review:** the Serial field is hidden; saving requires the ID
+  (normally ID *or* serial is enough); the serial duplicate checks are
+  skipped. A second record with the same ID is treated as §10's "same
+  serial, same ID" — the same script scanned twice — and blocks with
+  Overwrite or Cancel rather than warning: there is no serial to suggest
+  the two are different students, and a misread ID is fixed by correcting
+  the field.
+- **Results and export:** no Serial column, rows sorted by ID, the
+  verified rule above; the plain `.xlsx` omits the Serial column. **The
+  class-list workbook's exam sheet keeps it, blank**: `roster.ts`'s
+  `hasExamSignature` identifies an exam sheet this app wrote by its Serial
+  column, and a no-serial exam sheet also carries STUDENT ID and STUDENT
+  NAME, so without it that sheet could be taken for the class list on the
+  next load.
+
+### Paper design rules (either layout)
+
+These come from reading `detection.py` and `cnn/segment.py`, and belong
+with §3's template rules:
+
+- **Separate tables, never enclosed.** `_find_table_quads` keeps only
+  outermost contours (`RETR_EXTERNAL`), so a decorative border around the
+  group would hide all three.
+- **Nothing that could pass for one of the grid's tables.** Any
+  other 2-row bordered table can be taken for the marks table, and in
+  layout A any 1-row box closer to the marks table than the real Serial
+  can be taken for it. A `Section | 3` box sitting between them would be
+  read as the serial and pass every check.
+- **Clear gaps.** A table touching another line (the header rule, a
+  neighbouring box) merges into one contour. About 5 mm.
+- **The ID row has exactly `idDigits` boxes** (7).
+- **Marks table: one column per question plus Total, Total last.** The
+  printed `(5)` is for humans; the app takes maxima from the assessment,
+  so they must agree. Header wording is free. No merged header cells.
+- **The answer row stays taller than the header row** (the orientation
+  fallback, `detection.py:434-446`). A long label that wraps can break
+  this.
+- **Cell size stays near the template's.** `segment.py` trims 12% per
+  edge (too small: `4.5` crowds together) and drops components under
+  0.15% of cell area as noise, against a real pen dot measured at 0.36%.
+  A cell about 2.4× the template's area starts losing half-mark dots, and
+  a wide Total cell is where `2.5` → `25` could still be a legal value.
+  Don't stretch the marks table to match the ID row's width.
+
+### Open risks, named rather than assumed away
+
+- **Only synthetic photos until the instructor prints one.** A real,
+  filled, photographed layout B page is the Done-when bar, not a
+  nice-to-have.
+- **Layout B without a class list has no misread-ID check at all.**
+  Accepted by decision 2, surfaced by the warning.
+- **The Name/Section table's handwriting is never read**, by design. The
+  app already knows the section, and a name read from handwriting would
+  be the least reliable identity field there is.

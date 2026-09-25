@@ -4,6 +4,8 @@ import {
   assessmentDeletePreview,
   assessmentsForSection,
   currentSemesterSeason,
+  defaultHasSerial,
+  hasSerialBox,
   formatSemesterLabel,
   groupSections,
   isDuplicateSection,
@@ -408,5 +410,36 @@ describe('currentSemesterSeason', () => {
 
   it('picks Autumn for the last third', () => {
     expect(currentSemesterSeason(new Date('2027-11-15'))).toBe('Autumn');
+  });
+});
+
+// Step 16 (plan.md §21) — the no-Serial-box paper layout.
+describe('hasSerialBox / assessmentConfig / defaultHasSerial (step 16)', () => {
+  it('treats an assessment saved before step 16 (no field) as having a Serial box', () => {
+    expect(hasSerialBox(makeAssessment('s'))).toBe(true);
+    expect(hasSerialBox(makeAssessment('s', { hasSerial: true }))).toBe(true);
+    expect(hasSerialBox(makeAssessment('s', { hasSerial: false }))).toBe(false);
+  });
+
+  it('leaves the config of a Serial-box quiz exactly as it was, with no hasSerial key at all', () => {
+    const section = makeSection();
+    for (const a of [makeAssessment(section.id), makeAssessment(section.id, { hasSerial: true })]) {
+      expect(assessmentConfig(a, section)).not.toHaveProperty('hasSerial');
+    }
+  });
+
+  it('sends hasSerial: false for a no-serial quiz', () => {
+    const section = makeSection();
+    expect(assessmentConfig(makeAssessment(section.id, { hasSerial: false }), section).hasSerial).toBe(false);
+  });
+
+  it('pre-fills a new quiz from the most recent one in the section, yes when there is none', () => {
+    expect(defaultHasSerial([])).toBe(true);
+    const older = makeAssessment('s', { hasSerial: true, createdAt: '2026-09-01T00:00:00.000Z' });
+    const newer = makeAssessment('s', { hasSerial: false, createdAt: '2026-09-10T00:00:00.000Z' });
+    expect(defaultHasSerial([older, newer])).toBe(false);
+    expect(defaultHasSerial([newer, older])).toBe(false);
+    // a pre-step-16 latest quiz (no field) counts as yes
+    expect(defaultHasSerial([makeAssessment('s', { createdAt: '2026-09-20T00:00:00.000Z' }), newer])).toBe(true);
   });
 });

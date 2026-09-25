@@ -33,6 +33,23 @@ export interface ScanResult {
   // unmatched "2 5" read as 2.5 when its decimal point was lost. Offered
   // as "Use", never pre-filled.
   suggestions?: Record<string, string>;
+  // Several one-tap candidates for one blank field, when the reader couldn't
+  // pick between legal readings: "15" or "1.5" on a Total where both are
+  // allowed and a point may or may not be there, or two touching digits read
+  // as one. Each is offered as its own Use; none is ever pre-filled.
+  // Optional: only the `cnn` path sends it.
+  choices?: Record<string, string[]>;
+  // A partial scan: status is 'ok', but these printed tables had the wrong
+  // number of columns, so their fields were never read — they arrive blank
+  // and flagged. Counts include the label column ("ID", "Serial"), as the
+  // backend's detection reports them. Optional: an older backend omits it.
+  table_mismatches?: TableMismatch[];
+}
+
+export interface TableMismatch {
+  table: 'id' | 'serial' | 'marks';
+  found: number;
+  expected: number;
 }
 
 const DEFAULT_API_PORT = 8000;

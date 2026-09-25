@@ -601,8 +601,8 @@
     "real_class_11.jpeg": {
       "condition": "adjacent_scripts_in_frame",
       "handwriting_by": "real student (CSE211L pilot class, anonymous)",
-      "expected_success": false,
-      "expected_failure_reason": "column_count_mismatch",
+      "expected_success": true,
+      "expected_failure_reason": null,
       "student_id": "5678900",
       "serial": "119",
       "questions": [
@@ -641,7 +641,7 @@
       ],
       "total": 16.0,
       "quiz": "8q_6x5_2x10",
-      "note": "Real photo #11 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. CORRECTION after a second detection fix round: this photo's own ID row genuinely has only 7 detected columns (one internal divider not found), not 8 -- a real, separate line-detection gap, unrelated to the adjacent-scripts-in-frame issue. It was initially (wrongly) reported as passing because a decoy candidate (the next script's own ID row, visible below this photo's marks table) happened to have the expected 8 columns and got silently substituted -- fixed by selecting id/serial by *position* relative to the marks table rather than by column count, so this genuine shortfall now surfaces honestly as column_count_mismatch instead of a false ok on the wrong student's ID. Left unfixed (not chased further) -- a real, known, documented gap, not guessed around."
+      "note": "Real photo #11 from a batch of 18 real class scripts (CSE211L pilot), transcribed ground truth in ../testset/real_class_info.json. Genuinely different student/writer per photo -- the first real multi-writer batch this test set has had beyond the single-writer phone/pen photos and the synthetic set. CORRECTION after a second detection fix round: this photo's own ID row genuinely has only 7 detected columns (one internal divider not found), not 8 -- a real, separate line-detection gap, unrelated to the adjacent-scripts-in-frame issue. It was initially (wrongly) reported as passing because a decoy candidate (the next script's own ID row, visible below this photo's marks table) happened to have the expected 8 columns and got silently substituted -- fixed by selecting id/serial by *position* relative to the marks table rather than by column count, so this genuine shortfall now surfaces honestly as column_count_mismatch instead of a false ok on the wrong student's ID. Left unfixed (not chased further) -- a real, known, documented gap, not guessed around. FIXED 2026-09-25: the missing divider (between the ID label and the first digit) was found at coverage 0.55 but dropped by MIN_RELATIVE_PEAK_FRAC, because the lighting fades toward the left of this row while the right side measured 1.00. detection.py's _repair_columns now restores it -- it clears the absolute floor, it is the only candidate that makes the 7 digit boxes evenly spaced, and the resulting boxes sit on the printed lines in the overlay. result.json records it as \"repaired\": \"restored_divider\". The CNN then reads 5?7890? against the true 5678900: two flagged, none wrong."
     },
     "real_class_12.jpeg": {
       "condition": "adjacent_scripts_in_frame",

@@ -22,13 +22,15 @@ def main() -> int:
     parser.add_argument("--questions", type=int, required=True, help="number of questions in the marks table")
     parser.add_argument("--id-digits", type=int, required=True, help="number of digit boxes in the ID table")
     parser.add_argument("--out", type=Path, default=Path("debug"), help="output directory for artifacts")
+    parser.add_argument("--no-serial", action="store_true",
+                        help="the paper has no Serial box (step 16's second layout)")
     args = parser.parse_args()
 
     if not args.image.exists():
         print(f"error: {args.image} does not exist", file=sys.stderr)
         return 1
 
-    result = detect(args.image, args.questions, args.id_digits, args.out)
+    result = detect(args.image, args.questions, args.id_digits, args.out, has_serial=not args.no_serial)
     print(json.dumps(result, indent=2))
     return 0 if result["status"] == "ok" else 1
 

@@ -41,6 +41,15 @@ class QuestionMark(BaseModel):
     value: float | None = None  # one of 0, 0.5, 1, ..., max; None if unreadable
 
 
+class TableMismatch(BaseModel):
+    """One printed table whose detected column count disagreed with the
+    quiz config — so it was never read. Counts include the label column,
+    exactly as detection's result.json reports them."""
+    table: Literal["id", "serial", "marks"]
+    found: int
+    expected: int
+
+
 class ScanResult(BaseModel):
     status: Literal["ok", "failed"]
     failure_reason: str | None = None
@@ -61,6 +70,14 @@ class ScanResult(BaseModel):
     # exists only where the value was deliberately left blank.
     crossed_out_fields: list[str] = []
     suggestions: dict[str, str] = {}
+    # Several one-tap candidates for a blank field (marks.MarksResult's own
+    # comment). The field is also in low_confidence_fields and
+    # unmatched_fields, so it is never harvested with a guessed label.
+    choices: dict[str, list[str]] = {}
+    # A partial scan: status is "ok", but these tables had the wrong column
+    # count, so their fields are blank and flagged rather than read. The
+    # scan fails outright (column_count_mismatch) only when no table matched.
+    table_mismatches: list[TableMismatch] = []
 
 
 class QuestionConfig(BaseModel):
@@ -73,6 +90,12 @@ class QuizConfig(BaseModel):
     idDigits: int = Field(ge=1, le=MAX_ID_DIGITS)
     questions: list[QuestionConfig] = Field(min_length=1, max_length=MAX_QUESTIONS)
     totalMax: float = Field(gt=0)
+    # Step 16 (plan.md §21) — whether the printed paper has a Serial box.
+    # Defaults to True so a request from a frontend that predates this
+    # field is read exactly as before; only an explicit False selects the
+    # no-serial layout. No bound to pin against validateConfig.ts — it is
+    # a boolean.
+    hasSerial: bool = True
 
     @model_validator(mode="after")
     def _questions_are_in_q_order(self) -> "QuizConfig":

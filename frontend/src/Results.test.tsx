@@ -762,3 +762,59 @@ describe('Results — Name column (12.11)', () => {
     expect(screen.queryByText('Not on list')).not.toBeInTheDocument();
   });
 });
+
+// Step 16 (plan.md §21) — a quiz printed without a Serial box.
+describe('Results — no Serial box (step 16)', () => {
+  const noSerialConfig: QuizConfig = { ...config, hasSerial: false };
+  const roster: ParsedRoster = {
+    sheetName: 'data',
+    headerRow: 1,
+    students: [{ sl: 1, row: 2, studentId: '1912345', studentIdKey: '1912345', studentName: 'Monem Tazwar' }],
+    duplicateIds: [],
+  };
+
+  it('has no Serial column', async () => {
+    await saveRecord(makeRecord({ serial: null }));
+    renderResults({ config: noSerialConfig, assessment: makeAssessment({ hasSerial: false }) });
+    await screen.findByText(/1 record/);
+    expect(screen.queryByRole('columnheader', { name: 'Serial' })).not.toBeInTheDocument();
+  });
+
+  it('counts an ID on the class list as verified, and one off it as unverified', async () => {
+    await saveRecord(makeRecord({ serial: null, studentId: '1912345' }));
+    await saveRecord(makeRecord({ serial: null, studentId: '1999999' }));
+    renderResults({
+      config: noSerialConfig,
+      section: makeSection({ roster }),
+      assessment: makeAssessment({ hasSerial: false }),
+    });
+    await screen.findByText(/2 records/);
+    expect(screen.getByText(/1 unverified/)).toBeInTheDocument();
+    expect(screen.getByText('not on list')).toBeInTheDocument();
+  });
+
+  it('flags every record when there is no class list', async () => {
+    await saveRecord(makeRecord({ serial: null }));
+    renderResults({ config: noSerialConfig, assessment: makeAssessment({ hasSerial: false }) });
+    await screen.findByText(/1 unverified/);
+    expect(screen.getByText('no list', { selector: '.badge' })).toBeInTheDocument();
+  });
+
+  it('refuses an edit that would clear the ID', async () => {
+    await saveRecord(makeRecord({ serial: null }));
+    renderResults({ config: noSerialConfig, section: makeSection({ roster }), assessment: makeAssessment({ hasSerial: false }) });
+    const idInput = await screen.findByDisplayValue('1912345');
+    fireEvent.change(idInput, { target: { value: '' } });
+    fireEvent.blur(idInput);
+    expect(await screen.findByText(/needs a student ID — edit not saved/i)).toBeInTheDocument();
+    const [stored] = await getAllRecords();
+    expect(stored.studentId).toBe('1912345');
+  });
+
+  it('keeps the Serial column for a quiz saved before step 16', async () => {
+    await saveRecord(makeRecord({}));
+    renderResults();
+    await screen.findByText(/1 record/);
+    expect(screen.getByRole('columnheader', { name: 'Serial' })).toBeInTheDocument();
+  });
+});

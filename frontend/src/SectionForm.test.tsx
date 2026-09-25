@@ -293,7 +293,9 @@ describe('SectionForm — class-list workbook upload', () => {
     await waitFor(() => expect(screen.getByText('Section 2', { selector: 'strong' })).toBeInTheDocument());
   });
 
-  it('re-normalizes the roster if Student ID digits is changed after upload', async () => {
+  // Step 16 — the ID-digits input is hidden (IUB-only, always 7). Skipped,
+  // not deleted: restore with the input in SectionForm.tsx.
+  it.skip('re-normalizes the roster if Student ID digits is changed after upload', async () => {
     render(<SectionForm onSave={vi.fn()} onCancel={vi.fn()} />);
     const input = document.getElementById('rosterFile') as HTMLInputElement;
     uploadFile(
@@ -346,9 +348,39 @@ describe('SectionForm — class-list workbook upload', () => {
   });
 });
 
+// Step 16 (plan.md §21) — the input is commented out, the value is not.
+describe('SectionForm — ID digits is fixed, not asked', () => {
+  it('does not show the Student ID digits field', async () => {
+    render(<SectionForm onSave={vi.fn()} onCancel={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /create section/i })).toBeEnabled());
+    expect(screen.queryByLabelText(/student id digits/i)).not.toBeInTheDocument();
+  });
+
+  it('still saves a new section with 7 ID digits', async () => {
+    const onSave = vi.fn();
+    render(<SectionForm onSave={onSave} onCancel={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /create section/i })).toBeEnabled());
+    fillRequiredFields();
+    fireEvent.click(screen.getByRole('button', { name: /create section/i }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave.mock.calls[0][0].idDigits).toBe(7);
+  });
+
+  it('keeps an existing section’s own ID digits on edit', async () => {
+    const editing: Section = { id: 'existing', courseCode: 'CSE203', label: '2', semester: 'Autumn 2026', idDigits: 8 };
+    const onSave = vi.fn();
+    render(<SectionForm editing={editing} onSave={onSave} onCancel={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave.mock.calls[0][0].idDigits).toBe(8);
+  });
+});
+
 // A cleared number field must stay cleared (issues.md, 2026-09-08) —
 // ported here for the idDigits field, which now lives on this form.
-describe('SectionForm — clearing the ID-digits field', () => {
+// Step 16 — skipped with the hidden input; restore both together.
+describe.skip('SectionForm — clearing the ID-digits field', () => {
   it('leaves the box empty instead of writing a 0 back into it', async () => {
     render(<SectionForm onSave={vi.fn()} onCancel={vi.fn()} />);
     const digits = (await screen.findByLabelText(/student id digits/i)) as HTMLInputElement;

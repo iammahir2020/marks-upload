@@ -8387,3 +8387,440 @@ it wrapped into five lines. Now each field gets one word (`Invalid`,
 offer. The sentence appears once, at the top of the card. One rule,
 `fieldStatus`, decides the word for every field, so the questions, total
 and serial can't drift apart.
+
+## Step 16 — A second paper layout, no Serial box (both phases code-done; real-paper check still needed)
+
+You wanted to print papers two ways: the layout we already have (ID,
+Serial, Marks), and a new one with a `Name | Section` table on top, then
+the ID row, then the marks, and **no Serial box at all**. The one hard
+rule was that the current flow must not break.
+
+Phase A is the backend half, Phase B the frontend. Both are built; the
+Phase B part is further down.
+
+### How the scanner tells the two layouts apart
+
+It doesn't guess. Each quiz carries a setting, `hasSerial`, and the scan
+request sends it. On the backend it's one new field on `QuizConfig` in
+[`models.py`](backend/app/models.py):
+
+```python
+hasSerial: bool = True
+```
+
+The `= True` is what protects the old flow: a request that doesn't
+mention the field, like every request today, is treated exactly as
+before.
+
+The detector already found the ID and Serial by position. It took the box
+closest above the marks table as the Serial and the next one up as the
+ID. With the setting off, it takes the closest box as the ID and ignores
+everything higher, which is where the Name/Section table sits. That's
+the whole change in [`detection.py`](backend/app/detection.py):
+
+```python
+if has_serial:
+    serial_table = above_marks[0] if len(above_marks) >= 1 else None
+    id_table = above_marks[1] if len(above_marks) >= 2 else None
+else:
+    serial_table = None
+    id_table = above_marks[0] if len(above_marks) >= 1 else None
+```
+
+The old two lines are still there, untouched, inside `if has_serial:`.
+
+### Why a wrong setting can't cause a silent misread
+
+This is the reason for an explicit setting rather than a guess. The two
+layouts put a different number of columns where the other one expects a
+box:
+
+- Setting **on** but paper **B**: the closest box is the ID row
+  (8 columns), which the detector expects to be the Serial (2 columns).
+  It fails with `column_count_mismatch`.
+- Setting **off** but paper **A**: the closest box is the Serial box
+  (2 columns), which it now expects to be the ID (8 columns). The same
+  failure.
+
+Either way you get a failed scan, never a wrong ID. Tests pin both.
+
+### Everything else just skips the serial
+
+The same `has_serial` value (defaulting to `True`) is passed down to
+everything that touches the serial:
+
+- The CNN recogniser ([`local.py`](backend/app/recognizers/local.py))
+  doesn't read one, and doesn't flag it as unclear, because there's
+  nothing to be unsure about.
+- The Gemini path ([`marks.py`](backend/app/marks.py)) leaves the serial
+  tile out of the picture it sends and the serial line out of the
+  prompt, and discards any serial that comes back anyway.
+- The local OCR fallback ([`marks_ocr.py`](backend/app/marks_ocr.py))
+  skips it too.
+- Harvesting never saves a serial crop for a no-serial quiz, even if one
+  is sent ([`main.py`](backend/app/main.py)).
+- `detect.py` and `batch_detect.py` take `--no-serial`.
+
+### How "nothing broke" was checked
+
+Reasoning about the diff wasn't enough, so before the first edit I
+captured everything Phase A could change, for all 30 test photos:
+`detect()`'s result, `detect_any_orientation()`'s result, a hash of every
+cell crop both of them wrote, and the full `/api/scan` response through
+the real app. I ran it twice first to confirm it's deterministic, since
+two identical runs had to match before a difference could mean anything.
+After the changes, the same capture was **byte-identical**. The 285
+existing tests pass unchanged too.
+
+### The layout B test photos are real photos
+
+Drawing fake handwriting would test the wrong thing. Instead,
+[`make_layout_b.py`](backend/tests/fixtures/layout_b/make_layout_b.py)
+takes four real class photos (3, 5 and 8 questions), inpaints just the
+Serial box's ink away so the paper texture stays, and draws a
+Name/Section table above the ID row. The ID and marks cells are still the
+original pixels. So the test is strict: a layout B scan has to read
+**exactly** what the original photo read as layout A. It does, on all
+four, including two IDs with an unreadable `?` digit.
+
+One of them also has a neighbouring script's tables at the top and
+bottom edges of the frame, and those are still ignored.
+
+### One thing the new tests exposed
+
+The backend has a rate limit of 30 scans a minute per client, and in
+tests it's one shared counter for the whole run. The new tests make
+about 17 real scans, so the observability tests that ran right after
+them got `429 Too Many Requests`. Nothing was wrong with the code. The
+new test file now turns the limiter off for its own tests only. Worth
+knowing: any future test file that makes lots of real requests will hit
+the same thing.
+
+### Phase B: what you'll see
+
+**On the new-quiz form** there's a tick box, "Serial box on paper". It
+starts ticked, or matches whatever the section's last quiz used. Untick
+it for a Name/Section paper. If the section has no class list, a warning
+appears, because with no serial and no list nothing can catch a misread
+ID. It doesn't stop you.
+
+**The section form no longer asks for ID digits.** IUB IDs are always 7.
+The input is commented out in
+[`SectionForm.tsx`](frontend/src/SectionForm.tsx), not deleted, and a new
+section still saves 7.
+
+**On Review**, a no-serial quiz has no Serial field, and Confirm needs an
+ID. If a scan fails with `column_count_mismatch`, Review now says which
+way round the Serial setting is and what to change, on both kinds of
+quiz, since a wrong setting is the likeliest cause.
+
+**On Results**, there's no Serial column, and a record is "verified" when
+its ID is on the class list. Without a class list every record is
+flagged "no class list", which is honest: nothing checked it.
+
+### How old quizzes are kept exactly the same
+
+One small function in [`sections.ts`](frontend/src/sections.ts) decides
+the setting for every screen:
+
+```ts
+export function hasSerialBox(assessment) {
+  return assessment.hasSerial !== false;
+}
+```
+
+A quiz saved before today has no `hasSerial` at all, which is not
+`false`, so it has a Serial box. No database upgrade was needed, and the
+config sent to the backend for an old quiz is exactly the same object as
+before: `hasSerial: false` is only added when it's actually false.
+
+### Two things I changed from the plan, and why
+
+**The class-list workbook keeps a blank Serial column.** The plan said to
+drop it. But when you re-pick or re-upload your workbook, the app finds
+the class list by ruling out the sheets it wrote itself, and it
+recognises those by their Serial column
+([`roster.ts`](frontend/src/roster.ts), `hasExamSignature`). A no-serial
+exam sheet also has STUDENT ID and STUDENT NAME, so without that column it
+could be mistaken for your class list. The plain download does drop it;
+it has no names in it, so it can never be taken for a class list.
+
+**The same ID scanned twice is treated as a duplicate.** On a normal quiz,
+same ID with a different serial is a warning: one of them was misread.
+With no serial, a second record with the same ID is almost certainly the
+same script scanned twice, so you get "Overwrite earlier record" or
+"Cancel". If the ID was actually misread, fix it and the block goes away.
+
+### Real-browser tests: Playwright
+
+The Vitest tests run in jsdom, a pretend browser with no layout and no
+camera. So "does the new tick box look right on a phone" and "does the
+capture flow still work" couldn't be checked there. Playwright is now part
+of the project for exactly that: `npm run test:e2e` starts the app,
+opens it in a real Chromium sized like a Pixel 7, with a fake camera, and
+clicks through it like a person would. The backend's answer is faked
+(`page.route`), so it needs no Python.
+
+The first run found a real miss in the Phase B work: on the Scan screen,
+every capture on a no-serial quiz was listed as "ID 1912345 · **Serial ?**
+· Total 7", which looks like a failed read. Fixed in
+[`Scan.tsx`](frontend/src/Scan.tsx). The screenshots also showed the new
+"no class list" badge made the Results table wider than the phone, so the
+badges now say "no list" and "not on list".
+
+One thing it measured that step 16 didn't cause: the Results table was
+already wider than a phone screen, even with two questions, and scrolls
+sideways. That's how it's always been; it's written down, not changed.
+
+### What's left
+
+The real check, which only you can do: print a layout B page, fill it in,
+photograph it and scan it. Also scan one normal (layout A) page the same
+day, to see the old flow still works end to end on your phone.
+
+## Grid detection: partial scans, grid repair, and Save photo (2026-09-25)
+
+Written after this work was done and tested. The same test photos pass as
+before, and one that used to fail now reads. The new Save photo button still
+needs a real phone.
+
+### Why "column count mismatch" was so annoying
+
+The detector finds three printed tables on each script: the ID row, the
+Serial box and the marks table. Before today, if **any one** of them had the
+wrong number of columns, the whole scan failed. One faint line in the ID row
+meant typing the serial and every mark by hand as well, even though those
+tables were read fine.
+
+### Finding the real cause first
+
+A small diagnostic ran every labelled photo through the detector with its
+correct quiz setup. Only one failed: `real_class_11`, whose ID row came out
+with 7 columns instead of 8. Tracing every candidate line in that row showed
+exactly what happened:
+
+```
+x= 183  coverage 0.55  DROPPED (too weak next to its neighbours)
+x= 371  coverage 0.61  kept
+...                    up to 1.00 on the right
+cell widths = [371, 192, 191, 190, 189, 189, 190]
+```
+
+"Coverage" is how much of a line's length is dark enough to count as ink.
+The lighting fades toward the left of that photo, so every line on the left
+looks weaker. The missing line passed the normal bar (0.40). A second filter
+then threw it away, because it was under 65% of the *typical* line in the
+table. That filter exists for a whiteboard photo with a stray line. The
+widths give the mistake away: the first cell is 371px, which is exactly two
+190px cells stuck together.
+
+### Fix A — a partial scan instead of a failed one
+
+[`detection.py`](backend/app/detection.py) now writes **no crop images** for
+a table whose column count is wrong:
+
+```python
+if cand.col_count != expected[name]:
+    continue   # no id_d1.png ... for a miscounted ID row
+```
+
+That line is what makes the rest safe. With 7 columns instead of 8, files
+`id_d1`..`id_d6` would exist and hold the wrong boxes. Now they simply
+don't exist, so nothing can read them.
+
+[`main.py`](backend/app/main.py) then reads only the tables that matched. The
+result says `status: "ok"`, plus a `table_mismatches` list like
+`[{"table": "id", "found": 7, "expected": 8}]`, and the unread fields come
+back blank and flagged. On the `remote` path, Gemini is only called when the
+marks table itself matched.
+
+Two cases still fail the whole scan, on purpose:
+
+- **Every table is wrong.** There is nothing left to read.
+- **The "Serial box on paper" setting doesn't match the paper.** The ID is
+  picked by *position* (second box above the marks, or first when there's
+  no serial). A wrong setting shifts that pick onto a different box, such as
+  the Name/Section table. If that box happened to have 8 columns, it would
+  be read as a student ID. So `_is_partial` spots the signature (the box
+  taken as the Serial looks like an ID row, or the reverse) and fails
+  loudly. That's a per-quiz mistake, so it should be fixed once, not typed
+  around on every script.
+
+On the phone, [`Review.tsx`](frontend/src/Review.tsx) shows a warning such as
+"Student ID row: found 6 digit boxes, expected 7". The backend counts the
+"ID" label as a column; the message counts only the boxes a person sees.
+
+### Fix B — repairing a grid when the evidence is clear
+
+`_repair_columns` fixes a table that is off by **exactly one**:
+
+- **One too few (ID or marks):** put back a line that the detector really
+  saw, that clears the normal 0.40 coverage bar, and that makes the boxes
+  evenly spaced. Nothing is ever drawn by dividing a width by a count.
+- **One too many (ID only):** remove a divider when it has split one box in
+  two.
+
+If two different changes would both work, that's ambiguous, and it fails
+the old way.
+
+Writing the tests found a real bug in the first version. On a paper with
+**8** digit boxes under a 7-digit setting, removing the line between the
+"ID" label and the first digit left the digit boxes perfectly even, because
+the label isn't part of that evenness check. It would have hidden the first
+digit inside the label and read every other digit one box off. So the rules
+also check the cells right next to the change:
+
+- a removal needs **both** neighbouring cells to be too narrow (a split box)
+- a restore needs **both** new halves to be one box wide, the label side
+  included. real_class_11's halves are 183 and 188 against a 190px box.
+
+Most of [`test_grid_repair.py`](backend/tests/test_grid_repair.py) is these
+refusals.
+
+### How "nothing broke" was checked
+
+- Before any code changed, every photo was run 99 ways (correct setup,
+  default setup, Serial on and off, and the layout B fixtures), hashing the
+  detector's full output.
+- After the changes, every run that passed before is **byte-identical**. The
+  only status change is `real_class_11` going from failed to ok.
+- The overlay shows the restored line on the printed one. The CNN reads
+  `5?7890?` against the true `5678900`: two digits flagged, none wrong. Its
+  8 marks, serial and total are all right.
+- ID accuracy rose from 170/182 to 175/189 correct digits; marks from
+  103/105 to 111/113. Confidently wrong reads are unchanged: 1 on the ID
+  (the same old case) and 0 on marks.
+
+### Save photo
+
+The failure banner and the partial-scan banner both have **Save photo**. It
+downloads the exact capture the backend saw, keeps it on the phone, and
+names it by reason and time (`scan-partial-2026-09-25-14-30-12.jpg`), never
+by anything read off the script. The backend still stores nothing.
+
+These are real scripts with real student IDs, so they go in
+`testset/private/` (gitignored), never `testset/images/`.
+
+### One test-suite bug this exposed
+
+The backend's rate limiter (30 requests a minute) was a single object shared
+by the whole test run. The new endpoint tests pushed the run over 30, so an
+unrelated logging test got a 429 and failed. It looked like a logging bug.
+[`tests/conftest.py`](backend/tests/conftest.py) now empties the limiter
+before each test.
+
+### What's left
+
+- Real phone checks: does Save photo land somewhere you can find it (Files
+  or Downloads on Android; iOS Safari asks first), and does a real partial
+  scan feel right?
+- Collect the failed photos into `testset/private/`. One case isn't enough
+  to judge the parked idea (fix C: comparing each line with its neighbours
+  instead of the whole table's median).
+
+## Half marks: finding the decimal point (2026-09-25, "option 2")
+
+Written after the work was done and measured. Needs a real scan to confirm
+on paper; everything below was measured on real handwriting.
+
+### How a half mark is read
+
+Nothing reads "2.5" as a whole. [`cnn/segment.py`](backend/cnn/segment.py)
+cuts a mark cell into blobs of ink. A blob that is small and low down is
+the decimal point, decided by geometry alone. The digit model reads the
+others. [`cnn/decode.py`](backend/cnn/decode.py) then tries every allowed
+mark for that question and keeps the best fit. So everything depends on
+finding the dot.
+
+### What your practice page showed
+
+You wrote 15 rows of half marks on plain paper.
+[`cnn/half_marks_accuracy.py`](backend/cnn/half_marks_accuracy.py) cuts that
+page into single values, crops each one like a mark cell, and reads it
+exactly as a real scan would. It also re-reads all 493 harvested mark cells.
+Those are about 90% whole marks, which is what catches a looser dot rule
+inventing a dot on a "15".
+
+Before any change, 121 of your values read like this: 102 right, 7 offered
+as a one-tap choice, 10 blank, and **2 wrong values stored without a flag**.
+The misses had three causes:
+
+1. **Mid-height dots** (your point). Seven clear dots sat 37–49% of the way
+   down. The rule required at least 50%, so each dot went to the digit
+   model as a "digit", and the value came back blank.
+2. **Dots below the speck filter.** A pen dot of 0.13–0.15% of the cell,
+   just under the 0.15% floor, was thrown away. That's how both wrong reads
+   happened: "2.5" became a confident **25**.
+3. **Touching digits.** In "20.5" the 2 and 0 touched, so they became one
+   wide blob. The model read it as "2", and the value became a confident
+   **2.5**.
+
+### What changed
+
+The old rule is untouched and still gives a **strong** point. New rules add
+a **weak** point:
+
+- A round blob (neither side more than 2× the other), **between two
+  digits**, anywhere below the top quarter of the writing.
+- A blob under the speck floor, if it's round, between two digits, and at
+  least 2% of a digit's own ink. Specks of paper are under 1%.
+
+The decoder in [`app/recognizers/local.py`](backend/app/recognizers/local.py)
+(`_resolve`) treats a weak point with suspicion. It reads the cell **with
+and without** it:
+
+```
+"2" weak-dot "5", out of 5   ->  2.5 is allowed, 25 isn't   ->  value 2.5
+"2" weak-dot "5", out of 25  ->  both are allowed           ->  choices [2.5, 25]
+"1" weak-dot "0", out of 10  ->  "1.0" is never written     ->  value 10
+```
+
+Two more rules only ever add choices, never a value:
+
+- **Ink between the digits that isn't a dot** (a smudge): "15" might be
+  "1.5", so on a Total where both are allowed you get [1.5, 15].
+- **A glyph as wide as two digits**: cut it at a few positions and read the
+  best cut. If that gives a *different* allowed value, both are offered.
+  Width alone proves nothing: students write "2" up to twice as wide as
+  tall, and a width-only rule turned 27 of 430 harvested whole marks into
+  choices before it was narrowed to this.
+
+Review shows each choice as its own **Use** button, and nothing is filled
+in until you tap one. A tied field is also "unmatched", so harvesting never
+saves its crop with a guessed label.
+
+### The numbers
+
+| | Correct | Choice | Blank | Wrong |
+|---|---|---|---|---|
+| Your page, 121 half marks, before | 102 | 7 | 10 | **2** |
+| Your page, after | **111** | 7 | 3 | **0** |
+| Harvested half marks (63), before → after | 54 → 56 | 2 → 0 | 4 → 4 | 3 → 3 |
+| Harvested whole marks (430), before → after | 424 → 423 | 0 → 1 | 3 → 3 | 3 → 3 |
+
+- The one whole mark that became a choice is a Total "15" with a faint grey
+  smudge just after the "1". It now offers 1.5 or 15, which is fair.
+- The 3 + 3 harvested wrong reads are all cells the instructor had already
+  corrected by hand. They're old misreads, unchanged.
+- Your "20.5" that used to read 2.5 now offers **2.5 or 20.5**. The harness
+  skips it by default, since the merged "20" looks like one digit; run
+  `--all-crops` to see it.
+- The real test photos haven't moved: 111/113 marks, 0 wrong. The ID and
+  crossed-out checks are unchanged too.
+
+### Two bugs caught while building it
+
+- The first version stored the "ink between digits" flag on the recognizer
+  object. That object serves several scans at once from the backend's
+  thread pool, so two scans could swap flags. It's now passed back through
+  the function call.
+- The rescue rule first compared a dot's ink against a digit's *bounding
+  box*, two different measures. It now compares ink to ink, so pen weight
+  cancels out. That alone lifted your page from 107 to 111 correct.
+
+### What's left
+
+- Scan real half marks on the printed grid, including tiny dots and dots
+  touching a digit. This page was plain paper, cropped by a script.
+- A dot touching a digit (merged into it) is still not split off. Most of
+  the remaining misses on your page are that case.

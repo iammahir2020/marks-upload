@@ -4,11 +4,11 @@
 // read by reference (assessmentId) rather than by a single held config.
 import { lazy, Suspense, useState } from 'react';
 import AssessmentForm, { type NewAssessmentInput } from './AssessmentForm';
-import { getAllSections, saveAssessment, saveSection } from './db';
+import { getAllAssessments, getAllSections, saveAssessment, saveSection } from './db';
 import { showLandingOverlay } from './landingShell';
 import Library from './Library';
 import Scan from './Scan';
-import { assessmentConfig } from './sections';
+import { assessmentConfig, assessmentsForSection, defaultHasSerial } from './sections';
 import SectionForm from './SectionForm';
 import type { Assessment, Section } from './types';
 
@@ -45,6 +45,9 @@ function App() {
   // (toLibrary(), Cancel, "All sections") clears it, so the offer can
   // never resurface on a later, unrelated visit.
   const [pendingSemesterOffer, setPendingSemesterOffer] = useState<string | null>(null);
+  // Step 16 — the new-assessment form's "Serial box on paper" starting
+  // value, looked up from the section's own quizzes as the form opens.
+  const [newAssessmentHasSerial, setNewAssessmentHasSerial] = useState(true);
 
   function toLibrary() {
     setPendingSemesterOffer(null);
@@ -93,6 +96,7 @@ function App() {
     return (
       <AssessmentForm
         section={activeSection}
+        defaultHasSerial={newAssessmentHasSerial}
         onSave={async (input: NewAssessmentInput) => {
           const assessment: Assessment = {
             id: crypto.randomUUID(),
@@ -159,7 +163,9 @@ function App() {
         setSectionFormReturnsTo('library');
         setScreen('section');
       }}
-      onNewAssessment={(section) => {
+      onNewAssessment={async (section) => {
+        const all = await getAllAssessments();
+        setNewAssessmentHasSerial(defaultHasSerial(assessmentsForSection(all, section.id)));
         setActiveSection(section);
         setScreen('assessment');
       }}

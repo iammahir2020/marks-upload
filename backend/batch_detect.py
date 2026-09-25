@@ -22,6 +22,8 @@ def main() -> int:
     parser.add_argument("--questions", type=int, required=True)
     parser.add_argument("--id-digits", type=int, required=True)
     parser.add_argument("--out", type=Path, default=Path("debug"))
+    parser.add_argument("--no-serial", action="store_true",
+                        help="the paper has no Serial box (step 16's second layout)")
     args = parser.parse_args()
 
     images = sorted(p for p in args.images_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS)
@@ -32,7 +34,7 @@ def main() -> int:
     summary = []
     for image in images:
         out_dir = args.out / image.stem
-        result = detect(image, args.questions, args.id_digits, out_dir)
+        result = detect(image, args.questions, args.id_digits, out_dir, has_serial=not args.no_serial)
         summary.append({"image": image.name, "status": result["status"], "failure_reason": result["failure_reason"]})
         print(f"{image.name}: {result['status']} ({result['failure_reason'] or 'ok'})")
 

@@ -117,12 +117,30 @@ export interface CrossCheckResult {
 // only the records already known to share this candidate's serial or
 // student ID (db.ts's by-serial/by-studentId indexes) — this function does
 // the comparing, not the fetching.
+//
+// `hasSerial = false` is step 16's no-Serial-box paper (plan.md §21). The
+// ID is then the only identifier: it is required, and a second record with
+// the same ID is treated like §10's "same serial, same ID" — the same
+// script scanned twice — so it blocks with an overwrite offer rather than
+// warning. There is no serial to say otherwise, and a genuinely misread ID
+// is fixed by correcting the field, which clears the conflict.
+// "Unverified" is not decided here in that mode: with no serial, what
+// verifies an ID is the class list (resultsTable.ts's unverifiedReason).
 export function crossCheck(
   candidate: { studentId: string | null; serial: string | null },
   existingRecords: StudentRecord[],
+  hasSerial = true,
 ): CrossCheckResult {
-  const candidateSerial = normalizeSerial(candidate.serial);
+  const candidateSerial = hasSerial ? normalizeSerial(candidate.serial) : null;
   const candidateId = candidate.studentId?.trim() || null;
+
+  if (!hasSerial) {
+    if (!candidateId) return { action: 'block', unverified: false, conflicts: [] };
+    const conflicts: CrossCheckConflict[] = existingRecords
+      .filter((existing) => existing.studentId === candidateId)
+      .map((record) => ({ reason: 'duplicate' as const, record }));
+    return { action: conflicts.length > 0 ? 'block' : 'allow', unverified: false, conflicts };
+  }
 
   if (!candidateSerial && !candidateId) {
     return { action: 'block', unverified: false, conflicts: [] };

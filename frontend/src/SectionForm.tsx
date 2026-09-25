@@ -85,7 +85,13 @@ export default function SectionForm({ editing = null, onSave, onCancel }: Sectio
   // input the instructor can clear.
   const [season, setSeason] = useState<SemesterSeason>(initialSeason(editing));
   const [year, setYear] = useState<NumField>(initialYear(editing));
-  const [idDigits, setIdDigits] = useState<NumField>(editing?.idDigits ?? 7);
+  // Step 16 (plan.md §21) — no longer editable: this is an IUB-only tool
+  // and IUB student IDs are always 7 digits, so the input below is
+  // commented out. The value itself is unchanged — a new section still
+  // gets 7, an existing section keeps what it has — and Section.idDigits
+  // stays, since detection, the roster parser and the recognizer all read
+  // it. Restore the setter and the input together to bring it back.
+  const [idDigits] = useState<NumField>(editing?.idDigits ?? 7);
   const [errors, setErrors] = useState<string[]>([]);
 
   // Self-fetched (same pattern the old Setup.tsx used for its own initial
@@ -300,6 +306,7 @@ export default function SectionForm({ editing = null, onSave, onCancel }: Sectio
           </div>
         </div>
 
+        {/* Step 16 — hidden, not deleted; see the idDigits state above.
         <div className="field">
           <label className="field-label" htmlFor="sectionIdDigits">
             Student ID digits
@@ -314,6 +321,7 @@ export default function SectionForm({ editing = null, onSave, onCancel }: Sectio
           />
           <span className="field-hint">Same for every quiz in this section.</span>
         </div>
+        */}
 
         {/* Phase B (step.md 13.9) — optional. Not gated behind a mode
             toggle the way Setup.tsx's used to be: a section either has a

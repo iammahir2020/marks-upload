@@ -35,8 +35,9 @@ from . import observability as obs  # noqa: E402
 from . import ratelimit  # noqa: E402
 from . import stores  # noqa: E402
 from .detection import detect_any_orientation
-from .models import HarvestFields, QuestionMark, QuizConfig, ScanResult
-from .recognizers.base import Recognizer
+from .marks import MarksResult
+from .models import HarvestFields, QuestionMark, QuizConfig, ScanResult, TableMismatch
+from .recognizers.base import IdResult, Recognizer
 from .recognizers.remote import RemoteRecognizer
 
 app = FastAPI()
@@ -371,27 +372,58 @@ async def scan(
         question_count = len(quiz.questions)
         with obs.timed(ms, "detect"):
             det = await run_in_threadpool(
-                detect_any_orientation, image_path, question_count, quiz.idDigits, out_dir
+                detect_any_orientation, image_path, question_count, quiz.idDigits, out_dir, quiz.hasSerial
             )
 
-        # Never call Gemini after table_not_found or column_count_mismatch
-        # (plan.md §9) — protects the quota and the ID's privacy property
-        # at once, since the composite is never built and Gemini is never
-        # reached on either path.
-        if det["status"] != "ok":
+        # A column_count_mismatch in ONE table no longer fails the whole
+        # scan: the ID, Serial and Marks rows are separate printed tables,
+        # so whichever matched is still read and only the miscounted one is
+        # left blank and flagged (a partial scan). A mismatched table is
+        # still never read — detection writes no crops for it — so the
+        # "never write Q4's mark into Q3" guarantee holds per table.
+        #
+        # Never call Gemini for a table that failed (plan.md §9): after
+        # table_not_found, or when the marks table itself mismatched, the
+        # composite is never built and Gemini is never reached on either
+        # path. Only a matched marks table is ever sent.
+        if det["status"] != "ok" and not _is_partial(det, quiz):
             _log_scan("failed", det["failure_reason"], ms, started, quiz, image_bytes, [])
             return ScanResult(status="failed", failure_reason=det["failure_reason"])
 
+        mismatches = [
+            TableMismatch(table=t["type"], found=t["col_count"], expected=t["expected_col_count"])
+            for t in det["tables"]
+            if not t["match"]
+        ]
+        failed_tables = {m.table for m in mismatches}
         cells_dir = out_dir / "cells"
-
-        with obs.timed(ms, "read_id"):
-            id_result = await run_in_threadpool(recognizer.read_id, cells_dir, quiz.idDigits)
-
         question_maxes = [q.max for q in quiz.questions]
-        with obs.timed(ms, "read_marks"):
-            marks_result = await run_in_threadpool(
-                recognizer.read_marks, cells_dir, question_maxes
+        question_keys = [f"q{i + 1}" for i in range(len(question_maxes))]
+
+        if "id" in failed_tables:
+            id_result = IdResult(student_id=None, low_confidence_fields=["student_id"])
+        else:
+            with obs.timed(ms, "read_id"):
+                id_result = await run_in_threadpool(recognizer.read_id, cells_dir, quiz.idDigits)
+
+        if "marks" in failed_tables:
+            # Serial is read alongside the marks (read_marks), so it goes
+            # unread with them rather than growing a serial-only path.
+            flagged = (["serial"] if quiz.hasSerial else []) + question_keys + ["total"]
+            marks_result = MarksResult(
+                status="ok", questions=[None] * len(question_maxes), low_confidence_fields=flagged
             )
+        else:
+            serial_readable = quiz.hasSerial and "serial" not in failed_tables
+            with obs.timed(ms, "read_marks"):
+                # Step 16 — False for the no-Serial-box paper layout, and
+                # here also for a Serial row whose count was wrong: the
+                # recognizer then never looks for serial.png at all.
+                marks_result = await run_in_threadpool(
+                    recognizer.read_marks, cells_dir, question_maxes, has_serial=serial_readable
+                )
+            if marks_result.status == "ok" and quiz.hasSerial and not serial_readable:
+                marks_result.low_confidence_fields = ["serial", *marks_result.low_confidence_fields]
 
         if marks_result.status != "ok":
             _log_scan("failed", marks_result.failure_reason, ms, started, quiz, image_bytes, [])
@@ -409,7 +441,10 @@ async def scan(
         # extra "Qn+1".
         total = QuestionMark(q=0, value=marks_result.total)
 
-        _log_scan("ok", None, ms, started, quiz, image_bytes, low_confidence_fields)
+        if mismatches:
+            _log_scan("partial", det["failure_reason"], ms, started, quiz, image_bytes, low_confidence_fields)
+        else:
+            _log_scan("ok", None, ms, started, quiz, image_bytes, low_confidence_fields)
 
         return ScanResult(
             status="ok",
@@ -421,7 +456,33 @@ async def scan(
             unmatched_fields=marks_result.unmatched_fields,
             crossed_out_fields=list(id_result.crossed_out_fields) + list(marks_result.crossed_out_fields),
             suggestions=marks_result.suggestions,
+            choices=marks_result.choices,
+            table_mismatches=mismatches,
         )
+
+
+def _is_partial(det: dict, quiz: QuizConfig) -> bool:
+    """A column_count_mismatch where every table was found and at least one
+    matched. table_not_found and blurry stay whole-scan failures, and so
+    does a mismatch in every table — there is nothing left to read.
+
+    So does a paper whose layout contradicts the quiz's "Serial box on
+    paper" setting (step 16). Which box is the ID is decided by POSITION
+    above the marks table, so a wrong setting shifts every pick by one:
+    layout B read with the setting on takes the Name/Section table as the
+    ID, and a Name/Section table that happened to have idDigits+1 columns
+    would be read as a student ID. Its signature is unambiguous — the box
+    taken as the Serial has an ID row's column count, or the box taken as
+    the ID has a Serial box's — and it is a per-quiz setting error, not a
+    per-photo one, so it fails loudly on every script until it is fixed."""
+    if det["failure_reason"] != "column_count_mismatch":
+        return False
+    tables = {t["type"]: t for t in det["tables"]}
+    if quiz.hasSerial and tables["serial"]["col_count"] == quiz.idDigits + 1:
+        return False
+    if not quiz.hasSerial and tables["id"]["col_count"] == 2:
+        return False
+    return all(t["found"] for t in tables.values()) and any(t["match"] for t in tables.values())
 
 
 @app.post("/api/harvest")
@@ -460,7 +521,7 @@ async def harvest_endpoint(
 
         question_count = len(quiz.questions)
         det = await run_in_threadpool(
-            detect_any_orientation, image_path, question_count, quiz.idDigits, out_dir
+            detect_any_orientation, image_path, question_count, quiz.idDigits, out_dir, quiz.hasSerial
         )
         if det["status"] != "ok":
             obs.log_event("harvest", harvested=False, reason=det["failure_reason"])
@@ -491,8 +552,10 @@ async def harvest_endpoint(
                 question_count,
                 original_fields.studentId,
                 confirmed_fields.studentId,
-                original_fields.serial,
-                confirmed_fields.serial,
+                # Step 16 — no Serial box on the paper, so no serial crop
+                # exists and nothing is harvested for it, whatever was sent.
+                original_fields.serial if quiz.hasSerial else None,
+                confirmed_fields.serial if quiz.hasSerial else None,
                 original_fields.questions,
                 confirmed_fields.questions,
                 original_fields.total,

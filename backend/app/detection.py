@@ -65,6 +65,8 @@ class TableCandidate:
     row_bounds: list[int]        # y pixel positions in warped coords, len = rows + 1
     col_bounds: list[int]        # x pixel positions in warped coords, len = cols + 1
     table_type: str = "unknown"  # "id" | "serial" | "marks"
+    v_mask: np.ndarray | None = None  # warped vertical-line mask, kept for _repair_columns
+    gray: np.ndarray | None = None    # warped grayscale, same reason
 
     @property
     def row_count(self) -> int:
@@ -304,6 +306,122 @@ def _label_column_is_backwards(gray: np.ndarray, row_bounds: list[int], col_boun
     return last > first
 
 
+REPAIR_WIDTH_TOL = 0.2  # after a repair, every regular cell must be within this fraction of
+                         # their median width. Measured on the 18 real_class_* photos: ID digit
+                         # cells sit within ~5% of each other, marks question cells within ~15%
+                         # (real_class_02's narrowest Q8 is 0.85x). 20% keeps both, and still
+                         # rejects the 2x-wide merged cell a missing divider leaves behind.
+REPAIR_PROFILE_FRAC = 0.1  # a repair looks at weaker mask runs than _cluster_peaks' 0.3: a faint
+                             # rule can fragment in the mask. The evidence bar does not drop with
+                             # it — a restored line must still clear MIN_LINE_COVERAGE_FRAC on the
+                             # raw grayscale, exactly like any line accepted the ordinary way.
+
+
+def _regular_widths(bounds: list[int], table: str) -> list[int]:
+    """The cells a printed table draws at one width: the ID's digit boxes
+    (not its label cell) and the marks table's question columns (not Total,
+    which templates often draw wider — filled_file's is 1.5x)."""
+    widths = np.diff(bounds).tolist()
+    return widths[1:] if table == "id" else widths[:-1]
+
+
+def _pitch(bounds: list[int], table: str) -> float | None:
+    """Median width of the regular cells, if they are regular — else None."""
+    widths = _regular_widths(bounds, table)
+    if len(widths) < 2:
+        return None
+    median = float(np.median(widths))
+    if median <= 0 or any(abs(w - median) > REPAIR_WIDTH_TOL * median for w in widths):
+        return None
+    return median
+
+
+def _near(width: float, target: float) -> bool:
+    return abs(width - target) <= REPAIR_WIDTH_TOL * target
+
+
+def _repair_columns(cand: TableCandidate, expected_cols: int, table: str) -> str | None:
+    """Fix a table whose column count is off by exactly one, when the evidence
+    leaves no doubt — else leave it alone, and it fails as
+    column_count_mismatch exactly as before.
+
+    One too few (ID or marks): a real divider was found but rejected, most
+    often by MIN_RELATIVE_PEAK_FRAC under uneven lighting (real_class_11: a
+    0.55-coverage divider on a table whose far side measured 1.00, leaving
+    one 371px cell where two ~190px ones belong). Put back a candidate that
+    clears the ABSOLUTE coverage floor, if exactly one such candidate turns
+    the table into an evenly spaced grid.
+
+    One too many (ID only): a stroke inside a box was taken for a divider.
+    Remove an internal divider, if exactly one removal makes the grid even.
+    Not attempted on marks, whose Total column is irregular by design and
+    whose handwriting is the likeliest source of a false divider.
+
+    Only a line the detector actually saw can be restored — nothing is ever
+    placed by dividing a width by a count (plan.md §5). Uniqueness is the
+    guard: two candidates that would each make a regular grid is ambiguity,
+    and ambiguity fails loudly.
+
+    "Regular" alone is not enough, because the label cell is outside the
+    check. A paper with one MORE digit box than the config would pass it by
+    removing the label/first-digit divider — the first digit swallowed into
+    the label, the rest read one box off — so a removal also needs BOTH
+    cells beside the divider to be too narrow, the shape of one box split
+    by a stroke. Symmetrically, a restore needs BOTH halves of the cell it
+    splits to come out one box wide, label side included: real_class_11's
+    merged cell was the label plus the first digit, split 183 | 188 against
+    a 190px pitch."""
+    bounds = cand.col_bounds
+    n = len(bounds) - 1
+    if table == "serial" or cand.v_mask is None or cand.gray is None:
+        return None
+
+    if n == expected_cols - 1:
+        profile = cand.v_mask.sum(axis=0)
+        if profile.size == 0 or profile.max() <= 0:
+            return None
+        idx = np.where(profile > profile.max() * REPAIR_PROFILE_FRAC)[0]
+        runs = np.split(idx, np.where(np.diff(idx) > 1)[0] + 1)
+        min_gap = max(int(cand.gray.shape[1] * LINE_PEAK_MIN_GAP_FRAC), 10)
+        fits = []
+        for run in runs:
+            if run.size == 0:
+                continue
+            c = int(run.mean())
+            if min(abs(c - b) for b in bounds) < min_gap:
+                continue
+            if _contrast_coverage(cand.gray, "col", c) < MIN_LINE_COVERAGE_FRAC:
+                continue
+            new = sorted(bounds + [c])
+            pitch = _pitch(new, table)
+            k = new.index(c)
+            left, right = c - new[k - 1], new[k + 1] - c
+            # Both halves one box wide — so a missing divider beside a wider
+            # Total column is never restored, and stays a mismatch.
+            if pitch is not None and _near(left, pitch) and _near(right, pitch):
+                fits.append(new)
+        if len(fits) == 1:
+            cand.col_bounds = fits[0]
+            return "restored_divider"
+        return None
+
+    if n == expected_cols + 1 and table == "id":
+        widths = np.diff(bounds)
+        fits = []
+        for j in range(1, n):
+            new = bounds[:j] + bounds[j + 1:]
+            pitch = _pitch(new, table)
+            if pitch is None:
+                continue
+            narrow = (1 - REPAIR_WIDTH_TOL) * pitch
+            if widths[j - 1] < narrow and widths[j] < narrow:
+                fits.append(new)
+        if len(fits) == 1:
+            cand.col_bounds = fits[0]
+            return "removed_divider"
+    return None
+
+
 def _is_blurry(gray: np.ndarray) -> bool:
     return cv2.Laplacian(gray, cv2.CV_64F).var() < BLUR_LAPLACIAN_FLOOR
 
@@ -326,9 +444,14 @@ def _draw_boundaries(overlay: np.ndarray, cand: TableCandidate) -> None:
         cv2.polylines(overlay, [pts_src.astype(int)], False, (255, 128, 0), 1)
 
 
-def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path) -> dict:
+def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path, has_serial: bool = True) -> dict:
     """Run detection on one image, writing overlay.jpg, cells/, and
-    result.json to out_dir (step.md 1.7). Returns the same dict as result.json."""
+    result.json to out_dir (step.md 1.7). Returns the same dict as result.json.
+
+    `has_serial=False` is step 16's second paper layout (plan.md §21): no
+    Serial box, and whatever sits above the ID row (a Name/Section table)
+    is ignored. The default path is untouched by it — every line that
+    differs is inside an `if not has_serial` branch."""
     out_dir.mkdir(parents=True, exist_ok=True)
     cells_dir = out_dir / "cells"
     if cells_dir.exists():
@@ -349,6 +472,10 @@ def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path) -> d
         "failure_reason": None,
         "tables": [],
     }
+    if not has_serial:
+        # Only recorded when set, so a default run's result.json stays
+        # byte-identical to what it was before this parameter existed.
+        result["config"]["has_serial"] = False
 
     img = cv2.imread(str(image_path))
     if img is None:
@@ -398,11 +525,16 @@ def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path) -> d
         w_gray = cv2.warpPerspective(gray, m, (width, height))
         row_bounds, col_bounds = _recover_bounds(w_h_mask, w_v_mask, w_gray)
 
-        candidates.append(TableCandidate(quad=quad, warped=warped, row_bounds=row_bounds, col_bounds=col_bounds))
+        candidates.append(TableCandidate(
+            quad=quad, warped=warped, row_bounds=row_bounds, col_bounds=col_bounds,
+            v_mask=w_v_mask, gray=w_gray,
+        ))
         cv2.polylines(overlay, [quad.astype(int)], True, (0, 255, 0), 3)
 
     # --- classify by row count / column count (plan.md §5 step 2) ---
     expected = {"marks": questions + 1, "id": id_digits + 1, "serial": 2}
+    if not has_serial:
+        del expected["serial"]
 
     # A table rotated 180deg from correct still has the right row/column
     # *counts* — shape alone can't tell upside-down-and-mirrored from
@@ -475,10 +607,28 @@ def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path) -> d
             (c for c in single_row if (c.quad[2][1] + c.quad[3][1]) / 2 <= marks_top),
             key=lambda c: marks_top - (c.quad[2][1] + c.quad[3][1]) / 2,
         )
-        # Closest above marks = Serial (sits directly on top of Marks);
-        # second-closest = ID (sits directly on top of Serial).
-        serial_table = above_marks[0] if len(above_marks) >= 1 else None
-        id_table = above_marks[1] if len(above_marks) >= 2 else None
+        if has_serial:
+            # Closest above marks = Serial (sits directly on top of Marks);
+            # second-closest = ID (sits directly on top of Serial).
+            serial_table = above_marks[0] if len(above_marks) >= 1 else None
+            id_table = above_marks[1] if len(above_marks) >= 2 else None
+        else:
+            # Step 16's no-serial layout: the ID sits directly on top of
+            # Marks, and anything higher — the Name/Section table — is
+            # never considered. Same position rule as above, one row
+            # shorter, and for the same reason: a count-based pick could
+            # skip a genuinely short-counted ID row for a decoy. If the
+            # paper actually HAS a Serial box, the closest row is that box
+            # (2 columns), so the ID check below fails loudly with
+            # column_count_mismatch instead of reading the wrong box.
+            serial_table = None
+            id_table = above_marks[0] if len(above_marks) >= 1 else None
+    elif not has_serial:
+        # Degenerate no-marks case (fails as table_not_found regardless):
+        # widest single-row table is the ID, as below.
+        by_count = sorted(single_row, key=lambda c: c.col_count, reverse=True)
+        id_table = by_count[0] if len(by_count) >= 1 else None
+        serial_table = None
     else:
         # No marks table to anchor to — fall back to the original
         # rank-by-column-count order (unchanged behavior for this
@@ -489,9 +639,21 @@ def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path) -> d
         serial_table = by_count[1] if len(by_count) >= 2 else None
 
     found = {"marks": marks, "id": id_table, "serial": serial_table}
+    if not has_serial:
+        # Not "found: False" — the table was never expected. Dropping the
+        # key keeps all_found, the mismatch loop and result["tables"]
+        # describing exactly the tables this layout has.
+        del found["serial"]
     for name, cand in found.items():
         if cand is not None:
             cand.table_type = name
+
+    repairs: dict[str, str] = {}
+    for name, cand in found.items():
+        if cand is not None and cand.col_count != expected[name]:
+            how = _repair_columns(cand, expected[name], name)
+            if how:
+                repairs[name] = how
 
     all_found = all(found.values())
     mismatch = False
@@ -504,6 +666,10 @@ def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path) -> d
             "expected_col_count": expected[name],
             "match": bool(cand and cand.col_count == expected[name]),
         }
+        if name in repairs:
+            # Only written when a repair happened, so every result.json that
+            # needed none stays byte-identical to what it was before.
+            entry["repaired"] = repairs[name]
         result["tables"].append(entry)
         if cand and cand.col_count != expected[name]:
             mismatch = True
@@ -522,6 +688,14 @@ def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path) -> d
         if cand is None:
             continue
         _draw_boundaries(overlay, cand)
+        if cand.col_count != expected[name]:
+            # No crops for a table whose shape disagrees with the config.
+            # main.py reads whichever tables DID match (a partial scan), so
+            # a miscounted table's crops must not exist at all: with 7 ID
+            # columns instead of 8, id_d1..id_d6 would be real files holding
+            # the wrong boxes, and nothing downstream could tell. The overlay
+            # above still draws its boundaries, which is what tuning needs.
+            continue
         for r in range(cand.row_count):
             for c in range(cand.col_count):
                 y0, y1 = cand.row_bounds[r], cand.row_bounds[r + 1]
@@ -544,7 +718,9 @@ def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path) -> d
     return result
 
 
-def detect_any_orientation(image_path: Path, questions: int, id_digits: int, out_dir: Path) -> dict:
+def detect_any_orientation(
+    image_path: Path, questions: int, id_digits: int, out_dir: Path, has_serial: bool = True
+) -> dict:
     """Try detection at 0/90/180/270 degrees, returning the first success.
 
     detect() itself stays strict and single-orientation on purpose — step
@@ -558,7 +734,7 @@ def detect_any_orientation(image_path: Path, questions: int, id_digits: int, out
     blurry photo or a genuine column-count mismatch isn't an orientation
     problem, and retrying either would just waste four detection passes on
     a photo that was never going to work."""
-    result = detect(image_path, questions, id_digits, out_dir)
+    result = detect(image_path, questions, id_digits, out_dir, has_serial)
     if result["status"] == "ok" or result["failure_reason"] != "table_not_found":
         return result
 
@@ -583,7 +759,7 @@ def detect_any_orientation(image_path: Path, questions: int, id_digits: int, out
             rotated = cv2.rotate(img, rotate_code)
             rotated_path = out_dir / "_rotation_attempt.jpg"
             cv2.imwrite(str(rotated_path), rotated)
-            rotated_result = detect(rotated_path, questions, id_digits, attempt_dir)
+            rotated_result = detect(rotated_path, questions, id_digits, attempt_dir, has_serial)
             rotated_path.unlink(missing_ok=True)
             if rotated_result["status"] == "ok":
                 _promote(attempt_dir, out_dir)

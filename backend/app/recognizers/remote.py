@@ -26,8 +26,8 @@ class RemoteRecognizer:
         student_id, low_confidence_fields = id_ocr.read_id(cells_dir, id_digits)
         return IdResult(student_id=student_id, low_confidence_fields=low_confidence_fields)
 
-    def read_marks(self, cells_dir: Path, question_maxes: list[float]) -> MarksResult:
-        result = marks.recognize(cells_dir, question_maxes)
+    def read_marks(self, cells_dir: Path, question_maxes: list[float], has_serial: bool = True) -> MarksResult:
+        result = marks.recognize(cells_dir, question_maxes, has_serial)
         if result.status != "ok":
             # Gemini itself failed (rate_limited/model_error), not
             # detection — cells_dir already has real crops. Try the local,
@@ -36,7 +36,7 @@ class RemoteRecognizer:
             # returns None if it couldn't recover anything, in which case
             # this falls through to the original Gemini failure below,
             # same as before this move.
-            fallback = marks_ocr.recognize_locally(cells_dir, question_maxes)
+            fallback = marks_ocr.recognize_locally(cells_dir, question_maxes, has_serial)
             if fallback is not None:
                 return fallback
         return result

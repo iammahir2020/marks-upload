@@ -6,6 +6,7 @@ import { getRecordsByAssessment } from './db';
 import Review from './Review';
 import type { ParsedRoster } from './roster';
 import { inFlightCount, nextToReview, queueReducer } from './scanQueue';
+import { hasSerialBox } from './sections';
 import type { QuizConfig } from './types';
 
 // Request a resolution generous enough that the detector's thin table
@@ -326,7 +327,11 @@ export default function Scan({ config, assessmentId, sectionLabel, roster = null
                         <span className="primary">
                           {entry.result.status === 'failed'
                             ? `Scan failed: ${entry.result.failure_reason}`
-                            : `ID ${entry.result.student_id ?? '?'} · Serial ${entry.result.serial ?? '?'} · Total ${entry.result.total?.value ?? '?'}`}
+                            : // Step 16 — no "Serial ?" for a quiz whose paper has no
+                              // Serial box: it would read as a failed read to check.
+                              `ID ${entry.result.student_id ?? '?'}${
+                                hasSerialBox(config) ? ` · Serial ${entry.result.serial ?? '?'}` : ''
+                              } · Total ${entry.result.total?.value ?? '?'}`}
                         </span>
                         {entry.result.low_confidence_fields.length > 0 && (
                           <span className="badge badge-warning" style={{ width: 'fit-content' }}>

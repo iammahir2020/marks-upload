@@ -68,6 +68,11 @@ class MarksResult(BaseModel):
     # as 2.5 — local.py's _missing_point). Never a key for a field whose
     # value is set.
     suggestions: dict[str, str] = {}
+    # Every one-tap candidate for a blank field, when the reader has more
+    # than one: a 15 / 1.5-style tie where both are legal, or a glyph as
+    # wide as two touching digits read both ways. Always a superset of
+    # `suggestions` for that field. cnn path only.
+    choices: dict[str, list[str]] = {}
 
 
 def legal_values(max_mark: float) -> set[float]:
@@ -103,7 +108,9 @@ def validate_serial(serial: str | None) -> str | None:
     return trimmed
 
 
-def build_composite(cells_dir: Path, questions: int) -> tuple[np.ndarray | None, list[str]]:
+def build_composite(
+    cells_dir: Path, questions: int, has_serial: bool = True
+) -> tuple[np.ndarray | None, list[str]]:
     """Tile the serial crop and every marks answer-row crop into one
     labelled composite, left to right. Returns (composite, labels); labels
     names each tile in the same order they appear in the image, which the
@@ -115,8 +122,10 @@ def build_composite(cells_dir: Path, questions: int) -> tuple[np.ndarray | None,
     the allow-list itself — step 3.1 wants this checked in code."""
     sources: list[tuple[str, Path]] = []
 
+    # Step 16 — no Serial box on the paper means no serial tile, even if a
+    # stray serial.png were somehow present.
     serial_path = cells_dir / "serial.png"
-    if serial_path.exists():
+    if has_serial and serial_path.exists():
         sources.append(("serial", serial_path))
 
     for c in range(questions + 1):  # columns 0..questions-1 = Qn, questions = Total
@@ -147,6 +156,8 @@ def build_composite(cells_dir: Path, questions: int) -> tuple[np.ndarray | None,
     # project's answer to that is a failed scan the instructor can retake,
     # not a 500 (plan.md §10, "a failed scan is never a dead end").
     expected_tiles = questions + 2  # serial + one per question + total
+    if not has_serial:
+        expected_tiles -= 1
     if len(sources) != expected_tiles:
         return None, []
 
@@ -182,16 +193,16 @@ def build_composite(cells_dir: Path, questions: int) -> tuple[np.ndarray | None,
     return composite, labels
 
 
-def build_prompt(question_maxes: list[float]) -> str:
+def build_prompt(question_maxes: list[float], has_serial: bool = True) -> str:
     """Legal value set per question, derived from each question's own max,
     and the instruction to read the serial as written. Nothing about
     output shape — response_schema already fixes that, and restating the
     format degrades results (stack-reference.md)."""
     total_max = sum(question_maxes)
-    lines = [
-        "Read the labelled tiles in this image, left to right.",
-        "If a tile is labelled \"serial\", read the number exactly as written.",
-    ]
+    lines = ["Read the labelled tiles in this image, left to right."]
+    # Step 16 — no serial tile is sent, so don't describe one.
+    if has_serial:
+        lines.append("If a tile is labelled \"serial\", read the number exactly as written.")
     for i, max_mark in enumerate(question_maxes, start=1):
         values_str = ", ".join(_fmt(v) for v in sorted(legal_values(max_mark)))
         lines.append(f"Tile \"Q{i}\" is a mark out of {_fmt(max_mark)}. Its value must be one of: {values_str}.")
@@ -200,7 +211,7 @@ def build_prompt(question_maxes: list[float]) -> str:
     return "\n".join(lines)
 
 
-def validate_payload(payload: ScanPayload, question_maxes: list[float]) -> MarksResult:
+def validate_payload(payload: ScanPayload, question_maxes: list[float], has_serial: bool = True) -> MarksResult:
     """Reject any value outside the legal set for its question (step 3.4).
     The schema constrains structure, not range — this is the check that
     catches a 7 coming back for a 5-mark question. Rejected fields land in
@@ -233,8 +244,11 @@ def validate_payload(payload: ScanPayload, question_maxes: list[float]) -> Marks
     # /api/harvest's key path. The CNN path cannot produce a non-digit
     # serial by construction; Gemini can, which is exactly why the check
     # belongs on this side of the seam rather than in the recognizer.
-    serial = validate_serial(payload.serial)
-    if serial is None:
+    #
+    # Step 16 — with no Serial box on the paper nothing was shown to read,
+    # so whatever came back is discarded and nothing is flagged.
+    serial = validate_serial(payload.serial) if has_serial else None
+    if has_serial and serial is None:
         low_confidence_fields.append("serial")
 
     return MarksResult(
@@ -291,14 +305,14 @@ def _get_client():
     return _client
 
 
-def recognize(cells_dir: Path, question_maxes: list[float]) -> MarksResult:
+def recognize(cells_dir: Path, question_maxes: list[float], has_serial: bool = True) -> MarksResult:
     """The actual API call (step 3.2-3.5). Requires GEMINI_API_KEY in the
     environment — everything above this function is a pure function,
     testable without network or a key (step.md's Test section deliberately
     separates the two)."""
     from google.genai import types
 
-    composite, labels = build_composite(cells_dir, len(question_maxes))
+    composite, labels = build_composite(cells_dir, len(question_maxes), has_serial)
     if composite is None:
         return MarksResult(status="failed", failure_reason="model_error")
 
@@ -306,7 +320,7 @@ def recognize(cells_dir: Path, question_maxes: list[float]) -> MarksResult:
     if not ok:
         return MarksResult(status="failed", failure_reason="model_error")
 
-    prompt = build_prompt(question_maxes)
+    prompt = build_prompt(question_maxes, has_serial)
 
     try:
         # Client construction moved inside the try alongside the call it
@@ -338,4 +352,4 @@ def recognize(cells_dir: Path, question_maxes: list[float]) -> MarksResult:
         return MarksResult(status="failed", failure_reason=blocked)
 
     payload = response.parsed
-    return validate_payload(payload, question_maxes)
+    return validate_payload(payload, question_maxes, has_serial)

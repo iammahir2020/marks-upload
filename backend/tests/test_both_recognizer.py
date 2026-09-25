@@ -22,7 +22,7 @@ class FakeRecognizer:
     def read_id(self, cells_dir, id_digits):
         return self._id_result
 
-    def read_marks(self, cells_dir, question_maxes):
+    def read_marks(self, cells_dir, question_maxes, has_serial=True):
         return self._marks_result
 
 

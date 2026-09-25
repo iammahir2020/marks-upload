@@ -109,10 +109,11 @@ def _make_noise(path: Path):
     cv2.imwrite(str(path), img)
 
 
-def _make_wrong_column_count(path: Path, real_questions: int):
+def _make_wrong_column_count(path: Path, real_questions: int, id_digits: int = 7, serial_cols: int = 2):
     """A real, well-formed grid — but drawn with fewer marks columns than
     the config will claim. Deterministic column_count_mismatch, unlike
-    relying on noise to accidentally miscount a line."""
+    relying on noise to accidentally miscount a line. `id_digits` and
+    `serial_cols` miscount the other two tables the same way."""
     img = np.full((700, 1000, 3), 255, dtype=np.uint8)
 
     def draw_table(x, y, col_widths, row_heights):
@@ -127,8 +128,8 @@ def _make_wrong_column_count(path: Path, real_questions: int):
         for xx in xs:
             cv2.line(img, (xx, y), (xx, y + sum(row_heights)), (0, 0, 0), 2)
 
-    draw_table(60, 40, [110] + [55] * 7, [55])          # ID: label + 7 digits
-    draw_table(60, 130, [110, 90], [55])                # Serial: label + value
+    draw_table(60, 40, [110] + [55] * id_digits, [55])  # ID: label + digits
+    draw_table(60, 130, [110] + [90] * (serial_cols - 1), [55])  # Serial: label + value
     draw_table(60, 220, [90] * real_questions, [40, 110])  # Marks: fewer cols than config expects
     cv2.imwrite(str(path), img)
 
@@ -138,7 +139,11 @@ def _make_wrong_column_count(path: Path, real_questions: int):
     [
         (_make_noise, "table_not_found"),
         (_make_blank, "blurry"),
-        (lambda p: _make_wrong_column_count(p, real_questions=4), "column_count_mismatch"),
+        # Every table miscounted: nothing left to read, so the whole scan
+        # still fails. A mismatch in SOME tables is a partial scan instead
+        # — see the tests below this one.
+        (lambda p: _make_wrong_column_count(p, real_questions=4, id_digits=6, serial_cols=3),
+         "column_count_mismatch"),
     ],
 )
 def test_detection_failure_never_calls_recognizer(tmp_path, make_image, expected_reason):
@@ -160,6 +165,114 @@ def test_detection_failure_never_calls_recognizer(tmp_path, make_image, expected
     assert body["status"] == "failed"
     assert body["failure_reason"] == expected_reason
     mock_recognize.assert_not_called()
+
+
+def test_marks_mismatch_is_partial_and_never_reaches_gemini(tmp_path, force_remote_recognizer):
+    """Only the marks table miscounted: the ID is still read, every marks
+    field comes back blank and flagged, and Gemini is never called — a
+    miscounted marks table is never sent anywhere."""
+    image_path = tmp_path / "image.jpg"
+    _make_wrong_column_count(image_path, real_questions=4)
+
+    with patch("app.marks.recognize") as mock_recognize, \
+         patch("app.id_ocr.read_id", return_value=("1234567", [])) as mock_read_id:
+        resp = _post(image_path)
+
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["table_mismatches"] == [{"table": "marks", "found": 4, "expected": 6}]
+    assert body["student_id"] == "1234567"
+    assert body["serial"] is None
+    assert [q["value"] for q in body["questions"]] == [None] * 5
+    assert body["total"]["value"] is None
+    assert set(body["low_confidence_fields"]) >= {"serial", "q1", "q2", "q3", "q4", "q5", "total"}
+    mock_read_id.assert_called_once()
+    mock_recognize.assert_not_called()
+
+
+def test_id_mismatch_is_partial_and_still_reads_the_marks(tmp_path, force_remote_recognizer):
+    """Only the ID row miscounted (real_class_11's real failure shape): the
+    marks and serial are read as normal, the ID is blank and flagged, and
+    nothing ever opens an ID crop — detection wrote none for that row."""
+    image_path = tmp_path / "image.jpg"
+    _make_wrong_column_count(image_path, real_questions=6, id_digits=6)
+
+    with patch("app.marks.recognize", return_value=FIXTURE_MARKS_RESULT) as mock_recognize, \
+         patch("app.id_ocr.read_id") as mock_read_id:
+        resp = _post(image_path)
+
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["table_mismatches"] == [{"table": "id", "found": 7, "expected": 8}]
+    assert body["student_id"] is None
+    assert "student_id" in body["low_confidence_fields"]
+    assert body["serial"] == "07"
+    assert [q["value"] for q in body["questions"]] == [3.0, 2.5, 1.0, 0.0, 4.5]
+    mock_read_id.assert_not_called()
+    mock_recognize.assert_called_once()
+
+
+def test_serial_mismatch_reads_marks_without_the_serial(tmp_path, force_remote_recognizer):
+    """Only the Serial row miscounted: marks are read with has_serial=False,
+    so the recognizer never looks for a serial crop, and the serial is
+    flagged for the instructor to type."""
+    image_path = tmp_path / "image.jpg"
+    _make_wrong_column_count(image_path, real_questions=6, serial_cols=3)
+    no_serial = FIXTURE_MARKS_RESULT.model_copy(update={"serial": None})
+
+    with patch("app.marks.recognize", return_value=no_serial) as mock_recognize, \
+         patch("app.id_ocr.read_id", return_value=("1234567", [])):
+        resp = _post(image_path)
+
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["table_mismatches"] == [{"table": "serial", "found": 3, "expected": 2}]
+    assert body["serial"] is None
+    assert "serial" in body["low_confidence_fields"]
+    assert mock_recognize.call_args.args[2] is False  # has_serial
+
+
+@pytest.mark.parametrize(
+    "image, has_serial",
+    [
+        # Layout B (no Serial box) scanned with the setting ON: the ID row
+        # is taken as the Serial, the Name/Section table as the ID.
+        (Path(__file__).parent / "fixtures" / "layout_b" / "layout_b_real_class_01.jpg", True),
+        # Layout A scanned with the setting OFF: the Serial box is taken as the ID.
+        (TESTSET / "images" / "real_class_01.jpeg", False),
+    ],
+    ids=["layout_b_with_serial_on", "layout_a_with_serial_off"],
+)
+def test_wrong_serial_setting_is_never_a_partial_scan(image, has_serial):
+    """The marks table matches in both cases, so a naive partial scan would
+    return marks — and take whichever box sits in the ID's position as the
+    ID. A wrong layout setting must keep failing the whole scan loudly."""
+    if not image.exists():
+        pytest.skip(f"{image.name} not present")
+    config = dict(DEFAULT_CONFIG, hasSerial=has_serial)
+
+    with patch("app.marks.recognize") as mock_recognize:
+        body = _post(image, config).json()
+
+    assert body["status"] == "failed"
+    assert body["failure_reason"] == "column_count_mismatch"
+    mock_recognize.assert_not_called()
+
+
+def test_detection_writes_no_crops_for_a_mismatched_table(tmp_path):
+    """The guarantee the partial scan rests on: a miscounted table has no
+    crop files at all, so no recognizer can read the wrong boxes."""
+    from app.detection import detect
+
+    image_path = tmp_path / "image.jpg"
+    _make_wrong_column_count(image_path, real_questions=6, id_digits=6)
+    result = detect(image_path, 5, 7, tmp_path / "out")
+
+    assert result["failure_reason"] == "column_count_mismatch"
+    cells = {p.name for p in (tmp_path / "out" / "cells").iterdir()}
+    assert not any(name.startswith("id_d") for name in cells)
+    assert "serial.png" in cells
+    assert "marks_r1_c0.png" in cells
 
 
 def test_known_good_image_matches_cli_values(force_remote_recognizer):
@@ -201,13 +314,16 @@ def test_two_consecutive_requests_do_not_influence_each_other(force_remote_recog
 
     with patch("app.marks.recognize", return_value=FIXTURE_MARKS_RESULT):
         resp_a = _post(image_path, config_a)
-        resp_b = _post(image_path, config_b)  # wrong idDigits -> should fail on its own terms
+        resp_b = _post(image_path, config_b)  # wrong idDigits -> ID row mismatches on its own terms
         resp_c = _post(image_path, config_a)  # back to the correct config
 
     assert resp_a.status_code == resp_b.status_code == resp_c.status_code == 200
     assert resp_a.json()["status"] == "ok"
-    assert resp_b.json()["status"] == "failed"  # 6-digit config against a 7-digit ID table
+    # 6-digit config against a 7-digit ID table: a partial scan, ID unread.
+    assert resp_b.json()["table_mismatches"] == [{"table": "id", "found": 8, "expected": 7}]
+    assert resp_b.json()["student_id"] is None
     assert resp_c.json()["status"] == "ok"
+    assert resp_c.json()["table_mismatches"] == []
     # resp_c must be identical to resp_a — not affected by resp_b's failure
     assert resp_c.json() == resp_a.json()
 

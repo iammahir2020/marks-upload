@@ -55,7 +55,9 @@ def _parse_legal_mark(text: str | None, max_mark: float) -> float | None:
     return value if value in legal_values(max_mark) else None
 
 
-def recognize_locally(cells_dir: Path, question_maxes: list[float]) -> MarksResult | None:
+def recognize_locally(
+    cells_dir: Path, question_maxes: list[float], has_serial: bool = True
+) -> MarksResult | None:
     """Best-effort local read of serial.png and marks_r1_c*.png — the same
     crops build_composite would have tiled for Gemini, never an id_d*.png
     (plan.md §12's ID-privacy boundary doesn't change for this path either;
@@ -72,8 +74,11 @@ def recognize_locally(cells_dir: Path, question_maxes: list[float]) -> MarksResu
     # rejected Gemini read), and a *recovered* field is flagged anyway on
     # top of that, since this whole path is deliberately weaker than a
     # fresh Gemini read even when it does parse and land in the legal set.
-    low_confidence_fields: list[str] = ["serial"]
-    serial = _read_field(cells_dir / "serial.png", DIGIT_WHITELIST) or None
+    # Step 16 — no Serial box on the paper: nothing to read, nothing to flag.
+    low_confidence_fields: list[str] = ["serial"] if has_serial else []
+    serial = None
+    if has_serial:
+        serial = _read_field(cells_dir / "serial.png", DIGIT_WHITELIST) or None
 
     questions: list[float | None] = []
     for i, max_mark in enumerate(question_maxes):

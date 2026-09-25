@@ -29,7 +29,7 @@ from cnn.decode import (  # noqa: E402
 )
 from cnn.id_infer import glyph_probs  # noqa: E402
 from cnn.preprocess import glyph_to_canvas, has_ink, preprocess_for_cnn  # noqa: E402
-from cnn.segment import Glyph, segment_cell  # noqa: E402
+from cnn.segment import WIDE_SPLIT_FRACS, Glyph, segment_cell_detail, split_wide  # noqa: E402
 from cnn.thresholds import CONFIDENCE_FLOOR as ID_CONFIDENCE_FLOOR  # noqa: E402
 from cnn.thresholds import CROSSED_OUT_FLOOR  # noqa: E402
 from cnn.thresholds import MARGIN_FLOOR as ID_MARGIN_FLOOR  # noqa: E402
@@ -59,6 +59,11 @@ class _CellRead:
     had_ink: bool = False
     crossed_out: bool = False
     suggestion: object = None
+    # Every one-tap candidate when value is None — two or more for a tie the
+    # instructor must settle (15 / 1.5), one when it equals `suggestion`.
+    choices: tuple = ()
+    # Unexplained ink between two digits (segment.Segmentation.stray_between).
+    stray_between: bool = False
 
 
 class CNNRecognizer:
@@ -116,13 +121,16 @@ class CNNRecognizer:
             crossed_out_fields=["student_id"] if crossed else [],
         )
 
-    def read_marks(self, cells_dir: Path, question_maxes: list[float]) -> MarksResult:
+    def read_marks(self, cells_dir: Path, question_maxes: list[float], has_serial: bool = True) -> MarksResult:
         """serial.png and marks_r1_c*.png, segmented then constrained-
         decoded (step 3r). Always status="ok" — there is no network call
         here to fail the way marks.py's Gemini call can (plan.md §16:
         rate_limited is unreachable on this path); an unreadable field is
         represented the same way it always is in this project, as a None
-        value plus a flag, never a "failed" scan."""
+        value plus a flag, never a "failed" scan.
+
+        `has_serial=False` (step 16): the paper has no Serial box, so the
+        serial is None and NOT flagged — there is nothing to be unsure of."""
         cell_paths = [cells_dir / "serial.png"] + [
             cells_dir / f"marks_r1_c{c}.png" for c in range(len(question_maxes) + 1)
         ]
@@ -136,22 +144,25 @@ class CNNRecognizer:
         unmatched_fields: list[str] = []
         crossed_out_fields: list[str] = []
         suggestions: dict[str, str] = {}
+        choices: dict[str, list[str]] = {}
 
         def note_crossed(field: str, read: _CellRead, fmt) -> None:
             crossed_out_fields.append(field)
             if read.suggestion is not None:
                 suggestions[field] = fmt(read.suggestion)
 
-        serial_read = self._decode_serial_cell(cells_dir / "serial.png")
-        serial = serial_read.value
-        # issues.md N32 — decode_serial now returns a partial string like
-        # "0?" instead of blanking the whole field, so "flagged" is no
-        # longer just "is None": it's "contains any '?' at all", mirroring
-        # read_id's own `uncertain` tracking for the student ID above.
-        if serial is None or "?" in serial:
-            low_confidence_fields.append("serial")
-        if serial_read.crossed_out:
-            note_crossed("serial", serial_read, str)
+        serial = None
+        if has_serial:
+            serial_read = self._decode_serial_cell(cells_dir / "serial.png")
+            serial = serial_read.value
+            # issues.md N32 — decode_serial now returns a partial string like
+            # "0?" instead of blanking the whole field, so "flagged" is no
+            # longer just "is None": it's "contains any '?' at all", mirroring
+            # read_id's own `uncertain` tracking for the student ID above.
+            if serial is None or "?" in serial:
+                low_confidence_fields.append("serial")
+            if serial_read.crossed_out:
+                note_crossed("serial", serial_read, str)
 
         questions: list[float | None] = []
         for i, max_mark in enumerate(question_maxes):
@@ -166,6 +177,8 @@ class CNNRecognizer:
                     unmatched_fields.append(field)
                     if read.suggestion is not None:
                         suggestions[field] = _fmt(read.suggestion)
+                    if read.choices:
+                        choices[field] = [_fmt(c) for c in read.choices]
 
         total_max = sum(question_maxes)
         total_path = cells_dir / f"marks_r1_c{len(question_maxes)}.png"
@@ -179,6 +192,8 @@ class CNNRecognizer:
                 unmatched_fields.append("total")
                 if total_read.suggestion is not None:
                     suggestions["total"] = _fmt(total_read.suggestion)
+                if total_read.choices:
+                    choices["total"] = [_fmt(c) for c in total_read.choices]
 
         return MarksResult(
             status="ok",
@@ -189,10 +204,11 @@ class CNNRecognizer:
             unmatched_fields=unmatched_fields,
             crossed_out_fields=crossed_out_fields,
             suggestions=suggestions,
+            choices=choices,
         )
 
     def _read_glyphs(self, path: Path):
-        """(glyphs, probs, crossed) for one cell, or None when the crop is
+        """(glyphs, probs, crossed, stray_between) for one cell, or None when the crop is
         missing. `probs` and `crossed` are keyed by glyph index and cover
         digit glyphs only (decimal points are geometry, never classified);
         each glyph is run through the model once, and both the crossed-out
@@ -200,13 +216,16 @@ class CNNRecognizer:
         crop = read_cell(path)
         if crop is None:
             return None
-        glyphs = segment_cell(crop)
+        seg = segment_cell_detail(crop)
+        glyphs = seg.glyphs
         probs = {
             i: glyph_probs(self._session, glyph_to_canvas(g.image))
             for i, g in enumerate(glyphs) if not g.is_decimal
         }
         crossed = {i: is_crossed_out(p, CROSSED_OUT_FLOOR) for i, p in probs.items()}
-        return glyphs, probs, crossed
+        # Returned, never stored on self: one recognizer serves concurrent
+        # scans from main.py's thread pool (the backend is stateless).
+        return glyphs, probs, crossed, seg.stray_between
 
     @staticmethod
     def _missing_point(digit_probs, decimal_index, legal_vals: set[float]):
@@ -232,11 +251,89 @@ class CNNRecognizer:
         value, _score = decode_value(digit_probs, len(digit_probs) - 1, legal_vals, DECODE_FLOOR)
         return value
 
+    def _decode(self, glyphs: list[Glyph], probs: dict, legal_vals: set[float]):
+        """One reading of a glyph list: the value, or None."""
+        return self._decode_scored(glyphs, probs, legal_vals)[0]
+
+    def _decode_scored(self, glyphs: list[Glyph], probs: dict, legal_vals: set[float]):
+        _digit_glyphs, decimal_index = _digit_glyphs_and_decimal_index(glyphs)
+        digit_probs = [probs[i] for i, g in enumerate(glyphs) if not g.is_decimal]
+        if not digit_probs:
+            return None, 0.0
+        return decode_value(digit_probs, decimal_index, legal_vals, DECODE_FLOOR)
+
+    def _resolve(self, glyphs: list[Glyph], probs: dict, legal_vals: set[float], stray: bool) -> _CellRead:
+        """Every reading the evidence allows, then one rule: a single legal
+        reading from real evidence is the value; anything more is a set of
+        choices for the instructor, never a pick.
+
+        Real evidence is the glyphs as segmented, and — for a WEAK point
+        (segment.py's mid-height/rescued dots) — the same glyphs without it.
+        So "25" with a weak dot on a 5-mark question is 2.5 (25 isn't legal),
+        "10" with a speck read as a dot is 10 (1.0 isn't a rendering any
+        legal value has), and "1.5" with a weak dot on a 25-mark Total is a
+        tie: 1.5 or 15, both offered.
+
+        Hints only ever add choices: a point placed before the last digit
+        (a dot that was lost — _missing_point), tried when stray ink sits
+        between the digits or nothing else decoded. And a glyph as wide as
+        two digits (segment.py's maybe_two, the touching "20" that read as a
+        confident 2.5 for "20.5") is never trusted: its readings, whole and
+        split, are all choices.
+        """
+        real: set[float] = set()
+        hints: set[float] = set()
+
+        base = self._decode(glyphs, probs, legal_vals)
+        if base is not None:
+            real.add(base)
+        weak_idx = [i for i, g in enumerate(glyphs) if g.is_decimal and g.weak]
+        if weak_idx:
+            kept = [i for i in range(len(glyphs)) if i not in weak_idx]
+            without = self._decode([glyphs[i] for i in kept], {j: probs[i] for j, i in enumerate(kept) if i in probs}, legal_vals)
+            if without is not None:
+                real.add(without)
+
+        digit_probs = [probs[i] for i, g in enumerate(glyphs) if not g.is_decimal]
+        _digits, decimal_index = _digit_glyphs_and_decimal_index(glyphs)
+        if base is None or stray:
+            hint = self._missing_point(digit_probs, decimal_index, legal_vals)
+            if hint is not None:
+                hints.add(hint)
+
+        wide_idx = [i for i, g in enumerate(glyphs) if not g.is_decimal and g.maybe_two]
+        for i in wide_idx:
+            value, best = None, 0.0
+            for frac in WIDE_SPLIT_FRACS:
+                halves = split_wide(glyphs[i], frac)
+                if halves is None:
+                    continue
+                split_glyphs = glyphs[:i] + list(halves) + glyphs[i + 1:]
+                split_probs = {
+                    j: glyph_probs(self._session, glyph_to_canvas(g.image))
+                    for j, g in enumerate(split_glyphs) if not g.is_decimal
+                }
+                candidate, score = self._decode_scored(split_glyphs, split_probs, legal_vals)
+                if candidate is not None and score > best:
+                    value, best = candidate, score
+            # Width alone proves nothing — students write a "2" up to twice as
+            # wide as it is tall (27 of 430 harvested whole marks). Only a
+            # split that reads as a DIFFERENT legal value makes it a tie.
+            if value is not None and value not in real:
+                hints |= real | {value}
+                real = set()
+
+        if len(real) == 1 and not (hints - real):
+            return _CellRead(value=next(iter(real)), had_ink=False)
+        choices = tuple(sorted(real | hints))
+        suggestion = choices[0] if len(choices) == 1 else None
+        return _CellRead(had_ink=True, suggestion=suggestion, choices=choices, stray_between=stray)
+
     def _decode_serial_cell(self, path: Path) -> _CellRead:
         read = self._read_glyphs(path)
         if read is None or not read[0]:
             return _CellRead()  # missing or blank — flag, never guess (plan.md §16)
-        _glyphs, probs, crossed = read
+        _glyphs, probs, crossed, _stray = read
         kept = [probs[i] for i in probs if not crossed[i]]
         serial, _confidence = decode_serial(kept, SERIAL_CONFIDENCE_FLOOR, SERIAL_MARGIN_FLOOR)
         if not any(crossed.values()):
@@ -260,16 +357,9 @@ class CNNRecognizer:
         read = self._read_glyphs(path)
         if read is None or not read[0]:
             return _CellRead()  # missing or blank — not the N31/N33 case
-        glyphs, probs, crossed = read
+        glyphs, probs, crossed, stray = read
         if not any(crossed.values()):
-            _digit_glyphs, decimal_index = _digit_glyphs_and_decimal_index(glyphs)
-            # probs is keyed in glyph order, so its values are the digit
-            # glyphs' vectors left to right.
-            digit_probs = list(probs.values())
-            value, _score = decode_value(digit_probs, decimal_index, legal_vals, DECODE_FLOOR)
-            if value is not None:
-                return _CellRead(value=value, had_ink=False)
-            return _CellRead(had_ink=True, suggestion=self._missing_point(digit_probs, decimal_index, legal_vals))
+            return self._resolve(glyphs, probs, legal_vals, stray)
 
         # Step 15 — drop the struck glyphs and decode what is left, with the
         # decimal point's position recomputed among the survivors. A point

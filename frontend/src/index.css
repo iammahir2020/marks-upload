@@ -240,6 +240,7 @@ p {
   font-weight: 510;
   cursor: pointer;
   white-space: nowrap;
+  text-decoration: none; /* Review's Save photo is an <a download> */
   transition:
     background-color 150ms var(--ease-out),
     border-color 150ms var(--ease-out),
@@ -510,6 +511,7 @@ p {
 
 .banner-actions {
   display: flex;
+  flex-wrap: wrap; /* three nowrap pills overflow a 320px phone otherwise */
   gap: 8px;
 }
 

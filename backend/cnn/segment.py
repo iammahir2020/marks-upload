@@ -76,12 +76,54 @@ DECIMAL_LOWER_BAND_FRAC = 0.5  # and its centroid must sit in the lower
                                  # (see learn.md step 3r).
 
 
+# --- Weak decimal points (2026-09-25, cnn/half_marks_accuracy.py) -----------
+# Measured on a practice page of 121 written half marks: 7 had a clear dot at
+# 37-49% of the writing's height (the lower-half rule above needs >= 50%), and
+# 6 had a dot of 0.13-0.15% of the crop's area, just under NOISE_AREA_FRAC —
+# two of those read as a confident "25" for a written "2.5". A dot found by
+# the rules below is WEAK: the decoder tries the value with and without it
+# (app/recognizers/local.py), so it can only resolve a reading, or turn a tie
+# like 15 / 1.5 into two choices for the instructor — never force one.
+WEAK_DOT_MIN_BAND_FRAC = 0.25  # a weak dot's centre must sit below the top quarter of
+                                 # the writing: mid-height is where people put it
+                                 # (the lowest measured was 0.37); higher up, a small
+                                 # blob is more likely a stray mark than a point
+WEAK_DOT_MAX_ASPECT = 2.0  # roughly round: neither side more than 2x the other, which
+                             # keeps out a hyphen, a slash, or a sliver of a stroke
+WEAK_DOT_MIN_AREA_FRAC = 0.02  # a rescued blob's ink as a fraction of the largest glyph's
+                                 # ink (pixels, not bounding boxes, so pen weight cancels
+                                 # out) — measured dots were 3.5-6% of their digit, paper
+                                 # specks under 1%
+STRAY_MIN_AREA_FRAC = 0.01  # smaller than this (vs the largest glyph) isn't even
+                              # evidence that a point might have been lost
+
+# --- Glyphs as wide as two digits -------------------------------------------
+# "2" and "0" written touching come out as one component; the model reads the
+# pair as "2", and "20.5" decoded as a confident 2.5 on the same page. A digit
+# is rarely wider than it is tall, so a glyph this wide is never trusted.
+WIDE_GLYPH_ASPECT = 1.25  # width / height
+WIDE_GLYPH_VS_PEERS = 1.4  # ...and, when the cell has other digits, this much wider
+                             # than their median — a broad single "4" or "2" isn't two
+WIDE_SPLIT_FRACS = (0.35, 0.425, 0.5, 0.575, 0.65)  # cut positions tried, as a fraction
+                                                     # of the glyph's width
+
+
 @dataclass
 class Glyph:
     image: np.ndarray   # cropped BGR/gray glyph, in the inset cell's own coordinates
     x0: int
     x1: int
     is_decimal: bool
+    weak: bool = False       # a decimal point found only by the weak-dot rules above
+    maybe_two: bool = False  # a digit glyph as wide as two touching digits
+
+
+@dataclass
+class Segmentation:
+    glyphs: list[Glyph]
+    # Ink between two digits that wasn't classified as anything: a point
+    # may have been lost there, so a two-digit reading isn't certain.
+    stray_between: bool = False
 
 
 def _merge_overlapping(boxes: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
@@ -123,12 +165,34 @@ def _merge_overlapping(boxes: list[tuple[int, int, int, int]]) -> list[tuple[int
 def segment_cell(cell: np.ndarray) -> list[Glyph]:
     """One cell crop (a serial, mark, or total answer box) -> its
     individual glyphs, left to right, each tagged digit-vs-decimal-point.
+    See segment_cell_detail, which this wraps."""
+    return segment_cell_detail(cell).glyphs
 
-    Returns an empty list for a blank cell — checked *before* any
+
+def _between(cx: float, digits: list[tuple[int, int, int, int]]) -> bool:
+    """A point sits between two digits: one wholly to its left, one wholly
+    to its right. A small blob before the first digit or after the last one
+    is never a decimal point — every legal value has digits on both sides."""
+    return any(b[2] <= cx for b in digits) and any(b[0] >= cx for b in digits)
+
+
+def _is_round(w: int, h: int) -> bool:
+    return w > 0 and h > 0 and max(w / h, h / w) <= WEAK_DOT_MAX_ASPECT
+
+
+def segment_cell_detail(cell: np.ndarray) -> Segmentation:
+    """One cell crop -> its glyphs left to right, plus whether unexplained
+    ink sits between two digits.
+
+    Returns no glyphs for a blank cell — checked *before* any
     per-component classification, mirroring id_ocr.py's own "a blank
     input should never produce an arbitrary glyph shape" posture (plan.md
     §16: "A classifier always outputs something; feed it a blank cell and
     it returns a confident wrong digit").
+
+    Everything the strong (original) rules decide is unchanged; the weak-dot
+    and wide-glyph rules only ever ADD information on top of it, which the
+    decoder treats with suspicion (see the constants above).
     """
     h, w = cell.shape[:2]
     dy, dx = int(h * INSET_FRAC), int(w * INSET_FRAC)
@@ -142,14 +206,18 @@ def segment_cell(cell: np.ndarray) -> list[Glyph]:
     noise_floor = cell_area * NOISE_AREA_FRAC
 
     boxes = []  # (x0, y0, x1, y1), label 0 is the background
+    rejected = []  # (x0, y0, x1, y1, area) — below the noise floor
+    largest_ink = 1
     for label in range(1, num_labels):
         x, y, cw, ch, area = stats[label]
         if area < noise_floor:
+            rejected.append((x, y, x + cw, y + ch, area))
             continue
         boxes.append((x, y, x + cw, y + ch))
+        largest_ink = max(largest_ink, int(area))
 
     if not boxes:
-        return []
+        return Segmentation([])
 
     boxes.sort(key=lambda b: b[0])
     boxes = _merge_overlapping(boxes)
@@ -159,17 +227,75 @@ def segment_cell(cell: np.ndarray) -> list[Glyph]:
     band_top = min(y0 for _, y0, _, _ in boxes)
     band_bottom = max(y1 for _, _, _, y1 in boxes)
     band_height = max(band_bottom - band_top, 1)
+    lower_third_start = band_top + band_height * (1 - DECIMAL_LOWER_BAND_FRAC)
+    weak_start = band_top + band_height * WEAK_DOT_MIN_BAND_FRAC
+
+    def is_small(b) -> bool:
+        return max_height > 0 and (b[3] - b[1]) < max_height * DECIMAL_HEIGHT_FRAC
+
+    digits = [b for b in boxes if not is_small(b)]
 
     glyphs = []
-    for x0, y0, x1, y1 in boxes:
-        height = y1 - y0
+    stray = False
+    for b in boxes:
+        x0, y0, x1, y1 = b
         centroid_y = (y0 + y1) / 2.0
-        lower_third_start = band_top + band_height * (1 - DECIMAL_LOWER_BAND_FRAC)
-        is_decimal = (
-            max_height > 0
-            and height < max_height * DECIMAL_HEIGHT_FRAC
-            and centroid_y >= lower_third_start
-        )
-        glyphs.append(Glyph(image=inset[y0:y1, x0:x1], x0=x0, x1=x1, is_decimal=is_decimal))
+        cx = (x0 + x1) / 2.0
+        is_decimal = is_small(b) and centroid_y >= lower_third_start
+        weak = False
+        if is_small(b) and not is_decimal:
+            if _is_round(x1 - x0, y1 - y0) and centroid_y >= weak_start and _between(cx, digits):
+                is_decimal = weak = True
+            elif _between(cx, digits):
+                stray = True
+        glyphs.append(Glyph(image=inset[y0:y1, x0:x1], x0=x0, x1=x1, is_decimal=is_decimal, weak=weak))
 
-    return glyphs
+    # A dot that fell under the noise floor: rescued only when it is round,
+    # between two digits, below the top quarter, and big enough next to the
+    # digits to be a pen dot rather than paper texture. Anything smaller
+    # that still sits between digits is recorded as stray ink.
+    for x0, y0, x1, y1, area in rejected:
+        cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        if not _between(cx, digits) or not (band_top <= cy <= band_bottom):
+            continue
+        if (
+            area >= largest_ink * WEAK_DOT_MIN_AREA_FRAC
+            and _is_round(x1 - x0, y1 - y0)
+            and cy >= weak_start
+            and not any(g.is_decimal for g in glyphs)
+        ):
+            glyphs.append(Glyph(image=inset[y0:y1, x0:x1], x0=x0, x1=x1, is_decimal=True, weak=True))
+        elif area >= largest_ink * STRAY_MIN_AREA_FRAC:
+            stray = True
+    glyphs.sort(key=lambda g: g.x0)
+
+    digit_glyphs = [g for g in glyphs if not g.is_decimal]
+    for g in digit_glyphs:
+        gw, gh = g.x1 - g.x0, g.image.shape[0]
+        peers = [o.x1 - o.x0 for o in digit_glyphs if o is not g]
+        wide = gh > 0 and gw / gh >= WIDE_GLYPH_ASPECT
+        if wide and peers:
+            wide = gw >= WIDE_GLYPH_VS_PEERS * float(np.median(peers))
+        g.maybe_two = bool(wide)
+
+    return Segmentation(glyphs, stray_between=stray)
+
+
+def split_wide(glyph: Glyph, frac: float) -> tuple[Glyph, Glyph] | None:
+    """Cut a maybe_two glyph in two at `frac` of its width. None if either
+    side would hold no ink.
+
+    The caller tries several cuts (WIDE_SPLIT_FRACS) and keeps the one the
+    model reads best, because no single geometric rule finds the join: the
+    thinnest column of a touching "20" is the middle of the "0" (only its
+    top and bottom strokes), not where the two digits meet."""
+    img = glyph.image
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    cut = int(bw.shape[1] * frac)
+    if cut <= 0 or cut >= bw.shape[1] or bw[:, :cut].sum() == 0 or bw[:, cut:].sum() == 0:
+        return None
+    return (
+        Glyph(image=img[:, :cut], x0=glyph.x0, x1=glyph.x0 + cut, is_decimal=False),
+        Glyph(image=img[:, cut:], x0=glyph.x0 + cut, x1=glyph.x1, is_decimal=False),
+    )

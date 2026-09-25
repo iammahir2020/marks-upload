@@ -26,6 +26,7 @@ import { buildExamSheet, type ExamSheetResult } from './examSheet';
 import { sortRecords, unverifiedReason } from './resultsTable';
 import type { ParsedRoster } from './roster';
 import { matchAgainstRoster } from './rosterMatch';
+import { hasSerialBox } from './sections';
 import type { Assessment, QuestionValue, QuizConfig, Section, StudentRecord } from './types';
 import { parseMarkField, sumCheck } from './validateMarks';
 import {
@@ -202,10 +203,18 @@ export default function Results({
     });
   }, [assessmentId]);
 
+  // Step 16 (plan.md §21) — false only for a quiz printed without a Serial
+  // box. sortRecords needs nothing: with every serial null it already
+  // falls through to ID order.
+  const hasSerial = hasSerialBox(config);
+  const noSerial = useMemo(
+    () => (hasSerial ? undefined : { roster: section.roster ?? null }),
+    [hasSerial, section.roster],
+  );
   const sorted = useMemo(() => sortRecords(records), [records]);
   const unverifiedCount = useMemo(
-    () => records.filter((r) => unverifiedReason(r, config.idDigits) !== null).length,
-    [records, config.idDigits],
+    () => records.filter((r) => unverifiedReason(r, config.idDigits, noSerial) !== null).length,
+    [records, config.idDigits, noSerial],
   );
 
   async function updateRecord(updated: StudentRecord) {
@@ -219,7 +228,9 @@ export default function Results({
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Marks');
     ws.columns = [
-      { header: 'Serial', key: 'serial', width: 10 },
+      // Step 16 — no Serial column for a quiz whose paper has no Serial box.
+      // (The class-list exam sheet keeps its — see workbookExport.ts.)
+      ...(hasSerial ? [{ header: 'Serial', key: 'serial', width: 10 }] : []),
       { header: 'Student ID', key: 'studentId', width: 16 },
       ...config.questions.map((qc) => ({ header: `Q${qc.q} (${qc.max})`, key: `q${qc.q}`, width: 8 })),
       { header: `Total (${config.totalMax})`, key: 'total', width: 10 },
@@ -445,7 +456,7 @@ export default function Results({
           <table className="data-table">
             <thead>
               <tr>
-                <th className="col-serial">Serial</th>
+                {hasSerial && <th className="col-serial">Serial</th>}
                 <th className="col-id">Student ID</th>
                 {/* Step.md 12.11 — only when a class list is attached, so
                     the plain-mode table keeps its exact original columns. */}
@@ -466,6 +477,7 @@ export default function Results({
                   record={record}
                   config={config}
                   roster={section.roster ?? null}
+                  noSerial={noSerial}
                   onUpdate={updateRecord}
                 />
               ))}
@@ -483,7 +495,9 @@ export default function Results({
       <p className="text-sm muted">
         {section.roster
           ? 'Your class list is attached — the exported sheet lists every student on it, blank if they weren’t scanned, so a skipped student is visible without a separate attendance check.'
-          : "This app has no class list, so it can't tell whether a serial is out of range or a student was skipped entirely — check the exported file against your attendance sheet for gaps."}
+          : hasSerial
+            ? "This app has no class list, so it can't tell whether a serial is out of range or a student was skipped entirely — check the exported file against your attendance sheet for gaps."
+            : "This section has no class list and this quiz has no serial, so nothing here can catch a misread student ID or a skipped student — check the exported file against your attendance sheet."}
       </p>
     </div>
   );
@@ -606,6 +620,8 @@ interface ResultsRowProps {
   record: StudentRecord;
   config: QuizConfig;
   roster: ParsedRoster | null;
+  // Step 16 — set only for a quiz with no Serial box; see resultsTable.ts.
+  noSerial?: { roster: ParsedRoster | null };
   onUpdate: (record: StudentRecord) => void;
 }
 
@@ -622,7 +638,7 @@ function isUnchanged(a: StudentRecord, b: StudentRecord): boolean {
   );
 }
 
-function ResultsRow({ record, config, roster, onUpdate }: ResultsRowProps) {
+function ResultsRow({ record, config, roster, noSerial, onUpdate }: ResultsRowProps) {
   const [studentId, setStudentId] = useState(record.studentId ?? '');
   const [serial, setSerial] = useState(record.serial ?? '');
   // Step.md 12.11 — derived from the LIVE (possibly just-edited) studentId
@@ -654,7 +670,7 @@ function ResultsRow({ record, config, roster, onUpdate }: ResultsRowProps) {
   // 9.1's sum check, derived on every render — never stored, same
   // principle as the Review screen (CLAUDE.md "Derive, don't store").
   const { computedSum, matches } = sumCheck(questionValues, total);
-  const reason = unverifiedReason(record, config.idDigits);
+  const reason = unverifiedReason(record, config.idDigits, noSerial);
 
   const markErrors: Record<number, string> = {};
   for (const qc of config.questions) {
@@ -666,7 +682,13 @@ function ResultsRow({ record, config, roster, onUpdate }: ResultsRowProps) {
 
   function commit() {
     const trimmedId = studentId.trim() || null;
-    const trimmedSerial = serial.trim() || null;
+    // Step 16 — no Serial box: the serial isn't shown, so it can't be
+    // edited, and the ID alone must survive the edit.
+    const trimmedSerial = noSerial ? record.serial : serial.trim() || null;
+    if (noSerial && !trimmedId) {
+      setError('Needs a student ID — edit not saved.');
+      return;
+    }
     // CLAUDE.md: at least one of studentId/serial must be non-null — an
     // edit that would clear both is rejected rather than silently
     // orphaning the record.
@@ -701,9 +723,11 @@ function ResultsRow({ record, config, roster, onUpdate }: ResultsRowProps) {
 
   return (
     <tr className={reason ? 'unverified' : undefined} title={error ?? undefined}>
-      <td>
-        <input className="cell-input" value={serial} onChange={(e) => setSerial(e.target.value)} onBlur={commit} />
-      </td>
+      {!noSerial && (
+        <td>
+          <input className="cell-input" value={serial} onChange={(e) => setSerial(e.target.value)} onBlur={commit} />
+        </td>
+      )}
       <td>
         <input
           className="cell-input"

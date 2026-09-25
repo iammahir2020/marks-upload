@@ -13,10 +13,11 @@
 // - 7.6 A failed scan lands here too, with empty fields, the reason shown,
 //   and Retake/Enter-manually — never a dead end.
 import { useMemo, useState } from 'react';
-import { harvestScan, type HarvestFields, type ScanResult } from './api';
+import { harvestScan, type HarvestFields, type ScanResult, type TableMismatch } from './api';
 import { findRecordsBySerial, findRecordsByStudentId, saveRecord } from './db';
 import { matchAgainstRoster } from './rosterMatch';
 import type { ParsedRoster } from './roster';
+import { hasSerialBox } from './sections';
 import type { QuizConfig, StudentRecord } from './types';
 import {
   crossCheck,
@@ -63,7 +64,7 @@ function marksFromResult(config: QuizConfig, result: ScanResult): Record<number,
 // said once for the whole card (see the notes above the marks grid).
 type FieldStatus =
   | { tone: 'danger'; label: 'Invalid' }
-  | { tone: 'warning'; label: 'Unclear' | 'Crossed out'; suggestion?: string }
+  | { tone: 'warning'; label: 'Unclear' | 'Crossed out'; options: string[] }
   | null;
 
 // Precedence: something the instructor typed that can't be saved beats
@@ -77,18 +78,23 @@ function fieldStatus(
   unmatched: Set<string>,
   crossedOut: Set<string>,
   suggestions: Record<string, string>,
+  choices: Record<string, string[]> = {},
 ): FieldStatus {
   if (error) return { tone: 'danger', label: 'Invalid' };
   if (value) return null;
+  // Every one-tap reading the scan has. `choices` holds two or more when
+  // the reader couldn't pick (15 or 1.5 — both legal, a point that may or
+  // may not be there); otherwise the single older `suggestion`.
+  const options = choices[key] ?? (suggestions[key] !== undefined ? [suggestions[key]] : []);
   // Step 15 — crossed out is the more specific reason, so it wins.
-  if (crossedOut.has(key)) return { tone: 'warning', label: 'Crossed out', suggestion: suggestions[key] };
-  if (unmatched.has(key)) return { tone: 'warning', label: 'Unclear', suggestion: suggestions[key] };
+  if (crossedOut.has(key)) return { tone: 'warning', label: 'Crossed out', options };
+  if (unmatched.has(key)) return { tone: 'warning', label: 'Unclear', options };
   return null;
 }
 
-// The status word, plus a one-tap Use when the scan has a candidate
-// reading. The field itself stays empty until Use is tapped: a suggestion
-// is never a value filled in on the instructor's behalf.
+// The status word, plus a one-tap Use per candidate reading. The field
+// itself stays empty until one is tapped: a suggestion is never a value
+// filled in on the instructor's behalf — least of all when there are two.
 function FieldStatusView({
   status,
   onUse,
@@ -99,16 +105,42 @@ function FieldStatusView({
   inline?: boolean;
 }) {
   if (!status) return null;
-  const suggestion = status.tone === 'warning' ? status.suggestion : undefined;
+  const options = status.tone === 'warning' ? status.options : [];
   return (
     <span className={`field-status${inline ? ' field-status-inline' : ''}`}>
       <span className={`field-status-label tone-${status.tone}`}>{status.label}</span>
-      {suggestion !== undefined && (
-        <button type="button" className="btn btn-secondary btn-use" onClick={() => onUse(suggestion)}>
-          Use {suggestion}
+      {options.map((option) => (
+        <button key={option} type="button" className="btn btn-secondary btn-use" onClick={() => onUse(option)}>
+          Use {option}
         </button>
-      )}
+      ))}
     </span>
+  );
+}
+
+// One line per table the scan couldn't read. The backend's counts include
+// the label column, so the ID row reports "8 columns" for 7 digit boxes.
+export function describeMismatch(m: TableMismatch, questionCount: number): string {
+  if (m.table === 'id') {
+    return `Student ID row: found ${m.found - 1} digit boxes, expected ${m.expected - 1}.`;
+  }
+  if (m.table === 'serial') {
+    return `Serial row: found ${m.found} boxes, expected ${m.expected}.`;
+  }
+  return `Marks table: found ${m.found} columns, expected ${m.expected} (${questionCount} questions + Total).`;
+}
+
+// Keeps the capture on the phone, for adding to the detector's test photos
+// later. A plain download of the blob URL Scan.tsx already holds: the same
+// bytes the backend saw, nothing uploaded, nothing stored server-side. The
+// name carries the reason and the time, never anything read off the script.
+function SavePhotoButton({ url, reason }: { url?: string; reason: string }) {
+  if (!url) return null;
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  return (
+    <a className="btn btn-secondary btn-sm" href={url} download={`scan-${reason}-${stamp}.jpg`}>
+      Save photo
+    </a>
   );
 }
 
@@ -122,6 +154,10 @@ export default function Review({
   onRetake,
   onSaved,
 }: ReviewProps) {
+  // Step 16 (plan.md §21) — false only for a quiz printed without a Serial
+  // box. Every branch on it below leaves today's behaviour untouched when
+  // true.
+  const hasSerial = hasSerialBox(config);
   const [studentId, setStudentId] = useState(result.student_id ?? '');
   const [serial, setSerial] = useState(result.serial ?? '');
   const [marks, setMarks] = useState<Record<number, string>>(() => marksFromResult(config, result));
@@ -145,6 +181,7 @@ export default function Review({
   // cell reads as, applied only by an explicit tap, never pre-filled.
   const crossedOut = useMemo(() => new Set(result.crossed_out_fields ?? []), [result]);
   const suggestions = result.suggestions ?? {};
+  const choices = result.choices ?? {};
 
   // Step.md 12.10 — recomputed on every render from the live field value,
   // the same "derive, don't store" discipline the sum check already
@@ -178,16 +215,17 @@ export default function Review({
   const questionStatus: Record<number, FieldStatus> = {};
   for (const qc of config.questions) {
     questionStatus[qc.q] = fieldStatus(
-      `q${qc.q}`, marks[qc.q] ?? '', markErrors[qc.q] ?? null, unmatched, crossedOut, suggestions,
+      `q${qc.q}`, marks[qc.q] ?? '', markErrors[qc.q] ?? null, unmatched, crossedOut, suggestions, choices,
     );
   }
-  const totalStatus = fieldStatus('total', totalStr, totalError, unmatched, crossedOut, suggestions);
+  const totalStatus = fieldStatus('total', totalStr, totalError, unmatched, crossedOut, suggestions, choices);
   const markStatuses = [...Object.values(questionStatus), totalStatus];
   // One explanation per card, not per field — the 4.5rem fields only have
   // room for the status word.
   const anyInvalid = markStatuses.some((s) => s?.tone === 'danger');
   const anyUnread = markStatuses.some((s) => s?.tone === 'warning');
-  const anySuggestion = markStatuses.some((s) => s?.tone === 'warning' && s.suggestion !== undefined);
+  const anySuggestion = markStatuses.some((s) => s?.tone === 'warning' && s.options.length > 0);
+  const anyTie = markStatuses.some((s) => s?.tone === 'warning' && s.options.length > 1);
 
   const questionValues = config.questions.map((qc) => ({
     q: qc.q,
@@ -258,8 +296,15 @@ export default function Review({
 
     const candidate = {
       studentId: studentId.trim() || null,
-      serial: serial.trim() || null,
+      serial: hasSerial ? serial.trim() || null : null,
     };
+
+    // Step 16 — with no Serial box the ID is the only identifier, so it is
+    // required rather than one of two.
+    if (!hasSerial && candidate.studentId === null) {
+      setSaveError('Enter the student ID before saving — this quiz has no serial to fall back on.');
+      return;
+    }
 
     // An ID is allowed to be absent — that saves an unverified record, which
     // plan.md §10 permits. What is NOT allowed is a PARTIAL one: both
@@ -299,7 +344,7 @@ export default function Review({
     const existingById = new Map<string, StudentRecord>();
     [...bySerial, ...byId].forEach((r) => existingById.set(r.id, r));
 
-    const check = crossCheck(candidate, [...existingById.values()]);
+    const check = crossCheck(candidate, [...existingById.values()], hasSerial);
 
     if (check.action === 'block' && check.conflicts.length === 0) {
       setSaveError('Enter at least a student ID or a serial before saving.');
@@ -333,7 +378,11 @@ export default function Review({
 
   const failed = result.status === 'failed';
   const showFailureBanner = failed && !failureDismissed;
-  const candidateForConflict = { studentId: studentId.trim() || null, serial: serial.trim() || null };
+  const mismatches = result.table_mismatches ?? [];
+  const candidateForConflict = {
+    studentId: studentId.trim() || null,
+    serial: hasSerial ? serial.trim() || null : null,
+  };
 
   return (
     <div className="stack">
@@ -343,6 +392,17 @@ export default function Review({
       {showFailureBanner && (
         <div className="banner banner-danger" role="alert">
           <strong>Scan failed: {result.failure_reason}</strong>
+          {/* Step 16 — the two paper layouts put a different box where the
+              other expects one, so a Serial setting that doesn't match the
+              paper fails exactly this way. */}
+          {result.failure_reason === 'column_count_mismatch' && (
+            <p className="text-sm" style={{ margin: 0 }}>
+              {hasSerial
+                ? 'If this paper has a Name/Section table instead of a Serial box, untick “Serial box on paper” for this quiz.'
+                : 'This quiz is set to “no Serial box” — if the paper has one, the setting is wrong.'}{' '}
+              Also check the number of questions matches the paper.
+            </p>
+          )}
           <div className="banner-actions">
             <button className="btn btn-secondary btn-sm" onClick={onRetake}>
               Retake
@@ -350,6 +410,26 @@ export default function Review({
             <button className="btn btn-secondary btn-sm" onClick={() => setFailureDismissed(true)}>
               Enter manually
             </button>
+            <SavePhotoButton url={imagePreviewUrl} reason={result.failure_reason ?? 'failed'} />
+          </div>
+        </div>
+      )}
+      {mismatches.length > 0 && (
+        <div className="banner banner-warning" role="status">
+          <strong>Part of this script couldn’t be read</strong>
+          <ul className="text-sm" style={{ margin: 0, paddingLeft: 18 }}>
+            {mismatches.map((m) => (
+              <li key={m.table}>{describeMismatch(m, config.questions.length)}</li>
+            ))}
+          </ul>
+          <p className="text-sm" style={{ margin: 0 }}>
+            Everything else was read as normal. Type the missing fields from the script, or retake the photo.
+          </p>
+          <div className="banner-actions">
+            <button className="btn btn-secondary btn-sm" onClick={onRetake}>
+              Retake
+            </button>
+            <SavePhotoButton url={imagePreviewUrl} reason="partial" />
           </div>
         </div>
       )}
@@ -406,6 +486,7 @@ export default function Review({
             <span className="field-status-label tone-warning">A digit was crossed out — check the script</span>
           )}
         </label>
+        {hasSerial && (
         <label className="field identity-field">
           <span className="field-label">Serial</span>
           <input
@@ -420,6 +501,7 @@ export default function Review({
             inline
           />
         </label>
+        )}
       </div>
 
       {/* 7.2 — marks, editable, beside the capture for comparison. */}
@@ -449,6 +531,7 @@ export default function Review({
           {anyUnread && (
             <p className="review-note tone-warning">
               Check the highlighted marks against the script{anySuggestion ? ', or tap Use to accept a reading' : ''}.
+              {anyTie && ' Where two readings are offered, the point is unclear — pick the one written on the script.'}
             </p>
           )}
           {/* flex-start, not the row's default centring: a field with a
@@ -504,14 +587,17 @@ export default function Review({
       {pendingConflict && pendingConflict.conflicts.length > 0 && (
         <div className="banner banner-warning" role="alert">
           <p>
-            {pendingConflict.action === 'block'
-              ? 'Same serial and ID already saved — this script may already be scanned.'
-              : 'This serial or ID conflicts with an existing record — one may be misread.'}
+            {!hasSerial
+              ? 'This student ID is already saved — this script may already be scanned. If the ID is misread, correct it above.'
+              : pendingConflict.action === 'block'
+                ? 'Same serial and ID already saved — this script may already be scanned.'
+                : 'This serial or ID conflicts with an existing record — one may be misread.'}
           </p>
           <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
             {pendingConflict.conflicts.map((c) => (
               <li key={c.record.id}>
-                ID {c.record.studentId ?? '—'} · Serial {c.record.serial ?? '—'} · Total {c.record.total ?? '—'}
+                ID {c.record.studentId ?? '—'}
+                {hasSerial && <> · Serial {c.record.serial ?? '—'}</>} · Total {c.record.total ?? '—'}
               </li>
             ))}
           </ul>

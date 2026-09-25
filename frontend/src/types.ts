@@ -12,6 +12,10 @@ export interface QuizConfig {
   idDigits: number;
   questions: QuestionConfig[];
   totalMax: number;
+  // Step 16 (plan.md §21) — false only for the no-Serial-box paper
+  // layout. Optional, and absent means true on the backend, so a config
+  // built before this field existed scans exactly as it always did.
+  hasSerial?: boolean;
 }
 
 export interface QuestionValue {
@@ -66,6 +70,12 @@ export interface Assessment {
   // or the workbook write). Stamped, never cleared, so the step-13 purge
   // (13.19) can refuse to delete an assessment nobody has ever filed.
   exportedAt: string | null;
+  // Step 16 (plan.md §21) — whether this quiz's printed paper has a Serial
+  // box. Optional with NO migration: every assessment saved before this
+  // field existed reads as undefined, and undefined means true everywhere
+  // (see sections.ts's hasSerialBox) — those quizzes behave exactly as
+  // they always did.
+  hasSerial?: boolean;
 }
 
 export interface StudentRecord {

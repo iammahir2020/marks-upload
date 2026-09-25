@@ -108,6 +108,65 @@ describe('Review — failed scan (7.6)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Enter manually' }));
     expect(screen.queryByText(/Scan failed:/)).not.toBeInTheDocument();
   });
+
+  it('offers Save photo as a download of the capture, named by reason and never by content', () => {
+    render(
+      <Review
+        result={{ ...failedResult, failure_reason: 'column_count_mismatch' }}
+        config={config}
+        assessmentId="test-assessment"
+        imagePreviewUrl="blob:fake-preview"
+        onRetake={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+    const link = screen.getByRole('link', { name: 'Save photo' });
+    expect(link).toHaveAttribute('href', 'blob:fake-preview');
+    expect(link.getAttribute('download')).toMatch(/^scan-column_count_mismatch-\d{4}-\d\d-\d\d-\d\d-\d\d-\d\d\.jpg$/);
+  });
+
+  it('shows no Save photo when there is no capture to save', () => {
+    render(<Review result={failedResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.queryByRole('link', { name: 'Save photo' })).not.toBeInTheDocument();
+  });
+});
+
+describe('Review — partial scan (one table miscounted)', () => {
+  const partialResult: ScanResult = {
+    ...okResult,
+    student_id: null,
+    low_confidence_fields: ['student_id'],
+    table_mismatches: [{ table: 'id', found: 7, expected: 8 }],
+  };
+
+  it('names the unread table in digit boxes, keeps the fields that were read, and offers Retake and Save photo', () => {
+    const onRetake = vi.fn();
+    render(
+      <Review
+        result={partialResult}
+        config={config}
+        assessmentId="test-assessment"
+        imagePreviewUrl="blob:fake-preview"
+        onRetake={onRetake}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    const banner = screen.getByRole('status');
+    expect(banner).toHaveTextContent('Student ID row: found 6 digit boxes, expected 7.');
+    expect(screen.queryByText(/Scan failed/)).not.toBeInTheDocument();
+    expect((screen.getByLabelText('Student ID') as HTMLInputElement).value).toBe('');
+    expect(screen.getByDisplayValue('07')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Save photo' })).toHaveAttribute('download', expect.stringMatching(/^scan-partial-/));
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Retake' })[0]);
+    expect(onRetake).toHaveBeenCalled();
+  });
+
+  it('shows no partial banner on a full read', () => {
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.queryByText(/couldn’t be read/)).not.toBeInTheDocument();
+  });
 });
 
 describe('Review — save path', () => {
@@ -672,6 +731,47 @@ describe('Review — field status overhaul (2026-09-24)', () => {
     expect(screen.getAllByText('Unclear')).toHaveLength(1); // only the total's remains
   });
 
+  it('offers both readings of a 15 / 1.5 tie, fills only the one tapped, and says why', () => {
+    const config25: QuizConfig = { ...config, questions: [{ q: 1, max: 5 }, { q: 2, max: 20 }], totalMax: 25 };
+    const result: ScanResult = {
+      ...okResult,
+      total: { q: 0, value: null },
+      low_confidence_fields: ['total'],
+      unmatched_fields: ['total'],
+      choices: { total: ['1.5', '15'] },
+    };
+    render(<Review result={result} config={config25} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+
+    const small = screen.getByRole('button', { name: 'Use 1.5' });
+    const big = screen.getByRole('button', { name: 'Use 15' });
+    const totalInput = small.closest('.field')!.querySelector('input')!;
+    expect(big.closest('.field')).toBe(small.closest('.field'));
+    expect(totalInput).toHaveValue(''); // never pre-filled, least of all on a tie
+    expect(screen.getByText(/two readings are offered/i)).toBeInTheDocument();
+
+    fireEvent.click(big);
+    expect(totalInput).toHaveValue('15');
+    expect(screen.queryByRole('button', { name: /^Use / })).not.toBeInTheDocument();
+    expect(screen.queryByText('Invalid')).not.toBeInTheDocument();
+  });
+
+  it('prefers the choices list over the single suggestion when both are sent', () => {
+    const result: ScanResult = {
+      ...okResult,
+      questions: [
+        { q: 1, value: null },
+        { q: 2, value: 3 },
+      ],
+      low_confidence_fields: ['q1'],
+      unmatched_fields: ['q1'],
+      suggestions: { q1: '2.5' },
+      choices: { q1: ['2.5'] },
+    };
+    render(<Review result={result} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getAllByRole('button', { name: 'Use 2.5' })).toHaveLength(1);
+    expect(screen.queryByText(/two readings are offered/i)).not.toBeInTheDocument();
+  });
+
   it('calls a crossed-out field crossed out, not unclear, when both apply', () => {
     const result: ScanResult = {
       ...okResult,
@@ -699,5 +799,80 @@ describe('Review — field status overhaul (2026-09-24)', () => {
     render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.queryByText(/check the highlighted marks/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/steps of 0.5/)).not.toBeInTheDocument();
+  });
+});
+
+// Step 16 (plan.md §21) — a quiz printed without a Serial box.
+describe('Review — no Serial box (step 16)', () => {
+  const noSerialConfig: QuizConfig = { ...config, hasSerial: false };
+  const noSerialResult: ScanResult = { ...okResult, serial: null };
+
+  it('does not show a Serial field', () => {
+    render(<Review result={noSerialResult} config={noSerialConfig} assessmentId="a" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.queryByText('Serial')).not.toBeInTheDocument();
+    expect(screen.getByText('Student ID')).toBeInTheDocument();
+  });
+
+  it('still shows the Serial field when the config has no hasSerial (every existing quiz)', () => {
+    render(<Review result={okResult} config={config} assessmentId="a" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByText('Serial')).toBeInTheDocument();
+  });
+
+  it('refuses to save without a student ID', async () => {
+    const onSaved = vi.fn();
+    render(
+      <Review
+        result={{ ...noSerialResult, student_id: null }}
+        config={noSerialConfig}
+        assessmentId="a"
+        onRetake={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+    expect(await screen.findByText(/no serial to fall back on/i)).toBeInTheDocument();
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(await getAllRecords()).toHaveLength(0);
+  });
+
+  it('saves with the ID alone, and stores no serial', async () => {
+    const onSaved = vi.fn();
+    render(<Review result={noSerialResult} config={noSerialConfig} assessmentId="a" onRetake={vi.fn()} onSaved={onSaved} />);
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalled());
+    const [saved] = await getAllRecords();
+    expect(saved.studentId).toBe('1912345');
+    expect(saved.serial).toBeNull();
+  });
+
+  it('blocks a second scan of the same ID, offering to overwrite it', async () => {
+    await saveRecord({
+      id: 'earlier',
+      assessmentId: 'a',
+      studentId: '1912345',
+      serial: null,
+      questions: [],
+      total: 5,
+      confirmed: true,
+      capturedAt: '2026-09-25T00:00:00.000Z',
+    });
+    const onSaved = vi.fn();
+    render(<Review result={noSerialResult} config={noSerialConfig} assessmentId="a" onRetake={vi.fn()} onSaved={onSaved} />);
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+    expect(await screen.findByText(/student ID is already saved/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /overwrite earlier record/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /save anyway/i })).not.toBeInTheDocument();
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it('points at the Serial setting when a scan fails with a column mismatch', () => {
+    const mismatch: ScanResult = { ...noSerialResult, status: 'failed', failure_reason: 'column_count_mismatch' };
+    const { unmount } = render(
+      <Review result={mismatch} config={noSerialConfig} assessmentId="a" onRetake={vi.fn()} onSaved={vi.fn()} />,
+    );
+    expect(screen.getByText(/set to “no Serial box”/)).toBeInTheDocument();
+    unmount();
+    render(<Review result={mismatch} config={config} assessmentId="a" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByText(/untick “Serial box on paper”/)).toBeInTheDocument();
   });
 });

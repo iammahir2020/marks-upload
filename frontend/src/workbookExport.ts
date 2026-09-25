@@ -130,6 +130,12 @@ export function writeExamSheet(
     // app writes correctly recognized as exam-shaped on a later re-upload.
     ...config.questions.map((qc) => ({ header: `Q${qc.q} (${qc.max})`, key: `q${qc.q}`, width: 10 })),
     { header: `Total (${config.totalMax})`, key: 'total', width: 12 },
+    // Kept even for a quiz with no Serial box on its paper (step 16), where
+    // every value in it is blank. It is not decoration: roster.ts's
+    // hasExamSignature tells an exam sheet this app wrote apart from the
+    // class list BY this column, and without it a no-serial exam sheet —
+    // which also has STUDENT ID and STUDENT NAME — could be taken for the
+    // class list the next time the workbook is loaded.
     { header: 'Serial', key: 'serial', width: 10 },
   ];
   ws.getRow(1).font = { bold: true };

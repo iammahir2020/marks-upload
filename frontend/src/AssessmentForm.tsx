@@ -23,16 +23,23 @@ export interface NewAssessmentInput {
   quizName: string;
   questions: { q: number; max: number }[];
   totalMax: number;
+  // Step 16 (plan.md §21) — always written explicitly for a new quiz.
+  hasSerial: boolean;
 }
 
 interface AssessmentFormProps {
   section: Section;
+  // Step 16 — where the "Serial box on paper" toggle starts: the section's
+  // most recent quiz's layout (sections.ts's defaultHasSerial). Defaulted
+  // so a caller that doesn't pass it gets today's behaviour.
+  defaultHasSerial?: boolean;
   onSave: (input: NewAssessmentInput) => void;
   onCancel: () => void;
 }
 
-export default function AssessmentForm({ section, onSave, onCancel }: AssessmentFormProps) {
+export default function AssessmentForm({ section, defaultHasSerial = true, onSave, onCancel }: AssessmentFormProps) {
   const [quizName, setQuizName] = useState('');
+  const [hasSerial, setHasSerial] = useState(defaultHasSerial);
   const [questionCount, setQuestionCount] = useState<NumField>(5);
   const [questionMaxes, setQuestionMaxes] = useState<NumField[]>([5, 5, 5, 5, 5]);
   const [errors, setErrors] = useState<string[]>([]);
@@ -72,6 +79,7 @@ export default function AssessmentForm({ section, onSave, onCancel }: Assessment
       quizName: result.config.quizName,
       questions: result.config.questions,
       totalMax: result.config.totalMax,
+      hasSerial,
     });
   }
 
@@ -135,6 +143,28 @@ export default function AssessmentForm({ section, onSave, onCancel }: Assessment
             ))}
           </div>
           <span className="field-hint">These must match the table pasted in your question paper.</span>
+        </div>
+
+        {/* Step 16 (plan.md §21) — which of the two paper layouts this
+            quiz is printed on. A mismatch fails the scan loudly; it never
+            reads the wrong box. */}
+        <div className="field">
+          <label className="text-sm" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={hasSerial} onChange={(e) => setHasSerial(e.target.checked)} />
+            Serial box on paper
+          </label>
+          <span className="field-hint">
+            Untick if this quiz's paper has a Name/Section table instead of a Serial box.
+          </span>
+          {/* Decision 2 of plan.md §21: allowed, but never silently — with
+              neither a serial nor a class list, nothing can catch a
+              misread ID. */}
+          {!hasSerial && !section.roster && (
+            <div className="banner banner-warning" role="alert" style={{ padding: 10 }}>
+              This section has no class list, so without a serial nothing can catch a misread
+              student ID. Check each ID against the script, or attach a class list to the section.
+            </div>
+          )}
         </div>
 
         {errors.length > 0 && (

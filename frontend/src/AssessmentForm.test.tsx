@@ -34,6 +34,8 @@ describe('AssessmentForm — creating a quiz', () => {
         { q: 5, max: 5 },
       ],
       totalMax: 25,
+      // Step 16 — always written explicitly for a new quiz; on by default.
+      hasSerial: true,
     });
     expect(onSave.mock.calls[0][0]).not.toHaveProperty('idDigits');
   });
@@ -121,5 +123,43 @@ describe('AssessmentForm — clearing a number field', () => {
 
     expect(screen.getByText(/number of questions must be a whole number/i)).toBeInTheDocument();
     expect(onSave).not.toHaveBeenCalled();
+  });
+});
+
+// Step 16 (plan.md §21) — the "Serial box on paper" setting.
+describe('AssessmentForm — Serial box on paper (step 16)', () => {
+  it('is ticked by default and saved as true', () => {
+    const onSave = vi.fn();
+    render(<AssessmentForm section={section} onSave={onSave} onCancel={vi.fn()} />);
+    expect(screen.getByRole('checkbox', { name: /serial box on paper/i })).toBeChecked();
+    fireEvent.change(screen.getByLabelText(/quiz name/i), { target: { value: 'Quiz 1' } });
+    fireEvent.click(screen.getByRole('button', { name: /start scanning/i }));
+    expect(onSave.mock.calls[0][0].hasSerial).toBe(true);
+  });
+
+  it('starts from the value it is given, and saves an unticked box as false', () => {
+    const onSave = vi.fn();
+    render(<AssessmentForm section={section} defaultHasSerial={false} onSave={onSave} onCancel={vi.fn()} />);
+    expect(screen.getByRole('checkbox', { name: /serial box on paper/i })).not.toBeChecked();
+    fireEvent.change(screen.getByLabelText(/quiz name/i), { target: { value: 'Quiz 2' } });
+    fireEvent.click(screen.getByRole('button', { name: /start scanning/i }));
+    expect(onSave.mock.calls[0][0].hasSerial).toBe(false);
+  });
+
+  it('warns, without blocking, when unticked on a section with no class list', () => {
+    render(<AssessmentForm section={section} onSave={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.queryByText(/nothing can catch a misread/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: /serial box on paper/i }));
+    expect(screen.getByText(/nothing can catch a misread/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /start scanning/i })).toBeEnabled();
+  });
+
+  it('does not warn when the section has a class list', () => {
+    const withRoster: Section = {
+      ...section,
+      roster: { sheetName: 'data', headerRow: 1, students: [], duplicateIds: [] },
+    };
+    render(<AssessmentForm section={withRoster} defaultHasSerial={false} onSave={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.queryByText(/nothing can catch a misread/i)).not.toBeInTheDocument();
   });
 });
