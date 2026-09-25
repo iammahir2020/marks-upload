@@ -7,7 +7,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Review from './Review';
 import type { ScanResult } from './api';
-import { getAllRecords, saveRecord } from './db';
+import { getAllRecords, saveRecord, setShareCrops } from './db';
 import type { ParsedRoster } from './roster';
 import type { QuizConfig } from './types';
 
@@ -263,6 +263,30 @@ describe('Review — harvesting on confirm (step 3r.6c)', () => {
       unmatchedFields: [], // meaningless on this side — see api.ts's comment
       crossedOutFields: [],
     });
+
+    vi.unstubAllGlobals();
+  });
+
+  it('sends nothing to /api/harvest when the instructor has turned sharing off (N45)', async () => {
+    await setShareCrops(false);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (typeof input === 'string' && input === 'blob:fake-preview') {
+        return { blob: async () => new Blob(['x']) } as Response;
+      }
+      return { ok: true, json: async () => ({ harvested: true }) } as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const onSaved = vi.fn();
+    render(
+      <Review result={okResult} config={config} assessmentId="test-assessment"
+        imagePreviewUrl="blob:fake-preview" onRetake={vi.fn()} onSaved={onSaved} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1)); // the save itself is unaffected
+    await new Promise((r) => setTimeout(r, 20)); // let the fire-and-forget chain run
+    expect(fetchMock).not.toHaveBeenCalled();
 
     vi.unstubAllGlobals();
   });

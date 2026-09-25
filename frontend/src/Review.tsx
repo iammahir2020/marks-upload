@@ -14,7 +14,7 @@
 //   and Retake/Enter-manually — never a dead end.
 import { useMemo, useState } from 'react';
 import { harvestScan, type HarvestFields, type ScanResult, type TableMismatch } from './api';
-import { findRecordsBySerial, findRecordsByStudentId, saveRecord } from './db';
+import { findRecordsBySerial, findRecordsByStudentId, getShareCrops, saveRecord } from './db';
 import { matchAgainstRoster } from './rosterMatch';
 import type { ParsedRoster } from './roster';
 import { hasSerialBox } from './sections';
@@ -281,9 +281,17 @@ export default function Review({
         unmatchedFields: [], // meaningless on this side — see api.ts's comment
         crossedOutFields: [],
       };
-      fetch(imagePreviewUrl)
-        .then((r) => r.blob())
-        .then((blob) => harvestScan(blob, config, original, confirmed))
+      // issues.md N45 — only when the instructor hasn't turned sharing off
+      // (Library.tsx). Read here, inside the fire-and-forget chain, so the
+      // setting costs the confirm loop nothing.
+      const previewUrl = imagePreviewUrl;
+      getShareCrops()
+        .then((share) => {
+          if (!share) return;
+          return fetch(previewUrl)
+            .then((r) => r.blob())
+            .then((blob) => harvestScan(blob, config, original, confirmed));
+        })
         .catch(() => {
           // Best-effort — see the comment above.
         });

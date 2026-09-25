@@ -49,6 +49,8 @@ backend/training_data/harvested/
 # fetch-crops.sh's merged training set — regenerable from the sources above
 # plus S3, and it is student handwriting either way.
 backend/training_data/all/
+# issues.md N40 — hosted-site crops downloaded for review (fetch-crops.sh review)
+backend/training_data/unverified/
 # Photographed practice pages of loose digits (clean and crossed out) that
 # cnn/pages.py cuts into labelled glyphs for training. Real handwriting,
 # kept out of git the same way.

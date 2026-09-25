@@ -358,6 +358,24 @@ export async function getSourceId(): Promise<string> {
   return generated;
 }
 
+// issues.md N45 — whether Confirm shares this device's labelled cell crops
+// (POST /api/harvest). On unless the instructor turns it off (the owner's
+// decision, 2026-09-25). Kept in `meta` beside the source id for the same
+// reason: resetAll() spares it, so clearing marks never silently turns
+// sharing back on for someone who opted out.
+const SHARE_CROPS_KEY = 'shareCrops';
+
+export async function getShareCrops(): Promise<boolean> {
+  const db = await getDB();
+  // 'on'/'off' rather than a boolean: the meta store's schema holds strings.
+  return (await db.get('meta', SHARE_CROPS_KEY)) !== 'off';
+}
+
+export async function setShareCrops(share: boolean): Promise<void> {
+  const db = await getDB();
+  await db.put('meta', share ? 'on' : 'off', SHARE_CROPS_KEY);
+}
+
 // Full wipe: every section, assessment and record. Step.md step 13's real
 // replacement for this is the Phase D semester purge (scoped to one
 // semester, blocked by an unexported assessment) — until that lands, this

@@ -10,7 +10,16 @@
 // whole, not to any one quiz's config screen, and Library is now the
 // first, always-visited screen the old Setup.tsx used to be.
 import { Fragment, useEffect, useId, useState } from 'react';
-import { deleteAssessment, deleteSection, getAllAssessments, getAllSections, getRecordsByAssessment, resetAll } from './db';
+import {
+  deleteAssessment,
+  deleteSection,
+  getAllAssessments,
+  getAllSections,
+  getRecordsByAssessment,
+  getShareCrops,
+  resetAll,
+  setShareCrops,
+} from './db';
 import {
   assessmentDeletePreview,
   assessmentsForSection,
@@ -105,6 +114,23 @@ export default function Library({
   // opening the library with a semester's worth of quizzes doesn't fire a
   // wave of individual effects.
   const [counts, setCounts] = useState<Record<string, number>>({});
+  // issues.md N45 — the instructor's choice to share labelled cell crops.
+  // Starts on (the default) and is corrected from IndexedDB on mount.
+  const [shareCrops, setShareCropsState] = useState(true);
+  const shareId = useId();
+  useEffect(() => {
+    let active = true;
+    getShareCrops().then((share) => {
+      if (active) setShareCropsState(share);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  function toggleShareCrops(share: boolean) {
+    setShareCropsState(share);
+    void setShareCrops(share);
+  }
   // Step.md 13.14 — the same fetch that produces `counts` already has
   // every record's `capturedAt` in hand; `lastActivityAt` derives "when
   // was this assessment last touched" from it rather than storing a
@@ -504,10 +530,21 @@ export default function Library({
         person whose students' handwriting is actually being collected.
       */}
       <p className="text-sm muted data-note">
-        Scripts are never stored. Individual cells — one digit or mark each — are kept with
-        the values you confirm for up to a year, and used to train and tune handwriting
-        recognition.
+        {shareCrops
+          ? 'Scripts are never stored. Individual cells — one digit or mark each — are kept with the values you confirm for up to a year, and used to train and tune handwriting recognition.'
+          : 'Scripts are never stored, and with sharing off nothing is sent when you confirm a script: no cells are kept.'}
       </p>
+      {/* issues.md N45 — on by default (the owner's decision, 2026-09-25),
+          but always visible and one tap to turn off. */}
+      <label className="data-note share-toggle" htmlFor={shareId}>
+        <input
+          id={shareId}
+          type="checkbox"
+          checked={shareCrops}
+          onChange={(e) => toggleShareCrops(e.target.checked)}
+        />
+        <span className="text-sm">Share anonymised cells to help improve recognition</span>
+      </label>
       <p className="text-sm muted data-note">
         A class-list workbook attached to a section keeps the names on it on this device for
         as long as that section exists, cleared by Reset everything — never sent anywhere.

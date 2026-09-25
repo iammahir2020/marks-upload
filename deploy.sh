@@ -118,12 +118,18 @@ ensure_origin_header() {
   rm -f "$tmp"
 }
 
+# HARVEST_PREFIX=unverified (issues.md N40): /api/harvest is reachable by
+# anyone with the site's URL, who can send any image with any labels. So
+# crops from the hosted site never land in harvested/, the training
+# corpus; they go to unverified/, which fetch-crops.sh only downloads with
+# `review` and only merges with an explicit `promote` after a look. The
+# laptop keeps writing straight to its own trusted harvested/.
 lambda_env() {
   [ -n "$ORIGIN_SECRET" ] || { echo "lambda_env: ORIGIN_SECRET not resolved" >&2; exit 1; }
   # CLIENT_IP_SOURCE=cloudfront (N41): the rate limit keys on the address
   # CloudFront writes, trustworthy only because ORIGIN_SECRET makes
   # CloudFront the only way in.
-  local vars="RECOGNIZER=cnn,HARVEST_BACKEND=s3,HARVEST_BUCKET=$CROPS_BUCKET,HARVEST_PREFIX=harvested,XRAY_ENABLED=true,CLIENT_IP_SOURCE=cloudfront,ORIGIN_SECRET=$ORIGIN_SECRET"
+  local vars="RECOGNIZER=cnn,HARVEST_BACKEND=s3,HARVEST_BUCKET=$CROPS_BUCKET,HARVEST_PREFIX=unverified,XRAY_ENABLED=true,CLIENT_IP_SOURCE=cloudfront,ORIGIN_SECRET=$ORIGIN_SECRET"
   [ -n "${1:-}" ] && vars="$vars,ALLOWED_ORIGINS=$1"
   echo "$vars"
 }

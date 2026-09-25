@@ -147,6 +147,13 @@ throttling reads back 2/s, burst 10.
 | **N38** | API Gateway stage throttling (2 req/s, bursts of 10), verified live. A Lambda concurrency cap of 5 was attempted after the owner applied the updated deploy policy; AWS refused it because the account's TOTAL concurrency is the new-account default (~10) and 10 must stay unreserved — which caps concurrency by itself, below 5 x 2. Budget alarm `marks-scanner-guard`, $5/month (confirmed 2026-09-25). Revisit the reservation only if AWS raises the account quota. |
 | **N23** | Already fixed before this pass (`mktemp`, deploy.sh); this register was stale. |
 
+### Fixed 2026-09-25 — N40 and N45, the owner's choices
+
+| # | Fix |
+|---|---|
+| **N40** | Owner's choice: keep collecting from the hosted site, but never trust it by default. The Lambda writes to the bucket's `unverified/` prefix (`HARVEST_PREFIX`, deploy.sh), not `harvested/`. `fetch-crops.sh` ignores it unless asked: `review <bucket>` downloads it into `training_data/unverified/` (gitignored, separate from the training set) with a per-source summary; `promote <source-id>` copies one checked source in. The laptop still writes straight to its own `harvested/`. The bucket's 365-day expiry covers `unverified/` too (its rule has an empty prefix). Crops already in `harvested/` were left where they are. |
+| **N45** | A "Share anonymised cells to help improve recognition" switch on the Library screen, outside the collapsible section, **on by default** (owner's decision). Off: Confirm sends nothing to `/api/harvest`, and the always-visible note says so. Stored in IndexedDB's `meta` store, which Reset everything spares, so clearing marks never turns sharing back on. |
+
 ### Checked and clean
 
 These are recorded so that "not listed" isn't mistaken for "not checked":

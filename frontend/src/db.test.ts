@@ -13,8 +13,10 @@ import {
   getAssessment,
   getRecordsByAssessment,
   getSection,
+  getShareCrops,
   getSourceId,
   resetAll,
+  setShareCrops,
   saveAssessment,
   saveRecord,
   saveSection,
@@ -540,5 +542,25 @@ describe('serial normalization (issues.md #2)', () => {
     const found = await findRecordsBySerial('7', undefined as unknown as string);
     expect(found).toHaveLength(1);
     expect(found[0].id).toBe('old');
+  });
+});
+
+// issues.md N45 — the instructor's choice to share labelled cell crops.
+describe('share crops setting', () => {
+  it('is on by default', async () => {
+    expect(await getShareCrops()).toBe(true);
+  });
+
+  it('remembers being turned off, and on again', async () => {
+    await setShareCrops(false);
+    expect(await getShareCrops()).toBe(false);
+    await setShareCrops(true);
+    expect(await getShareCrops()).toBe(true);
+  });
+
+  it('survives resetAll, so clearing marks never silently turns sharing back on', async () => {
+    await setShareCrops(false);
+    await resetAll();
+    expect(await getShareCrops()).toBe(false);
   });
 });

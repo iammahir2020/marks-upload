@@ -158,7 +158,11 @@ while `CLIENT_IP_SOURCE=cloudfront` is set**, the two are only sound
 together; API docs pages off), N22 (smoke test fails loudly), N38 (API
 throttling 2/s; the account's own ~10 total Lambda concurrency is the cap,
 nothing reservable; budget alarm `marks-scanner-guard` exists). Deployed and
-verified live 2026-09-25.
+verified live 2026-09-25. **N40/N45, same day**: hosted crops go to the
+bucket's `unverified/` prefix (`HARVEST_PREFIX=unverified`, deploy.sh) and
+only reach training via `fetch-crops.sh review` + `promote`; the Library
+has a "share anonymised cells" switch, on by default, stored in IndexedDB's
+`meta` store (`getShareCrops`/`setShareCrops`, spared by Reset everything).
 
 **Step 17 (2026-09-25, code-done; phone checks remain)** — plan.md §22,
 step.md step 17. Two strands from live use. **Partial scans**: a
@@ -1153,6 +1157,12 @@ export AWS_PROFILE=marks-scanner
 ./fetch-crops.sh local                 # + local-stack.sh's MinIO
 AWS_PROFILE=marks-scanner \
   ./fetch-crops.sh s3 marks-scanner-crops-105322541848   # + the live bucket
+
+# Crops from the HOSTED site land in the bucket's unverified/ prefix, not
+# harvested/ (issues.md N40: anyone with the URL can post any labels). They
+# never reach the training set unless you look at them first:
+AWS_PROFILE=marks-scanner   ./fetch-crops.sh review marks-scanner-crops-105322541848   # -> training_data/unverified/
+./fetch-crops.sh promote <source-id>                           # one checked source -> all/
 
 # Feed an already-ground-truthed batch of real photos into the same
 # harvesting pipeline the live Review screen uses on Confirm — needs a

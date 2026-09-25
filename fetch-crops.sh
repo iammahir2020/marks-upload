@@ -14,6 +14,15 @@
 #   ./fetch-crops.sh s3 <bucket> [prefix]   # from a deployed bucket
 #   ./fetch-crops.sh merge                  # local disk only, no remote
 #
+# Crops from the HOSTED site are not trusted by default (issues.md N40:
+# anyone with the URL can post any image with any labels). They land in the
+# bucket's unverified/ prefix, which nothing above downloads:
+#
+#   ./fetch-crops.sh review <bucket>        # unverified/ -> training_data/unverified/
+#                                           # (separate folder), with a summary
+#   ./fetch-crops.sh promote <source-id>    # after looking: copy that one
+#                                           # source into the training set
+#
 # Sources tagged `test-*` are excluded by default — they are verification
 # runs, not real handwriting. INCLUDE_TEST=1 keeps them.
 #
@@ -176,6 +185,42 @@ from_s3() {
   aws s3 sync "s3://$bucket/$prefix" "$OUT_NATIVE" --only-show-errors
 }
 
+# --- Review / promote (issues.md N40) --------------------------------------
+
+UNVERIFIED="$HERE/backend/training_data/unverified"
+
+if [ "${1:-}" = "review" ]; then
+  bucket="${2:?usage: $0 review <bucket>}"
+  mkdir -p "$UNVERIFIED"
+  say "s3://$bucket/unverified -> $UNVERIFIED (NOT the training set)"
+  aws s3 sync "s3://$bucket/unverified" "$(native_path "$UNVERIFIED")" --only-show-errors
+  say "Unverified crops, by source — look before promoting any"
+  summarise "$UNVERIFIED"
+  cat <<EOF
+
+  Each source is one browser. Open a source's folders and check that the
+  images match the values in their filenames, then:
+
+    ./fetch-crops.sh promote <source-id>
+EOF
+  exit 0
+fi
+
+if [ "${1:-}" = "promote" ]; then
+  src="${2:?usage: $0 promote <source-id>}"
+  case "$src" in */*|..*|"") echo "not a source id: $src" >&2; exit 2 ;; esac
+  if [ ! -d "$UNVERIFIED/$src" ]; then
+    echo "no reviewed source $src under $UNVERIFIED — run review first" >&2
+    exit 1
+  fi
+  mkdir -p "$OUT/$src"
+  # -a keeps the constant mtime (app/stores.py CONSTANT_MTIME).
+  cp -a "$UNVERIFIED/$src/." "$OUT/$src/"
+  say "Promoted $(find "$UNVERIFIED/$src" -name '*.png' | wc -l) crop(s) from $src into the training set"
+  summarise "$OUT"
+  exit 0
+fi
+
 # --- Main ------------------------------------------------------------------
 
 mkdir -p "$OUT"
@@ -193,9 +238,10 @@ esac
 # (app/stores.py CONSTANT_MTIME). A name collision is the same crop by
 # construction (keys are content hashes), so -f is safe. The remote copies
 # are left as they are; a later sync re-downloads them and they fold again.
-fold_questions() {
-  local moved=0 src dest f
-  for src in "$OUT"/*/marks_q[0-9]*/*/; do
+fold_questions() { fold_questions_in "$OUT"; }
+fold_questions_in() {
+  local root="$1" moved=0 src dest f
+  for src in "$root"/*/marks_q[0-9]*/*/; do
     [ -d "$src" ] || continue
     dest="$(dirname "$(dirname "$src")")/marks_questions/$(basename "$src")"
     mkdir -p "$dest"
@@ -205,7 +251,7 @@ fold_questions() {
       moved=$((moved + 1))
     done
   done
-  find "$OUT" -depth -type d -path '*/marks_q[0-9]*' -empty -delete 2>/dev/null || true
+  find "$root" -depth -type d -path '*/marks_q[0-9]*' -empty -delete 2>/dev/null || true
   [ "$moved" -gt 0 ] && say "Folded $moved crop(s) from per-question marks_qN/ folders into marks_questions/"
   return 0
 }

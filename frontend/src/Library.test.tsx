@@ -6,7 +6,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getAllAssessments, getAllSections, getRecordsByAssessment, saveAssessment, saveRecord, saveSection } from './db';
+import { getAllAssessments, getAllSections, getRecordsByAssessment, getShareCrops, saveAssessment, saveRecord, saveSection } from './db';
 import Library from './Library';
 import { sectionDisplayLabel } from './sections';
 import type { Assessment, Section, StudentRecord } from './types';
@@ -237,6 +237,25 @@ describe('Library — data-collection disclosure', () => {
     const note = await screen.findByText(/used to train and tune handwriting recognition/i);
     expect(note).toBeInTheDocument();
     expect(note.closest('details')).toBeNull();
+  });
+
+  it('offers a sharing switch, on by default and outside the collapsible section (N45)', async () => {
+    await saveSection(makeSection());
+    renderLibrary();
+    const toggle = await screen.findByRole('checkbox', { name: /share anonymised cells/i });
+    await waitFor(() => expect(toggle).toBeChecked());
+    expect(toggle.closest('details')).toBeNull();
+  });
+
+  it('turning sharing off is remembered and changes what the note promises', async () => {
+    renderLibrary();
+    const toggle = await screen.findByRole('checkbox', { name: /share anonymised cells/i });
+    await waitFor(() => expect(toggle).toBeChecked());
+    fireEvent.click(toggle);
+
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByText(/with sharing off nothing is sent/i)).toBeInTheDocument();
+    await waitFor(async () => expect(await getShareCrops()).toBe(false));
   });
 
   it('discloses that an attached class list keeps names on the device, to a returning user too', async () => {
