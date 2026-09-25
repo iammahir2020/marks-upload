@@ -131,6 +131,38 @@ describe('Review — failed scan (7.6)', () => {
   });
 });
 
+describe('Review — lighting advice (2026-09-25)', () => {
+  const failed: ScanResult = {
+    ...okResult,
+    status: 'failed',
+    failure_reason: 'table_not_found',
+    student_id: null,
+    serial: null,
+    questions: [],
+    total: null,
+  };
+
+  it('tells the instructor a failed photo was too dark, and what to do', () => {
+    render(<Review result={{ ...failed, lighting: 'too_dark' }} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByRole('alert')).toHaveTextContent(/too dark.*tap Light/i);
+  });
+
+  it('explains a shadow on a partial scan too', () => {
+    render(
+      <Review
+        result={{ ...okResult, student_id: null, table_mismatches: [{ table: 'id', found: 7, expected: 8 }], lighting: 'uneven' }}
+        config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(/in shadow/i);
+  });
+
+  it('says nothing about light when the backend measured no problem', () => {
+    render(<Review result={failed} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.queryByText(/too dark|in shadow/i)).not.toBeInTheDocument();
+  });
+});
+
 describe('Review — partial scan (one table miscounted)', () => {
   const partialResult: ScanResult = {
     ...okResult,

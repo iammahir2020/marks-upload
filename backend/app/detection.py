@@ -20,7 +20,28 @@ ADAPTIVE_C = -2
 KERNEL_DIVISOR = 20            # kernel length = image dimension // this
 MIN_TABLE_AREA_FRAC = 0.01     # a table contour must cover at least this much of the image
 APPROX_EPSILON_FRAC = 0.02     # approxPolyDP epsilon as a fraction of contour perimeter
-BLUR_LAPLACIAN_FLOOR = 50.0    # variance of Laplacian below this -> "blurry"
+SHARPNESS_FLOOR = 0.115  # "blurry" below this: the Laplacian's variance DIVIDED BY the
+                          # image's own grey-level variance (_sharpness). Replaced a raw
+                          # Laplacian-variance floor of 50 on 2026-09-25, because that one
+                          # measured brightness as much as focus: a photo taken in a dim
+                          # room has weaker edges everywhere just from lower contrast, so a
+                          # SHARP but dark photo scored "blurry" — 18 of the 28 testset photos
+                          # at half brightness were rejected though detection read all 28.
+                          # (The instructor hit exactly that live: 10 "blurry" failures in 5
+                          # minutes, gone once the lights went on.) Dividing by the grey-level
+                          # variance cancels exposure. Measured: the 28 good photos score
+                          # >= 0.134; real_class_10, the real blurry photo, 0.101; slight
+                          # defocus ~0.02; darkened photos score HIGHER, never lower.
+
+# Lighting diagnosis (2026-09-25): WHY a scan failed, attached to
+# failed/partial results only, so a passing result.json is unchanged. The
+# frontend's live hint (frontend/src/lighting.ts) uses the same two measures.
+DARK_PAPER_LEVEL = 70  # "too_dark" below this: the 90th-percentile grey, i.e. how white the
+                        # paper comes out (0-255). Good photos ~178; darkened testset photos
+                        # still read 23/28 at 63, 2/28 at 46.
+EVENNESS_FLOOR = 0.6   # "uneven" below this: min/max of the paper level across a 4x4 grid
+                        # of the frame. Good photos as taken are >= 0.83; painted-on shadows
+                        # start costing reads around 0.6 (0.67 -> 22/28 read).
 LINE_PEAK_MIN_GAP_FRAC = 0.02  # merge line-mask peaks closer than this fraction of the table's own dimension
 CONTRAST_FLOOR = 30  # a pixel counts as "ink" only if it's this much darker (0-255 grayscale)
                        # than its own local, same-row/column paper background. Ground truth for
@@ -422,8 +443,43 @@ def _repair_columns(cand: TableCandidate, expected_cols: int, table: str) -> str
     return None
 
 
+def _sharpness(gray: np.ndarray) -> float:
+    """Edge strength relative to the image's own contrast — see SHARPNESS_FLOOR."""
+    contrast = float(gray.astype(np.float64).var())
+    if contrast < 1e-6:
+        return 0.0  # a flat image has no edges at all
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var()) / contrast
+
+
 def _is_blurry(gray: np.ndarray) -> bool:
-    return cv2.Laplacian(gray, cv2.CV_64F).var() < BLUR_LAPLACIAN_FLOOR
+    return _sharpness(gray) < SHARPNESS_FLOOR
+
+
+def paper_level(gray: np.ndarray) -> float:
+    """How white the paper comes out: the 90th-percentile grey (0-255)."""
+    return float(np.percentile(gray, 90))
+
+
+def evenness(gray: np.ndarray, grid: int = 4) -> float:
+    """min/max of the paper level across a grid of the frame: 1.0 is perfectly
+    even light, a small value means one region is much darker — a shadow."""
+    h, w = gray.shape[:2]
+    levels = [
+        paper_level(gray[r * h // grid:(r + 1) * h // grid, c * w // grid:(c + 1) * w // grid])
+        for r in range(grid) for c in range(grid)
+    ]
+    top = max(levels)
+    return min(levels) / top if top > 0 else 0.0
+
+
+def lighting_problem(gray: np.ndarray) -> str | None:
+    """"too_dark", "uneven" or None. A diagnosis for a scan that already
+    failed — never a reason to reject one that detection could read."""
+    if paper_level(gray) < DARK_PAPER_LEVEL:
+        return "too_dark"
+    if evenness(gray) < EVENNESS_FLOOR:
+        return "uneven"
+    return None
 
 
 def _draw_boundaries(overlay: np.ndarray, cand: TableCandidate) -> None:
@@ -487,6 +543,7 @@ def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path, has_
 
     if _is_blurry(gray):
         result["failure_reason"] = "blurry"
+        result["lighting"] = lighting_problem(gray)
         cv2.imwrite(str(out_dir / "overlay.jpg"), img)
         (out_dir / "result.json").write_text(json.dumps(result, indent=2))
         return result
@@ -682,6 +739,9 @@ def detect(image_path: Path, questions: int, id_digits: int, out_dir: Path, has_
         result["failure_reason"] = "column_count_mismatch"
     else:
         result["status"] = "ok"
+    if result["status"] != "ok":
+        # Only on a failure, so a passing result.json is byte-identical.
+        result["lighting"] = lighting_problem(gray)
 
     # --- crops + overlay boundaries for every table we did classify ---
     for name, cand in found.items():

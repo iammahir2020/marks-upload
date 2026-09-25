@@ -149,6 +149,13 @@ blank there on purpose, because `roster.ts`'s `hasExamSignature` tells an
 exam sheet from the class list by it. Frontend suite 421 -> 450 (+3
 skipped: the hidden ID-digits field's tests, kept for when it returns).
 
+**Step 18 (2026-09-25, code-done; real-phone check needed)** — plan.md §23:
+the blur check is exposure-independent now (`detection._sharpness`,
+`SHARPNESS_FLOOR` 0.115) after a live session's "blurry" failures turned out
+to be darkness; failed/partial scans carry `lighting` (`too_dark`/`uneven`);
+`frontend/src/lighting.ts` gives a live hint over the viewfinder and a Light
+(torch) button that only the instructor's tap switches on.
+
 **Pre-sharing security pass (2026-09-25)** — issues.md "Fixed 2026-09-25":
 N39/N47 (`app/imagecheck.py`, header-read pixel cap + JPEG/PNG only), N41
 (rate limit never reads `X-Forwarded-For`; hosted keys on
@@ -1619,6 +1626,12 @@ all-blank result as if it were a normal scan.
   it runs the real production build in a browser and fails on any CSP
   violation. The response headers (HSTS, framing, Permissions-Policy) are
   `aws/headers_policy.py`'s, applied by deploy.sh.
+- **Don't go back to a raw Laplacian-variance blur floor, and don't switch the
+  torch on automatically.** The raw variance falls with brightness, so it
+  rejected sharp photos taken in dim rooms (plan.md §23: 18/28 at half
+  brightness, all readable). `_sharpness` divides by the photo's own
+  contrast. The torch stays a manual Light button by the owner's decision —
+  it hotspots on glossy paper and costs battery over a class.
 - **Don't point the hosted Lambda's `HARVEST_PREFIX` back at `harvested/`,
   and don't promote an unverified source without looking.** `/api/harvest`
   is public and takes the labels from the caller, so a hosted crop's label

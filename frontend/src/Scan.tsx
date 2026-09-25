@@ -3,6 +3,7 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { scanImage } from './api';
 import { getRecordsByAssessment } from './db';
+import { hasTorch, hintMessage, readLighting, setTorch, settledHint, type LightingHint } from './lighting';
 import Review from './Review';
 import type { ParsedRoster } from './roster';
 import { inFlightCount, nextToReview, queueReducer } from './scanQueue';
@@ -52,6 +53,12 @@ interface Preview {
 export default function Scan({ config, assessmentId, sectionLabel, roster = null, onShowResults, onExit }: ScanProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  // Live lighting hint and the torch (lighting.ts). The torch is only ever
+  // switched by the instructor's tap — never by the app.
+  const trackRef = useRef<MediaStreamTrack | null>(null);
+  const [torchAvailable, setTorchAvailable] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
+  const [lightingHint, setLightingHint] = useState<LightingHint>(null);
   const [entries, dispatch] = useReducer(queueReducer, []);
   // Records saved so far THIS ASSESSMENT — not a plain in-memory counter,
   // because a mid-session refresh (step 8.3) would reset that to 0 while
@@ -139,6 +146,9 @@ export default function Scan({ config, assessmentId, sectionLabel, roster = null
         if (videoRef.current) {
           videoRef.current.srcObject = s;
         }
+        const track = s.getVideoTracks()[0] ?? null;
+        trackRef.current = track;
+        setTorchAvailable(hasTorch(track));
       })
       .catch((err: Error) => {
         // getUserMedia fails at the camera, not at page load, when the
@@ -149,9 +159,48 @@ export default function Scan({ config, assessmentId, sectionLabel, roster = null
 
     return () => {
       cancelled = true;
+      trackRef.current = null;
       stream?.getTracks().forEach((t) => t.stop());
     };
   }, []);
+
+  // A few times a second, measure a small copy of the part of the frame the
+  // framing guide covers (the desk around the page would read as "shadow").
+  // Cheap: 160x90 pixels. A hint shows only once two readings agree.
+  useEffect(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 160;
+    canvas.height = 90;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return;
+    const recent: LightingHint[] = [];
+    const timer = window.setInterval(() => {
+      const video = videoRef.current;
+      if (!video || video.videoWidth === 0 || document.hidden) return;
+      const sx = video.videoWidth * 0.12;
+      const sy = video.videoHeight * 0.12;
+      ctx.drawImage(video, sx, sy, video.videoWidth * 0.76, video.videoHeight * 0.76, 0, 0, 160, 90);
+      const reading = readLighting(ctx.getImageData(0, 0, 160, 90).data, 160, 90);
+      recent.push(reading.hint);
+      if (recent.length > 2) recent.shift();
+      setLightingHint((prev) => settledHint(prev, recent));
+    }, 400);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  async function toggleTorch() {
+    const track = trackRef.current;
+    if (!track) return;
+    const next = !torchOn;
+    try {
+      await setTorch(track, next);
+      setTorchOn(next);
+    } catch {
+      // The camera claimed a torch but refused it: stop offering it.
+      setTorchAvailable(false);
+      setTorchOn(false);
+    }
+  }
 
   function capture() {
     const video = videoRef.current;
@@ -291,6 +340,21 @@ export default function Scan({ config, assessmentId, sectionLabel, roster = null
         {/* Framing guide (plan.md §3): frame tight on the three tables,
             marks table the largest rectangle in the shot. */}
         <div className="camera-guide" />
+        {torchAvailable && (
+          <button
+            type="button"
+            className="torch-btn"
+            aria-pressed={torchOn}
+            onClick={toggleTorch}
+          >
+            {torchOn ? 'Light on' : 'Light'}
+          </button>
+        )}
+        {hintMessage(lightingHint, torchAvailable, torchOn) && (
+          <div className="lighting-hint" role="status">
+            {hintMessage(lightingHint, torchAvailable, torchOn)}
+          </div>
+        )}
       </div>
 
       <div className="capture-bar">

@@ -118,6 +118,17 @@ function FieldStatusView({
   );
 }
 
+// What to do about the light, when the backend measured a problem with it.
+export function lightingAdvice(lighting: ScanResult['lighting']): string | null {
+  if (lighting === 'too_dark') {
+    return 'The photo looks too dark. Turn on a light (or tap Light on the camera), then retake.';
+  }
+  if (lighting === 'uneven') {
+    return 'Part of the page is in shadow. Keep your hand and phone out of the light, then retake.';
+  }
+  return null;
+}
+
 // One line per table the scan couldn't read. The backend's counts include
 // the label column, so the ID row reports "8 columns" for 7 digit boxes.
 export function describeMismatch(m: TableMismatch, questionCount: number): string {
@@ -400,6 +411,11 @@ export default function Review({
       {showFailureBanner && (
         <div className="banner banner-danger" role="alert">
           <strong>Scan failed: {result.failure_reason}</strong>
+          {lightingAdvice(result.lighting) && (
+            <p className="text-sm" style={{ margin: 0 }}>
+              {lightingAdvice(result.lighting)}
+            </p>
+          )}
           {/* Step 16 — the two paper layouts put a different box where the
               other expects one, so a Serial setting that doesn't match the
               paper fails exactly this way. */}
@@ -433,6 +449,11 @@ export default function Review({
           <p className="text-sm" style={{ margin: 0 }}>
             Everything else was read as normal. Type the missing fields from the script, or retake the photo.
           </p>
+          {lightingAdvice(result.lighting) && (
+            <p className="text-sm" style={{ margin: 0 }}>
+              {lightingAdvice(result.lighting)}
+            </p>
+          )}
           <div className="banner-actions">
             <button className="btn btn-secondary btn-sm" onClick={onRetake}>
               Retake

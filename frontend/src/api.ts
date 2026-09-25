@@ -44,6 +44,10 @@ export interface ScanResult {
   // and flagged. Counts include the label column ("ID", "Serial"), as the
   // backend's detection reports them. Optional: an older backend omits it.
   table_mismatches?: TableMismatch[];
+  // Why the photo was hard to read, measured on the photo itself: too dark,
+  // or uneven light (a shadow). Only on a failed or partial scan; optional
+  // because an older backend doesn't send it.
+  lighting?: 'too_dark' | 'uneven' | null;
 }
 
 export interface TableMismatch {

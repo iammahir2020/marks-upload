@@ -422,7 +422,8 @@ async def scan(
         # path. Only a matched marks table is ever sent.
         if det["status"] != "ok" and not _is_partial(det, quiz):
             _log_scan("failed", det["failure_reason"], ms, started, quiz, image_bytes, [])
-            return ScanResult(status="failed", failure_reason=det["failure_reason"])
+            return ScanResult(status="failed", failure_reason=det["failure_reason"],
+                              lighting=det.get("lighting"))
 
         mismatches = [
             TableMismatch(table=t["type"], found=t["col_count"], expected=t["expected_col_count"])
@@ -492,6 +493,8 @@ async def scan(
             suggestions=marks_result.suggestions,
             choices=marks_result.choices,
             table_mismatches=mismatches,
+            # Only set when a table went unread — the light may be why.
+            lighting=det.get("lighting") if mismatches else None,
         )
 
 

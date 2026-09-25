@@ -78,6 +78,10 @@ class ScanResult(BaseModel):
     # count, so their fields are blank and flagged rather than read. The
     # scan fails outright (column_count_mismatch) only when no table matched.
     table_mismatches: list[TableMismatch] = []
+    # Why the photo was hard to read, when it was (2026-09-25): "too_dark" or
+    # "uneven" (a shadow), measured on the photo itself. Set on a failed or
+    # partial scan only; None when the light looked fine or the scan read.
+    lighting: Literal["too_dark", "uneven"] | None = None
 
 
 class QuestionConfig(BaseModel):

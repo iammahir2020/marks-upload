@@ -2619,3 +2619,39 @@ unmatched, so it is never harvested with a guessed label.
 Result on the practice page: values stored wrong without a flag 2 -> 0,
 correct 102 -> 114 of 121. Harvested whole marks: no new wrong reads; one
 Total "15" with a smudge after the 1 now offers 1.5 or 15.
+
+## 23. Lighting — a blur check that measured darkness, a live hint, and the torch (built 2026-09-25)
+
+**Why.** A live session logged 10 "blurry" failures in five minutes that
+stopped once the room lights went on. Measured, not guessed: the blur check
+(Laplacian variance < 50) falls with contrast, so a sharp photo in a dim room
+scored blurry — 18 of 28 testset photos at half brightness were rejected,
+though detection read all 28. At quarter brightness it stopped firing at all
+(sensor noise reads as edges) and the photo failed as `table_not_found`,
+naming nothing.
+
+**The capture is a video frame.** Scan.tsx grabs a frame of a
+`getUserMedia` stream, so there is no camera-app "flash". What a page can
+use is the **torch** (a continuous light), via
+`applyConstraints({advanced: [{torch: true}]})` — Chrome on Android, and
+Safari since at least 18.4. Always detected from the camera's own
+capabilities, never assumed.
+
+**Design, as agreed with the owner:**
+
+1. **Blur, measured independently of exposure:** Laplacian variance divided
+   by the photo's own grey variance (`SHARPNESS_FLOOR` 0.115). Darkness can
+   now only raise it.
+2. **Say why:** a failed or partial scan carries `lighting` — `too_dark`
+   (paper level < 70) or `uneven` (evenness < 0.6) — and Review says what to
+   do. A diagnosis only, never a reason to reject a readable photo.
+3. **A live hint** over the viewfinder, from the same two measures on the
+   framing-guide region, warning a little earlier (paper < 80). Never blocks
+   Capture — the confirm loop runs 30-40 times a class.
+4. **A Light button,** only where the camera has a torch, **switched only by
+   the instructor's tap.** Auto-torch was rejected: it hotspots on glossy
+   sheets and costs battery and heat over a class (the owner's paper is
+   plain, but the choice stays with the person holding the phone).
+
+Real low light often shows up as genuine motion blur (the camera lengthens
+its exposure), which the torch — a shorter exposure — also fixes.

@@ -630,6 +630,48 @@ p {
   pointer-events: none;
 }
 
+/* The Light button and the lighting hint (lighting.ts) sit ON the camera
+   image, which is dark in both themes — so, like .camera-guide above, they
+   use fixed translucent black/white rather than the page's theme tokens,
+   which would vanish against a dark photo in light mode. */
+.torch-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 510;
+  cursor: pointer;
+}
+
+.torch-btn[aria-pressed='true'] {
+  background: rgba(255, 255, 255, 0.92);
+  color: #111;
+  border-color: transparent;
+}
+
+.lighting-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  text-align: center;
+  pointer-events: none;
+}
+
 .capture-bar {
   display: flex;
   justify-content: center;

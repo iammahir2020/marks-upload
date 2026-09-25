@@ -8989,3 +8989,49 @@ Checked by running both scripts and asking Windows what each server was
 listening on: `127.0.0.1` by default, every interface with `-Lan`. A test
 harvest during a `-Lan` session landed 14 crops in `unverified/` and none in
 `harvested/`.
+
+## Lighting: the blur check that was really measuring darkness (2026-09-25)
+
+You saw scans failing as "blurry" until the room lights went on. The server
+logs agreed: 10 "blurry" failures in five minutes, then mostly successes.
+
+**Why it happened.** The blur check measured how strong the edges in the
+photo were. But a dim photo has weaker edges everywhere just because there's
+less difference between the white paper and the black ink. So a perfectly
+sharp photo taken in a dim room looked "blurry". An experiment on the real
+test photos, darkened to half brightness, showed 18 of 28 rejected as blurry,
+while the grid reader could read all 28.
+
+**The fix.** [`detection.py`](backend/app/detection.py)'s `_sharpness` divides
+the edge strength by the photo's own overall contrast, so dimming cancels
+out. The limit (0.115) sits between the good test photos (all 0.134 or more)
+and the one genuinely blurry photo (0.101). Darker photos now score higher,
+not lower. Every photo that passed before gives exactly the same result.
+
+**Saying why.** When a scan fails or is partial, the backend now also
+measures:
+
+- **how white the paper came out** (the 90th-percentile grey; normal photos
+  are about 178). Under 70 it reports `too_dark`.
+- **how even the light is**: the page is cut into a 4×4 grid, and the darkest
+  square's paper level is divided by the brightest's. Under 0.6 it reports
+  `uneven`, meaning a shadow.
+
+Review turns that into a sentence ("The photo looks too dark. Turn on a light
+(or tap Light on the camera), then retake.").
+
+**Before you tap.** [`lighting.ts`](frontend/src/lighting.ts) takes a tiny
+160×90 copy of the part of the viewfinder inside the dashed guide, 2–3 times
+a second, and applies the same two measures. If two readings in a row agree,
+a hint appears: "Too dark" or "Shadow on the page". It never stops you
+capturing.
+
+**The Light button.** Phones' browsers can switch on the camera's torch (a
+steady light; there's no flash for a web page). The button only appears if
+your camera says it has one, and the app never turns it on by itself.
+
+**How it was tested.** Besides ordinary tests, a real browser was given fake
+camera videos: an evenly lit page, a dark one, and one with a shadow over
+half of it. It showed the right hint each time. A fourth test pretended the
+camera had a torch and checked that it only switched on when the button was
+tapped.
