@@ -149,6 +149,30 @@ blank there on purpose, because `roster.ts`'s `hasExamSignature` tells an
 exam sheet from the class list by it. Frontend suite 421 -> 450 (+3
 skipped: the hidden ID-digits field's tests, kept for when it returns).
 
+**Step 17 (2026-09-25, code-done; phone checks remain)** — plan.md §22,
+step.md step 17. Two strands from live use. **Partial scans**: a
+column-count mismatch in one table no longer fails the scan — `detect()`
+writes no crops for a miscounted table, `/api/scan` returns
+`table_mismatches` with those fields blank and flagged, and `/api/harvest`
+harvests the tables that matched. A wrong Serial setting still fails
+outright (`main.py`'s `_is_partial`). `_repair_columns` fixes a table off by
+one column from evidence only (see "Conventions" below). Review has Save
+photo on the failure/partial banners; real failed photos go in
+`testset/private/` (gitignored). **Half marks**: `segment.py` adds WEAK
+decimal points (mid-height, under the noise floor, or tucked inside a
+digit), and `local.py`'s `_resolve` reads a cell with and without them — a
+tie becomes `choices`, shown as separate Use buttons, never pre-filled.
+Measured with `cnn/half_marks_accuracy.py` on the instructor's own practice
+page: wrong 2 -> 0, correct 102 -> 114 of 121; harvested whole marks
+unchanged. Backend 310 -> 351, frontend 450 -> 456. **Harvest layout
+change (same day)**: every question's crops now go in ONE
+`marks_questions/` folder (`harvest.py`'s `QUESTIONS_FIELD`) instead of
+`marks_q1/`, `marks_q2/`, ...; the Total keeps `marks_total/`.
+`fetch-crops.sh` folds older `marks_qN/` crops (still in S3 and MinIO,
+deliberately not rewritten there) into `marks_questions/` after every sync.
+The local `training_data/harvested` and `training_data/all` were folded once
+by hand (105 and 408 crops, totals unchanged, mtimes kept).
+
 **A hosted demo is now specced as step 11** (2026-08-30), after the user
 asked about sharing this with other faculty. It is a deliberate extension
 beyond plan.md §13's MVP scope; the laptop workflow stays the supported
@@ -1042,9 +1066,9 @@ cd backend && source venv/bin/activate && python detect.py <image-path> --questi
 cd backend && source venv/bin/activate && python batch_detect.py ../testset/images --questions 5 --id-digits 7 --out ../testset/debug/
 cd backend && source venv/bin/activate && python id_ocr_accuracy.py
 
-# Backend tests — offline, Gemini always mocked, never any AWS. 285 tests
-# as of step 15's follow-ups (2026-09-24); with Tesseract
-# installed all 285 run and pass — without it, 2 SKIP (the only ones that
+# Backend tests — offline, Gemini always mocked, never any AWS. 351 tests
+# as of step 17 (2026-09-25); with Tesseract
+# installed all 351 run and pass — without it, 2 SKIP (the only ones that
 # exercise a real ID read rather than mocking it; the rest of the remote
 # path is mocked and needs no binary).
 cd backend && source venv/bin/activate && pytest
@@ -1143,7 +1167,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --ssl-keyfile certs/key.pem --ssl-c
 # Frontend — HTTPS and LAN binding are on by default via vite.config.ts,
 # no --host flag needed
 cd frontend && npm run dev
-cd frontend && npx vitest run   # 421 tests as of step 15's follow-ups (2026-09-24); 408 at the 2026-09-22 Windows port (moduleNames.test.ts);
+cd frontend && npx vitest run   # 456 as of step 17 (2026-09-25); 421 at step 15's follow-ups (2026-09-24); 408 at the 2026-09-22 Windows port (moduleNames.test.ts);
                                  # 407 at the 2026-09-12 share-QR-code addition (dev-mode landing
                                  # shell, "About" button, the overflow/sticky fix, and the phone scan
                                  # animation fix were step 14.10, 2026-09-10)

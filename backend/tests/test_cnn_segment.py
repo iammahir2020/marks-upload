@@ -183,3 +183,56 @@ def test_an_ordinary_digit_is_not_flagged_wide():
     img = big_cell()
     two_digits(img)
     assert not any(g.maybe_two for g in segment_cell_detail(img).glyphs)
+
+
+def seven_with_tucked_dot(img: np.ndarray) -> None:
+    """A "7" whose top bar reaches out over the point, then a "5"-sized box:
+    the practice page's "7.5" (#68), where the pen-lift rule used to fold
+    the dot into the 7."""
+    cv2.line(img, (60, 50), (160, 50), (0, 0, 0), 5)    # top bar, reaching right
+    cv2.line(img, (160, 50), (95, 190), (0, 0, 0), 5)    # stem
+    cv2.circle(img, (140, 150), 7, (0, 0, 0), -1)        # the point, under the bar
+    cv2.rectangle(img, (190, 60), (240, 190), (0, 0, 0), 4)
+
+
+def test_a_dot_tucked_under_a_digit_is_taken_back_out_as_a_weak_point():
+    img = big_cell()
+    seven_with_tucked_dot(img)
+    glyphs = segment_cell_detail(img).glyphs
+    assert [(g.is_decimal, g.weak) for g in glyphs] == [(False, False), (True, True), (False, False)]
+    # The dot's pixels are gone from the 7 the model will read: a filled
+    # 15px dot survives a 9x9 erosion, the 7's 5px strokes don't.
+    def survives_erosion(image) -> bool:
+        ink = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) < 128).astype(np.uint8)
+        # erode's default border counts as ink; strokes at the crop edge would "survive"
+        eroded = cv2.erode(ink, np.ones((9, 9), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0)
+        return bool(eroded.any())
+
+    assert not survives_erosion(glyphs[0].image)
+    assert survives_erosion(glyphs[1].image)
+
+
+def test_a_pen_lift_piece_is_still_merged_into_its_digit():
+    """The rule the tucked dot has to get past exists for this: a digit
+    written in two strokes. Tall pieces are never taken back out."""
+    img = big_cell()
+    cv2.line(img, (70, 60), (70, 130), (0, 0, 0), 5)     # a "4" in two strokes
+    cv2.line(img, (70, 130), (120, 130), (0, 0, 0), 5)
+    cv2.line(img, (105, 70), (105, 190), (0, 0, 0), 5)
+    cv2.rectangle(img, (190, 60), (240, 190), (0, 0, 0), 4)
+    glyphs = segment_cell_detail(img).glyphs
+    assert len(glyphs) == 2 and not any(g.is_decimal for g in glyphs)
+
+
+def test_a_dot_under_a_long_base_counts_as_between_the_digits():
+    """The harvested "2.5"s: the 2's base runs past the point, so no digit
+    lies WHOLLY to its left — but the 2's centre does."""
+    img = big_cell()
+    cv2.line(img, (60, 60), (110, 60), (0, 0, 0), 4)     # a "2": top,
+    cv2.line(img, (110, 60), (60, 190), (0, 0, 0), 4)    # diagonal,
+    cv2.line(img, (60, 190), (160, 190), (0, 0, 0), 4)   # and a long base
+    cv2.circle(img, (140, 120), 7, (0, 0, 0), -1)         # point at mid-height, above the base
+    cv2.rectangle(img, (190, 60), (240, 190), (0, 0, 0), 4)
+    glyphs = segment_cell_detail(img).glyphs
+    points = [g for g in glyphs if g.is_decimal]
+    assert len(points) == 1 and points[0].weak

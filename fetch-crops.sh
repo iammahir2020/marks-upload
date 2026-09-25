@@ -186,6 +186,31 @@ case "${1:-merge}" in
   *) echo "usage: $0 [local|s3 <bucket> [prefix]|merge]" >&2; exit 2 ;;
 esac
 
+# 2026-09-25: every question's crops now share one marks_questions/ folder
+# (app/harvest.py's QUESTIONS_FIELD). Crops harvested before that sit under
+# marks_q1/, marks_q2/, ... — locally, in MinIO and in S3 — so fold them in
+# here, after every source has synced. `mv` keeps the constant mtime
+# (app/stores.py CONSTANT_MTIME). A name collision is the same crop by
+# construction (keys are content hashes), so -f is safe. The remote copies
+# are left as they are; a later sync re-downloads them and they fold again.
+fold_questions() {
+  local moved=0 src dest f
+  for src in "$OUT"/*/marks_q[0-9]*/*/; do
+    [ -d "$src" ] || continue
+    dest="$(dirname "$(dirname "$src")")/marks_questions/$(basename "$src")"
+    mkdir -p "$dest"
+    for f in "$src"*.png; do
+      [ -e "$f" ] || continue
+      mv -f "$f" "$dest/"
+      moved=$((moved + 1))
+    done
+  done
+  find "$OUT" -depth -type d -path '*/marks_q[0-9]*' -empty -delete 2>/dev/null || true
+  [ "$moved" -gt 0 ] && say "Folded $moved crop(s) from per-question marks_qN/ folders into marks_questions/"
+  return 0
+}
+fold_questions
+
 # Fix #1 (2026-08-31): anything collected while verifying the system is
 # tagged `test-*` and dropped here. The previous corpus had to be thrown
 # away precisely because verification crops shared a namespace with real

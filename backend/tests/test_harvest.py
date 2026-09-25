@@ -85,7 +85,7 @@ def test_a_flagged_original_that_gets_filled_in_counts_as_corrected(tmp_path):
     )
     files = _files_under(harvest_dir)
     assert len(files) == 1
-    assert files[0].startswith("unknown/marks_q1/corrected/3_")
+    assert files[0].startswith("unknown/marks_questions/corrected/3_")
 
 
 def test_half_mark_label_preserves_the_decimal(tmp_path):
@@ -100,7 +100,7 @@ def test_half_mark_label_preserves_the_decimal(tmp_path):
         store=LocalStore(harvest_dir),
     )
     files = _files_under(harvest_dir)
-    assert files[0].startswith("unknown/marks_q1/confirmed/2.5_")
+    assert files[0].startswith("unknown/marks_questions/confirmed/2.5_")
 
 
 def test_a_blank_confirmed_question_is_not_harvested_at_all(tmp_path):
@@ -169,9 +169,11 @@ def test_unmatched_refusal_does_not_affect_a_sibling_question(tmp_path):
         store=LocalStore(harvest_dir),
         unmatched_fields=frozenset({"q1"}),
     )
+    # One folder for every question now, so Q1 and Q2 are told apart by
+    # their labels: the refused Q1 would have been "5", the kept Q2 is "3".
     files = _files_under(harvest_dir)
-    assert not any("marks_q1" in f for f in files)
-    assert any(f.startswith("unknown/marks_q2/confirmed/3_") for f in files)
+    assert not any(f.startswith("unknown/marks_questions/") and "/5_" in f for f in files)
+    assert any(f.startswith("unknown/marks_questions/confirmed/3_") for f in files)
 
 
 def test_no_unmatched_fields_harvests_exactly_as_before(tmp_path):
@@ -492,7 +494,7 @@ def test_a_crossed_out_question_is_refused_under_its_correction(tmp_path):
     The crop still holds the struck 6 — labelled "5", it would teach the
     model that a scribbled-over 6 is a 5."""
     files = _harvest_everything(tmp_path, frozenset({"q1"}))
-    assert not any("marks_q1" in f for f in files)
+    assert not any("marks_questions" in f for f in files)
     assert any("marks_total" in f for f in files), "a sibling field must still harvest"
 
 
@@ -513,5 +515,22 @@ def test_a_crossed_out_serial_or_total_is_refused(tmp_path, field, prefix):
 
 def test_no_crossed_out_fields_harvests_every_field(tmp_path):
     files = _harvest_everything(tmp_path, frozenset())
-    for prefix in ("id_digits", "serial/", "marks_q1", "marks_total"):
+    for prefix in ("id_digits", "serial/", "marks_questions", "marks_total"):
         assert any(prefix in f for f in files), prefix
+
+
+def test_every_question_lands_in_one_folder_and_the_total_in_its_own(tmp_path):
+    """2026-09-25 — marks_q1, marks_q2, ... became one marks_questions folder;
+    the Total keeps marks_total."""
+    cells_dir = _make_cells(tmp_path, ["marks_r1_c0.png", "marks_r1_c1.png", "marks_r1_c2.png"])
+    harvest_dir = tmp_path / "harvest"
+    harvest(
+        cells_dir, id_digits=0, question_count=2,
+        original_student_id=None, confirmed_student_id=None,
+        original_serial=None, confirmed_serial=None,
+        original_questions=[4.0, 2.5], confirmed_questions=[4.0, 2.5],
+        original_total=6.5, confirmed_total=6.5,
+        store=LocalStore(harvest_dir),
+    )
+    fields = {f.split("/")[1] for f in _files_under(harvest_dir)}
+    assert fields == {"marks_questions", "marks_total"}

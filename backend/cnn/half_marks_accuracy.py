@@ -23,7 +23,8 @@ lands in one bucket:
   WRONG     a wrong value filled in with no flag. Must be 0.
 
 Legal sets: harvested crops don't record their question's max, so every
-marks_q* cell is decoded against 0..10 and every total against 0..50 — the
+question cell (marks_questions/, or a pre-2026-09-25 marks_qN/) is decoded
+against 0..10 and every total against 0..50 — the
 same, slightly harsher, sets before and after any change. Practice pages
 use 0..25, the range where 25/2.5-style ties exist.
 

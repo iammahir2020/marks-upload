@@ -8822,5 +8822,74 @@ saves its crop with a guessed label.
 
 - Scan real half marks on the printed grid, including tiny dots and dots
   touching a digit. This page was plain paper, cropped by a script.
-- A dot touching a digit (merged into it) is still not split off. Most of
-  the remaining misses on your page are that case.
+- ~~A dot touching a digit is still not split off.~~ Done later the same
+  day; see "Dots tucked inside a digit" below.
+
+### Dots tucked inside a digit, and harvesting partial scans (2026-09-25, later)
+
+**The "touching" dots mostly weren't touching.** Looking at the remaining
+misses showed something else: the dot sat *inside a digit's outline*. It
+might be under a 7's top bar, or under the long base of a 2. Two rules
+missed it:
+
+- **The pen-lift rule.** It re-joins a digit written in two strokes, and it
+  folded the dot into the 7.
+- **"Between two digits".** It wanted a digit *wholly* to the dot's left,
+  and a 2's base reaches past the dot.
+
+A thickness test was tried first and dropped. The idea: a filled pen dot
+is thicker than a pen stroke. But 43 of 60 two-digit whole marks have
+thick spots anyway (stroke junctions, pen pressure), so it would have
+invented dots everywhere. Measured, not guessed.
+
+What [`segment.py`](backend/cnn/segment.py) does now:
+
+- **"Between" uses digit centres, not edges.** A dot counts if one digit's
+  middle is to its left and another's is to its right.
+- **The merge remembers which pieces it joined** (`_merge_with_members`).
+  A piece that's small, round, below the top quarter and between digit
+  centres is taken back out as a weak point, and its pixels are blanked
+  from the digit the model reads. If no piece qualifies, the merge stands
+  exactly as before, so a two-stroke 4 is still one 4.
+
+Result: your page went from 111 to 114 of 121 correct, and harvested half
+marks from 56 to 58 of 63. Whole marks and wrong reads didn't change.
+
+**Partial scans now feed the training data too.** On Confirm,
+`/api/harvest` re-runs detection. It used to give up on any mismatch,
+throwing away the tables that were read fine. Now it accepts the same
+partial result `/api/scan` does. There's no risk of labelling a wrong box:
+a miscounted table has no crop images at all, and harvesting only saves
+images that exist. So an ID you typed by hand for a miscounted ID row has
+nothing to be attached to. A wrong "Serial box on paper" setting is still
+refused completely.
+
+### Still open
+
+- Your page is at 114/121. Of the rest, 4 are the intended ties (2.5 or 25,
+  where both are allowed). The others are a harness crop that caught a
+  sliver of the next value, the touching "20.5", and one "5.5" whose last
+  5 reads like a 9.
+- A point written as a short **dash** is found only when it sits in the
+  lower half, because the round-blob rule excludes dashes on purpose. On
+  your page the dash was low enough; a dash at mid-height would be missed.
+
+### One folder for every question's crops
+
+Harvesting used to file each question separately: `marks_q1/`, `marks_q2/`,
+and so on. That told the model nothing. The position doesn't even say what
+the question was out of, since Q1 is out of 5 in one quiz and out of 10 in
+another. It also scattered one kind of data across up to eight folders.
+
+Now [`harvest.py`](backend/app/harvest.py) puts every question's crop in
+`marks_questions/`. The Total keeps its own `marks_total/`, because it's a
+different kind of value (two digits, up to 50).
+
+Older crops still sit under `marks_q1/`... in the S3 bucket and MinIO. Those
+weren't rewritten, because that would be a change to live data.
+[`fetch-crops.sh`](fetch-crops.sh) instead folds them into `marks_questions/`
+every time it builds the training set. It uses `mv`, which keeps each
+crop's fixed timestamp (the one that stops a student's digits being put
+back in order by date). A run with nothing left to fold says nothing. The
+two local folders were folded once: 105 and 408 crops moved, totals
+unchanged.

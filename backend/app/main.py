@@ -523,7 +523,14 @@ async def harvest_endpoint(
         det = await run_in_threadpool(
             detect_any_orientation, image_path, question_count, quiz.idDigits, out_dir, quiz.hasSerial
         )
-        if det["status"] != "ok":
+        # A partial scan is harvested too, from the tables that matched —
+        # the same rule /api/scan reads them by. Nothing extra is needed to
+        # keep a miscounted table out: detect() writes no crops for it, and
+        # harvest() only stores crops that exist, so whatever the instructor
+        # typed into that table's fields has no image to be attached to. A
+        # wrong Serial setting is not partial (_is_partial) and stays refused.
+        partial = det["status"] != "ok" and _is_partial(det, quiz)
+        if det["status"] != "ok" and not partial:
             obs.log_event("harvest", harvested=False, reason=det["failure_reason"])
             return {"harvested": False}
 
@@ -580,5 +587,5 @@ async def harvest_endpoint(
             return {"harvested": False}
 
     obs.log_event("harvest", harvested=True, questions=question_count,
-                  tagged=bool(source))
+                  tagged=bool(source), partial=partial)
     return {"harvested": True}

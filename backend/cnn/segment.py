@@ -136,30 +136,34 @@ def _merge_overlapping(boxes: list[tuple[int, int, int, int]]) -> list[tuple[int
     wrong), while a decimal point sitting close enough to a digit to
     overlap it in x is a different glyph entirely and must not be merged
     away before it ever reaches decimal classification."""
-    merged: list[tuple[int, int, int, int]] = []
-    for box in boxes:
-        if not merged:
-            merged.append(box)
-            continue
-        px0, py0, px1, py1 = merged[-1]
-        x0, y0, x1, y1 = box
-        overlap = min(px1, x1) - max(px0, x0)
-        narrower_width = min(px1 - px0, x1 - x0)
+    return [box for box, _members in _merge_with_members([(b, i) for i, b in enumerate(boxes)])]
 
-        prev_center, this_center = (px0 + px1) / 2, (x0 + x1) / 2
-        wider_width = max(px1 - px0, x1 - x0)
-        center_offset_frac = abs(prev_center - this_center) / wider_width if wider_width > 0 else 0
 
-        should_merge = (
-            narrower_width > 0
-            and overlap / narrower_width > OVERLAP_MERGE_FRAC
-            and center_offset_frac <= CENTER_OFFSET_MERGE_FRAC
-        )
-        if should_merge:
-            merged[-1] = (min(px0, x0), min(py0, y0), max(px1, x1), max(py1, y1))
-        else:
-            merged.append(box)
-    return merged
+def _merge_with_members(comps: list[tuple[tuple[int, int, int, int], int]]):
+    """_merge_overlapping's exact rule, also recording which connected
+    components (by label) went into each merged box — so a pen dot the rule
+    folded into a digit can be taken back out (see segment_cell_detail).
+    `comps` is [(box, label)], sorted left to right."""
+    merged: list[list] = []  # [box, [labels]]
+    for box, label in comps:
+        if merged:
+            px0, py0, px1, py1 = merged[-1][0]
+            x0, y0, x1, y1 = box
+            overlap = min(px1, x1) - max(px0, x0)
+            narrower_width = min(px1 - px0, x1 - x0)
+            prev_center, this_center = (px0 + px1) / 2, (x0 + x1) / 2
+            wider_width = max(px1 - px0, x1 - x0)
+            center_offset_frac = abs(prev_center - this_center) / wider_width if wider_width > 0 else 0
+            if (
+                narrower_width > 0
+                and overlap / narrower_width > OVERLAP_MERGE_FRAC
+                and center_offset_frac <= CENTER_OFFSET_MERGE_FRAC
+            ):
+                merged[-1][0] = (min(px0, x0), min(py0, y0), max(px1, x1), max(py1, y1))
+                merged[-1][1].append(label)
+                continue
+        merged.append([box, [label]])
+    return [(tuple(b), members) for b, members in merged]
 
 
 def segment_cell(cell: np.ndarray) -> list[Glyph]:
@@ -170,10 +174,16 @@ def segment_cell(cell: np.ndarray) -> list[Glyph]:
 
 
 def _between(cx: float, digits: list[tuple[int, int, int, int]]) -> bool:
-    """A point sits between two digits: one wholly to its left, one wholly
-    to its right. A small blob before the first digit or after the last one
-    is never a decimal point — every legal value has digits on both sides."""
-    return any(b[2] <= cx for b in digits) and any(b[0] >= cx for b in digits)
+    """A point sits between two digits: one digit's CENTRE to its left and
+    another's to its right. A small blob before the first digit or after the
+    last one is never a decimal point — every legal value has digits on
+    both sides.
+
+    Centres, not edges: a "2"'s long base or a "7"'s top bar reaches out
+    over the point, so no digit lies WHOLLY to its left (two harvested
+    "2.5"s and one practice-page "7.5" were missed that way)."""
+    centres = [(b[0] + b[2]) / 2.0 for b in digits]
+    return any(c < cx for c in centres) and any(c > cx for c in centres)
 
 
 def _is_round(w: int, h: int) -> bool:
@@ -205,7 +215,7 @@ def segment_cell_detail(cell: np.ndarray) -> Segmentation:
     cell_area = inset.shape[0] * inset.shape[1]
     noise_floor = cell_area * NOISE_AREA_FRAC
 
-    boxes = []  # (x0, y0, x1, y1), label 0 is the background
+    comps = []  # ((x0, y0, x1, y1), label); label 0 is the background
     rejected = []  # (x0, y0, x1, y1, area) — below the noise floor
     largest_ink = 1
     for label in range(1, num_labels):
@@ -213,14 +223,16 @@ def segment_cell_detail(cell: np.ndarray) -> Segmentation:
         if area < noise_floor:
             rejected.append((x, y, x + cw, y + ch, area))
             continue
-        boxes.append((x, y, x + cw, y + ch))
+        comps.append(((x, y, x + cw, y + ch), label))
         largest_ink = max(largest_ink, int(area))
 
-    if not boxes:
+    if not comps:
         return Segmentation([])
 
-    boxes.sort(key=lambda b: b[0])
-    boxes = _merge_overlapping(boxes)
+    comps.sort(key=lambda c: c[0][0])
+    merged = _merge_with_members(comps)
+    boxes = [b for b, _ in merged]
+    comp_box = dict((label, box) for box, label in comps)
 
     heights = [y1 - y0 for _, y0, _, y1 in boxes]
     max_height = float(max(heights))
@@ -236,8 +248,9 @@ def segment_cell_detail(cell: np.ndarray) -> Segmentation:
     digits = [b for b in boxes if not is_small(b)]
 
     glyphs = []
+    glyph_members: list[list[int]] = []  # parallel to glyphs: the components merged into each
     stray = False
-    for b in boxes:
+    for b, members in merged:
         x0, y0, x1, y1 = b
         centroid_y = (y0 + y1) / 2.0
         cx = (x0 + x1) / 2.0
@@ -249,6 +262,39 @@ def segment_cell_detail(cell: np.ndarray) -> Segmentation:
             elif _between(cx, digits):
                 stray = True
         glyphs.append(Glyph(image=inset[y0:y1, x0:x1], x0=x0, x1=x1, is_decimal=is_decimal, weak=weak))
+        glyph_members.append(members)
+
+    # A dot tucked inside a digit's outline — under a "7"'s top bar, say —
+    # overlaps it enough that the pen-lift rule above merged the two. Take
+    # it back out when that one piece is exactly what a weak point looks
+    # like: small, round, below the top quarter, and between two digit
+    # centres. Its pixels are blanked from the digit it was merged into. If
+    # no piece qualifies the merge stands, exactly as before.
+    if not any(g.is_decimal for g in glyphs):
+        for gi, members in enumerate(glyph_members):
+            if len(members) < 2:
+                continue
+            for label in members:
+                bx0, by0, bx1, by1 = comp_box[label]
+                if (
+                    is_small(comp_box[label])
+                    and _is_round(bx1 - bx0, by1 - by0)
+                    and (by0 + by1) / 2.0 >= weak_start
+                    and _between((bx0 + bx1) / 2.0, digits)
+                ):
+                    rest = [comp_box[m] for m in members if m != label]
+                    rx0, ry0 = min(b[0] for b in rest), min(b[1] for b in rest)
+                    rx1, ry1 = max(b[2] for b in rest), max(b[3] for b in rest)
+                    digit_img = inset.copy()
+                    digit_img[labels == label] = 255
+                    dot_img = np.full_like(inset, 255)
+                    dot_img[labels == label] = inset[labels == label]
+                    glyphs[gi] = Glyph(image=digit_img[ry0:ry1, rx0:rx1], x0=rx0, x1=rx1, is_decimal=False)
+                    glyphs.append(Glyph(image=dot_img[by0:by1, bx0:bx1], x0=bx0, x1=bx1,
+                                        is_decimal=True, weak=True))
+                    break
+            if any(gl.is_decimal for gl in glyphs):
+                break
 
     # A dot that fell under the noise floor: rescued only when it is round,
     # between two digits, below the top quarter, and big enough next to the

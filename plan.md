@@ -2536,3 +2536,76 @@ with §3's template rules:
 - **The Name/Section table's handwriting is never read**, by design. The
   app already knows the section, and a name read from handwriting would
   be the least reliable identity field there is.
+
+## 22. Partial scans, grid repair, and weak decimal points (built 2026-09-25)
+
+Two problems from live use, one principle: **a scan that can't be sure of
+a table or a point says so for that field only, and never turns doubt into
+a confident value.** step.md step 17 has the build record; learn.md the
+walkthrough.
+
+### Partial scans
+
+The ID, Serial and Marks rows are separate printed tables, so a column
+count that is wrong in one says nothing about the others. §9's rule —
+never read a table whose shape disagrees with the config — now applies
+**per table**:
+
+- `detect()` writes no crops for a miscounted table. This is what makes the
+  rest safe: nothing downstream can read boxes that don't exist.
+- `/api/scan` reads the tables that matched and returns
+  `table_mismatches`; the unread fields arrive blank and flagged.
+- Still a whole-scan failure: every table miscounted, or a paper that
+  contradicts the "Serial box on paper" setting (§21). The ID is chosen by
+  position above the marks table, so a wrong setting moves that choice onto
+  another box; its signature (a box in the Serial's place with an ID row's
+  column count, or the reverse) is a per-quiz error that should fail loudly
+  on every script until the setting is fixed.
+- Gemini is never sent a miscounted marks table (§9's quota and privacy
+  rule, now per table).
+- `/api/harvest` harvests a partial scan from its matched tables. No extra
+  guard is needed: the miscounted table has no crops to attach a label to.
+
+### Grid repair
+
+A table off by exactly one column is repaired only from evidence:
+
+- **One too few** (ID or marks): restore a line the detector really found
+  and rejected, one that clears the absolute coverage floor (so only the
+  relative filter's decision is overturned — the real_class_11 case, a
+  faint divider under uneven light).
+- **One too many** (ID only): remove a divider that split a box.
+- Accepted only if exactly one such change leaves the regular cells (ID
+  digit boxes; marks question columns, not Total) within 20% of their
+  median width, AND both cells beside the change come out one box wide.
+  The second condition matters: without it, a paper with one more ID box
+  than the config passes by merging the first digit into the label.
+
+Nothing is ever placed by dividing a width by a count (§5).
+
+### Weak decimal points
+
+Measured on a practice page of 121 written half marks: the point is often
+at mid-height, sometimes smaller than the noise floor, and sometimes tucked
+under a digit's bar where the pen-lift merge folds it into the digit. The
+strong rule (small, lower half) is unchanged. A **weak** point is added:
+round, between two digit centres, below the top quarter; or rescued from
+under the noise floor with at least 2% of a digit's ink; or a small round
+piece taken back out of a merged digit.
+
+The decoder reads a cell with and without each weak point:
+
+- one legal reading -> the value ("2·5" on a 5-mark question is 2.5, since
+  25 isn't legal; "1·0" with a speck is 10, since 1.0 is never written);
+- two -> `choices`, each its own Use button on Review, none pre-filled
+  (15 / 1.5 on a Total). This is the instructor's decision (2026-09-25):
+  when the reader is confused, offer both.
+
+Two weaker signals only ever add choices, never a value: stray ink between
+the digits (a lost point), and a glyph as wide as two touching digits that
+reads as a different legal value when cut. A field with choices is
+unmatched, so it is never harvested with a guessed label.
+
+Result on the practice page: values stored wrong without a flag 2 -> 0,
+correct 102 -> 114 of 121. Harvested whole marks: no new wrong reads; one
+Total "15" with a smudge after the 1 now offers 1.5 or 15.

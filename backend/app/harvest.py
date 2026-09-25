@@ -150,6 +150,15 @@ def _write_unordered(pending: list[tuple[str, Path]], store: Store) -> None:
         store.put(key, crop_path)
 
 
+# Every question's crop goes in ONE folder (2026-09-25). They used to be
+# split marks_q1, marks_q2, ... but the position carries nothing a model can
+# use — it doesn't even say the question's max, which differs quiz to quiz
+# and isn't stored — and one folder per position scattered the corpus.
+# The Total stays in its own folder: a different kind of value (two digits,
+# up to 50). fetch-crops.sh folds any older marks_qN crops into this one.
+QUESTIONS_FIELD = "marks_questions"
+
+
 def harvest(
     cells_dir: Path,
     id_digits: int,
@@ -247,7 +256,7 @@ def harvest(
             continue
         original_value = original_questions[i] if i < len(original_questions) else None
         tag = "confirmed" if confirmed_value == original_value else "corrected"
-        add(f"marks_q{i + 1}", tag, _fmt(confirmed_value), cells_dir / f"marks_r1_c{i}.png")
+        add(QUESTIONS_FIELD, tag, _fmt(confirmed_value), cells_dir / f"marks_r1_c{i}.png")
 
     if (
         confirmed_total is not None
