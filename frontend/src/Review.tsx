@@ -14,7 +14,7 @@
 //   and Retake/Enter-manually — never a dead end.
 import { useMemo, useState } from 'react';
 import { harvestScan, type HarvestFields, type ScanResult, type TableMismatch } from './api';
-import { findRecordsBySerial, findRecordsByStudentId, getShareCrops, saveRecord } from './db';
+import { findRecordsBySerial, findRecordsByStudentId, getShareCrops, replaceRecords, saveRecord } from './db';
 import { matchAgainstRoster } from './rosterMatch';
 import type { ParsedRoster } from './roster';
 import { hasSerialBox } from './sections';
@@ -245,12 +245,16 @@ export default function Review({
   const total = parseMarkField(totalStr, config.totalMax).value;
   const { computedSum, matches } = sumCheck(questionValues, total);
 
+  // `replaced` — the student's earlier records in this assessment, when
+  // this script is a resit (or the same script scanned twice). The new
+  // record takes the first one's id and the rest are deleted, so the
+  // student is left with exactly one row.
   async function commitSave(
     candidate: { studentId: string | null; serial: string | null },
-    overwriteId?: string,
+    replaced: StudentRecord[] = [],
   ) {
     const record: StudentRecord = {
-      id: overwriteId ?? crypto.randomUUID(),
+      id: replaced[0]?.id ?? crypto.randomUUID(),
       assessmentId,
       studentId: candidate.studentId,
       serial: candidate.serial,
@@ -259,7 +263,11 @@ export default function Review({
       confirmed: true,
       capturedAt: new Date().toISOString(),
     };
-    await saveRecord(record);
+    if (replaced.length > 0) {
+      await replaceRecords(record, replaced.map((r) => r.id));
+    } else {
+      await saveRecord(record);
+    }
     setPendingConflict(null);
     onSaved(record);
 
@@ -402,6 +410,12 @@ export default function Review({
     studentId: studentId.trim() || null,
     serial: hasSerial ? serial.trim() || null : null,
   };
+  // Records with this student's ID (a 'duplicate' also shares the serial).
+  // A same-serial, different-ID match is someone else's script and is never
+  // replaced — that one is a likely misread, so it only warns.
+  const replaceable = pendingConflict
+    ? pendingConflict.conflicts.filter((c) => c.reason !== 'serial-mismatch').map((c) => c.record)
+    : [];
 
   return (
     <div className="stack">
@@ -616,11 +630,9 @@ export default function Review({
       {pendingConflict && pendingConflict.conflicts.length > 0 && (
         <div className="banner banner-warning" role="alert">
           <p>
-            {!hasSerial
-              ? 'This student ID is already saved — this script may already be scanned. If the ID is misread, correct it above.'
-              : pendingConflict.action === 'block'
-                ? 'Same serial and ID already saved — this script may already be scanned.'
-                : 'This serial or ID conflicts with an existing record — one may be misread.'}
+            {replaceable.length > 0
+              ? 'This student already has a saved script in this quiz. If they sat it again, replace the earlier record with this one. If the ID is misread, correct it above.'
+              : 'This serial is already saved under a different student ID — one may be misread.'}
           </p>
           <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
             {pendingConflict.conflicts.map((c) => (
@@ -630,13 +642,13 @@ export default function Review({
               </li>
             ))}
           </ul>
-          {pendingConflict.action === 'block' ? (
+          {replaceable.length > 0 ? (
             <div className="banner-actions">
               <button
                 className="btn btn-danger-solid btn-sm"
-                onClick={() => commitSave(candidateForConflict, pendingConflict.conflicts[0].record.id)}
+                onClick={() => commitSave(candidateForConflict, replaceable)}
               >
-                Overwrite earlier record
+                Replace earlier record
               </button>
               <button className="btn btn-secondary btn-sm" onClick={() => setPendingConflict(null)}>
                 Cancel

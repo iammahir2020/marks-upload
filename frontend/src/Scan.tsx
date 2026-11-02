@@ -295,7 +295,9 @@ export default function Scan({ config, assessmentId, sectionLabel, roster = null
               }}
               onSaved={() => {
                 setSavedIds((s) => new Set(s).add(reviewingEntry.id));
-                setSavedCount((n) => n + 1);
+                // Recounted, not incremented: a resit replaces a record
+                // rather than adding one.
+                getRecordsByAssessment(assessmentId).then((records) => setSavedCount(records.length));
                 setReviewingId(null);
               }}
             />

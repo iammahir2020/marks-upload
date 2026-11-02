@@ -688,6 +688,61 @@ describe('Results — pre-export coverage and duplicate blocking (12.12)', () =>
   });
 });
 
+// A duplicate used to be a dead end: the export panel said "fix this in the
+// table above" and the table had no way to remove a row.
+describe('Results — deleting a row and resolving duplicates', () => {
+  it('deletes a row only after a second tap', async () => {
+    await saveRecord(makeRecord({ id: 'a', studentId: '1912345', serial: '1' }));
+    await saveRecord(makeRecord({ id: 'b', studentId: '2130643', serial: '2' }));
+    renderResults();
+
+    fireEvent.click(await screen.findByRole('button', { name: /delete the row for 1912345/i }));
+    expect(await getAllRecords()).toHaveLength(2); // first tap only asks
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep' }));
+    expect(screen.queryByRole('button', { name: 'Delete row' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /delete the row for 1912345/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete row' }));
+
+    await screen.findByText(/^1 record/);
+    expect((await getAllRecords()).map((r) => r.id)).toEqual(['b']);
+    expect(screen.queryByDisplayValue('1912345')).not.toBeInTheDocument();
+  });
+
+  it('"Keep latest scan" removes the older script and unblocks the export', async () => {
+    const section = await sectionWithTwoStudentRoster();
+    await saveRecord(makeRecord({ id: 'first', studentId: '1912345', total: 5, capturedAt: '2026-10-01T09:00:00.000Z' }));
+    await saveRecord(makeRecord({ id: 'resit', studentId: '1912345', total: 9, capturedAt: '2026-10-08T09:00:00.000Z' }));
+    renderResults({ section });
+
+    fireEvent.click(await screen.findByRole('button', { name: /export into class marksheet/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /keep latest scan/i }));
+
+    // The panel rebuilds from what is left: no duplicate, so it can continue.
+    expect(await screen.findByRole('button', { name: /continue/i })).toBeInTheDocument();
+    expect(screen.queryByText(/two scanned scripts matching them/i)).not.toBeInTheDocument();
+    const remaining = await getAllRecords();
+    expect(remaining.map((r) => r.id)).toEqual(['resit']);
+  });
+
+  it('deleting one of the duplicate rows also unblocks an open export panel', async () => {
+    const section = await sectionWithTwoStudentRoster();
+    await saveRecord(makeRecord({ id: 'a', studentId: '1912345', serial: '1', total: 5 }));
+    await saveRecord(makeRecord({ id: 'b', studentId: '1912345', serial: '2', total: 9 }));
+    renderResults({ section });
+
+    fireEvent.click(await screen.findByRole('button', { name: /export into class marksheet/i }));
+    await screen.findByText(/two scanned scripts matching them/i);
+
+    fireEvent.click(screen.getAllByRole('button', { name: /delete the row for 1912345/i })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete row' }));
+
+    expect(await screen.findByRole('button', { name: /continue/i })).toBeInTheDocument();
+    expect(await getAllRecords()).toHaveLength(1);
+  });
+});
+
 // Step.md 12.13 — the opt-in totals column.
 describe('Results — opt-in totals column (12.13)', () => {
   it('is off by default and does not write a totals column when left unchecked', async () => {

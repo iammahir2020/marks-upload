@@ -283,6 +283,26 @@ export async function saveRecord(record: StudentRecord): Promise<void> {
   await db.put('records', { ...record, serial: normalizeSerial(record.serial) });
 }
 
+// A resit: the student's new script replaces every record they already
+// have in this assessment. One transaction, so a crash can't leave the
+// new record saved beside the old one — the duplicate that blocks the
+// class-list export. `record.id` may be one of `replacedIds` (it reuses
+// the earlier record's id); that one is overwritten, not deleted.
+export async function replaceRecords(record: StudentRecord, replacedIds: string[]): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction('records', 'readwrite');
+  for (const id of replacedIds) {
+    if (id !== record.id) await tx.store.delete(id);
+  }
+  await tx.store.put({ ...record, serial: normalizeSerial(record.serial) });
+  await tx.done;
+}
+
+export async function deleteRecord(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('records', id);
+}
+
 // Unscoped — every record in every assessment. Real uses are rare on
 // purpose (step.md 13.8 scoped the two call sites that used to reach for
 // this — Results' table, Scan's saved counter — to getRecordsByAssessment

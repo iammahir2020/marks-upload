@@ -21,8 +21,8 @@
 // built) will read to refuse deleting unexported work.
 import { useEffect, useMemo, useState } from 'react';
 import ExcelJS from 'exceljs';
-import { getRecordsByAssessment, saveAssessment, saveRecord, saveSection } from './db';
-import { buildExamSheet, type ExamSheetResult } from './examSheet';
+import { deleteRecord, getRecordsByAssessment, saveAssessment, saveRecord, saveSection } from './db';
+import { buildExamSheet, type DuplicateMatch, type ExamSheetResult } from './examSheet';
 import { sortRecords, unverifiedReason } from './resultsTable';
 import type { ParsedRoster } from './roster';
 import { matchAgainstRoster } from './rosterMatch';
@@ -220,6 +220,29 @@ export default function Results({
   async function updateRecord(updated: StudentRecord) {
     await saveRecord(updated);
     setRecords((rs) => rs.map((r) => (r.id === updated.id ? updated : r)));
+  }
+
+  // Deleting changes what the class-list export would write, so an open
+  // export panel is rebuilt from the remaining records rather than left
+  // showing a duplicate that no longer exists.
+  async function removeRecords(ids: string[]) {
+    for (const id of ids) await deleteRecord(id);
+    const remaining = records.filter((r) => !ids.includes(r.id));
+    setRecords(remaining);
+    if (pendingWorkbookExport && section.roster) {
+      setPendingWorkbookExport({
+        ...pendingWorkbookExport,
+        result: buildExamSheet(section.roster, remaining, config),
+      });
+    }
+  }
+
+  // A student with two scripts is almost always a resit (or one script
+  // scanned twice), so the most recent scan is the one to keep — the same
+  // record buildExamSheet already picks for that student's row.
+  function keepLatest(duplicate: DuplicateMatch) {
+    const latest = duplicate.records.reduce((a, b) => (a.capturedAt > b.capturedAt ? a : b));
+    return removeRecords(duplicate.records.filter((r) => r.id !== latest.id).map((r) => r.id));
   }
 
   async function handleExport() {
@@ -444,6 +467,7 @@ export default function Results({
               pending={pendingWorkbookExport}
               onCancel={() => setPendingWorkbookExport(null)}
               onFinish={finishWorkbookExport}
+              onKeepLatest={keepLatest}
             />
           )}
         </div>
@@ -468,6 +492,7 @@ export default function Results({
                 ))}
                 <th className="col-mark">Total ({config.totalMax})</th>
                 <th className="col-check">Check</th>
+                <th aria-label="Delete" />
               </tr>
             </thead>
             <tbody>
@@ -479,6 +504,7 @@ export default function Results({
                   roster={section.roster ?? null}
                   noSerial={noSerial}
                   onUpdate={updateRecord}
+                  onDelete={() => removeRecords([record.id])}
                 />
               ))}
             </tbody>
@@ -512,6 +538,7 @@ interface PendingExportPanelProps {
   pending: PendingWorkbookExport;
   onCancel: () => void;
   onFinish: (pending: PendingWorkbookExport, finalName: string, overwrite: boolean) => void;
+  onKeepLatest: (duplicate: DuplicateMatch) => void;
 }
 
 // Step.md 12.12 — always shown once "Export into class marksheet" is
@@ -522,7 +549,7 @@ interface PendingExportPanelProps {
 // the escape hatch); otherwise a name collision needs Overwrite/Rename/
 // Cancel; otherwise a plain confirm showing the sheet name and who's
 // missing, with nothing to resolve but "Continue."
-function PendingExportPanel({ pending, onCancel, onFinish }: PendingExportPanelProps) {
+function PendingExportPanel({ pending, onCancel, onFinish, onKeepLatest }: PendingExportPanelProps) {
   const { result, collision, sanitizedName } = pending;
 
   if (result.duplicates.length > 0) {
@@ -530,13 +557,16 @@ function PendingExportPanel({ pending, onCancel, onFinish }: PendingExportPanelP
       <div className="banner banner-danger" role="alert">
         <p>
           {result.duplicates.length === 1
-            ? 'One student on your class list has two scanned scripts matching them — fix this in the table above before exporting.'
-            : `${result.duplicates.length} students on your class list each have two scanned scripts matching them — fix these in the table above before exporting.`}
+            ? 'One student on your class list has two scanned scripts matching them. Keep the latest scan (a resit replaces the first sitting), or delete the wrong row in the table below.'
+            : `${result.duplicates.length} students on your class list each have two scanned scripts matching them. Keep each one's latest scan (a resit replaces the first sitting), or delete the wrong rows in the table below.`}
         </p>
         <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
           {result.duplicates.map((d) => (
             <li key={d.studentIdKey}>
-              {d.studentId} — {d.studentName}: {d.records.length} scripts
+              {d.studentId} — {d.studentName}: {d.records.length} scripts{' '}
+              <button className="btn btn-secondary btn-sm" onClick={() => onKeepLatest(d)}>
+                Keep latest scan
+              </button>
             </li>
           ))}
         </ul>
@@ -623,6 +653,7 @@ interface ResultsRowProps {
   // Step 16 — set only for a quiz with no Serial box; see resultsTable.ts.
   noSerial?: { roster: ParsedRoster | null };
   onUpdate: (record: StudentRecord) => void;
+  onDelete: () => void;
 }
 
 // Field-by-field rather than JSON.stringify: `questions` is rebuilt as a
@@ -638,7 +669,9 @@ function isUnchanged(a: StudentRecord, b: StudentRecord): boolean {
   );
 }
 
-function ResultsRow({ record, config, roster, noSerial, onUpdate }: ResultsRowProps) {
+function ResultsRow({ record, config, roster, noSerial, onUpdate, onDelete }: ResultsRowProps) {
+  // Two taps, so a stray one on a phone can't delete a student's marks.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [studentId, setStudentId] = useState(record.studentId ?? '');
   const [serial, setSerial] = useState(record.serial ?? '');
   // Step.md 12.11 — derived from the LIVE (possibly just-edited) studentId
@@ -773,6 +806,26 @@ function ResultsRow({ record, config, roster, noSerial, onUpdate }: ResultsRowPr
           <span className="badge badge-warning" style={{ marginLeft: 6 }}>
             {reason}
           </span>
+        )}
+      </td>
+      <td>
+        {confirmingDelete ? (
+          <span className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
+            <button className="btn btn-danger-solid btn-sm" onClick={onDelete}>
+              Delete row
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={() => setConfirmingDelete(false)}>
+              Keep
+            </button>
+          </span>
+        ) : (
+          <button
+            className="btn btn-quiet btn-sm"
+            onClick={() => setConfirmingDelete(true)}
+            aria-label={`Delete the row for ${record.studentId ?? `serial ${record.serial ?? '—'}`}`}
+          >
+            Delete
+          </button>
         )}
       </td>
     </tr>

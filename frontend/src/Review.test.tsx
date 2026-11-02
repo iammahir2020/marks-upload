@@ -424,14 +424,14 @@ describe('Review — conflict panel goes stale on edit (issues.md #5)', () => {
 
     // Same serial as the saved record, different ID -> warn.
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
-    await vi.waitFor(() => expect(screen.getByText(/conflicts with an existing record/)).toBeInTheDocument());
+    await vi.waitFor(() => expect(screen.getByText(/under a different student ID/)).toBeInTheDocument());
 
     // The instructor realises the serial was misread and fixes it. The
     // conflict no longer applies, so the panel must go and Confirm must
     // come back — previously it stayed, Confirm stayed disabled, and
-    // "Overwrite earlier record" would have written over 'earlier'.
+    // the overwrite button would have written over 'earlier'.
     fireEvent.change(screen.getByDisplayValue('07'), { target: { value: '9' } });
-    expect(screen.queryByText(/conflicts with an existing record/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/under a different student ID/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Confirm & next/ })).not.toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
@@ -441,6 +441,85 @@ describe('Review — conflict panel goes stale on edit (issues.md #5)', () => {
     const records = await getAllRecords();
     expect(records).toHaveLength(2);
     expect(records.find((r) => r.id === 'earlier')?.total).toBe(2);
+  });
+});
+
+// A student who sits the quiz again (a resit) gets a new paper, usually
+// with a new serial. That used to land on "Save anyway" — the only button
+// for a same-ID, different-serial match — and left two rows for one
+// student, which then blocked the class-list export with no way to delete
+// either. The new script must replace the old one instead.
+describe('Review — a resit replaces the earlier record', () => {
+  function earlier(id: string, serial: string | null, total: number) {
+    return {
+      id,
+      assessmentId: 'test-assessment',
+      studentId: '1912345', // okResult's ID
+      serial,
+      questions: [{ q: 1, value: 1 }, { q: 2, value: 1 }],
+      total,
+      confirmed: true,
+      capturedAt: '2026-10-01T00:00:00.000Z',
+    };
+  }
+
+  it('replaces the record with the same ID and a different serial, leaving one row', async () => {
+    await saveRecord(earlier('first-sitting', '3', 2));
+    const onSaved = vi.fn();
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+    expect(await screen.findByText(/already has a saved script in this quiz/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /save anyway/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /replace earlier record/i }));
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+
+    const records = await getAllRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].id).toBe('first-sitting');
+    expect(records[0].serial).toBe('7'); // the new paper's serial, normalized
+    expect(records[0].total).toBe(7); // the new marks
+  });
+
+  it('clears duplicates saved before this fix, keeping only the new script', async () => {
+    await saveRecord(earlier('dup-1', '3', 2));
+    await saveRecord(earlier('dup-2', '4', 3));
+    const onSaved = vi.fn();
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /replace earlier record/i }));
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+
+    const records = await getAllRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].total).toBe(7);
+  });
+
+  it('never replaces a different student who shares the serial', async () => {
+    // Same serial, different ID: someone else's script, likely a misread.
+    await saveRecord({ ...earlier('someone-else', '7', 2), studentId: '1999999' });
+    await saveRecord(earlier('first-sitting', '3', 2));
+    const onSaved = vi.fn();
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={onSaved} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /replace earlier record/i }));
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+
+    const records = await getAllRecords();
+    expect(records.map((r) => r.id).sort()).toEqual(['first-sitting', 'someone-else']);
+    expect(records.find((r) => r.id === 'someone-else')?.total).toBe(2);
+  });
+
+  it('still only warns, with Save anyway, when only the serial matches', async () => {
+    await saveRecord({ ...earlier('someone-else', '7', 2), studentId: '1999999' });
+    render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
+    expect(await screen.findByRole('button', { name: /save anyway/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /replace earlier record/i })).not.toBeInTheDocument();
   });
 });
 
@@ -468,7 +547,7 @@ describe('Review — the identity cross-check is scoped to one assessment (step.
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
 
     await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
-    expect(screen.queryByText(/conflicts with an existing record/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/under a different student ID/)).not.toBeInTheDocument();
   });
 
   it('still raises the conflict against a record in the SAME assessment', async () => {
@@ -488,7 +567,7 @@ describe('Review — the identity cross-check is scoped to one assessment (step.
     render(<Review result={okResult} config={config} assessmentId="test-assessment" onRetake={vi.fn()} onSaved={vi.fn()} />);
 
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
-    await screen.findByText(/conflicts with an existing record/);
+    await screen.findByText(/under a different student ID/);
   });
 });
 
@@ -901,7 +980,7 @@ describe('Review — no Serial box (step 16)', () => {
     expect(saved.serial).toBeNull();
   });
 
-  it('blocks a second scan of the same ID, offering to overwrite it', async () => {
+  it('blocks a second scan of the same ID, offering to replace it', async () => {
     await saveRecord({
       id: 'earlier',
       assessmentId: 'a',
@@ -915,8 +994,8 @@ describe('Review — no Serial box (step 16)', () => {
     const onSaved = vi.fn();
     render(<Review result={noSerialResult} config={noSerialConfig} assessmentId="a" onRetake={vi.fn()} onSaved={onSaved} />);
     fireEvent.click(screen.getByRole('button', { name: /Confirm & next/ }));
-    expect(await screen.findByText(/student ID is already saved/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /overwrite earlier record/i })).toBeInTheDocument();
+    expect(await screen.findByText(/already has a saved script in this quiz/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /replace earlier record/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /save anyway/i })).not.toBeInTheDocument();
     expect(onSaved).not.toHaveBeenCalled();
   });

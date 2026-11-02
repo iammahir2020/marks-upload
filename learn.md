@@ -9061,3 +9061,65 @@ So now **every photo is tried**. "Blurry" is only an explanation: when no
 grid could be found in any orientation, the photo is very soft (under
 0.03), and the light looked fine. A shadow or darkness flattens contrast
 too, and the light is what you can actually fix, so that explanation wins.
+
+## Resits and deleting a row (2026-11-02)
+
+**The problem.** A student who sits a quiz again gets a new paper, and a new
+paper usually has a new serial. The identity cross-check
+(`validateMarks.ts`'s `crossCheck`) sorts a match into one of three kinds:
+
+| Match | Reason | Old buttons |
+|---|---|---|
+| same serial **and** same ID | `duplicate` | Overwrite / Cancel |
+| same serial, different ID | `serial-mismatch` | Save anyway / Cancel |
+| same ID, different serial | `id-mismatch` | Save anyway / Cancel |
+
+A resit is the third row. "Save anyway" added a second record for the same
+student, and with a class list attached, `examSheet.ts` reports that as a
+duplicate and the workbook export refuses to continue. The panel said "fix
+this in the table above", but the Results table had no way to delete a row.
+That left no way out.
+
+**What changed.**
+
+1. `Review.tsx` now offers **Replace earlier record** whenever the conflicts
+   include one with the same student ID (`duplicate` or `id-mismatch`). The
+   new record reuses the first earlier record's id, and any other records
+   with that ID are deleted, so one student always ends up with one row.
+   A `serial-mismatch` (someone *else's* script with the same serial) is
+   never replaced; it still only warns, with "Save anyway":
+
+   ```ts
+   const replaceable = pendingConflict
+     ? pendingConflict.conflicts.filter((c) => c.reason !== 'serial-mismatch').map((c) => c.record)
+     : [];
+   ```
+
+   The crossCheck rules themselves did not change. Only the buttons offered
+   for its result did.
+
+2. `db.ts`'s `replaceRecords(record, replacedIds)` deletes and saves in **one
+   IndexedDB transaction**. Two separate calls could crash between them and
+   leave the duplicate the whole change exists to prevent.
+
+3. `Results.tsx` has a **Delete** button on every row. It takes two taps
+   (Delete, then Delete row) so a stray tap on a phone can't remove a
+   student's marks.
+
+4. The export's duplicate panel has **Keep latest scan** beside each
+   student. It deletes all but the most recent `capturedAt`, which is the
+   same record `buildExamSheet` already picked for that student's row.
+   Any delete rebuilds the open export panel from the remaining records,
+   so the block lifts at once instead of after a Cancel and a re-click.
+
+5. `Scan.tsx`'s "Scanned N" counter now recounts from IndexedDB after a save
+   instead of adding one, because a replace doesn't add a record.
+
+**Makeup exams** need nothing new: a student who missed the quiz is scanned
+into the same assessment later, and the resume confirmation (step 13.14)
+already asks before scanning into a quiz last touched on an earlier day.
+
+Tests: `Review.test.tsx` (a resit with a new serial is replaced, duplicates
+saved before this fix are cleared, a different student sharing the serial
+is never touched) and `Results.test.tsx` (two-tap delete, Keep latest, a
+row delete unblocking an open export). Frontend suite 490 -> 497.
