@@ -255,20 +255,24 @@ no values.
 | **N64** | Low | Backend / data | **`source` has no length cap and accepts any Unicode letter or digit.** `_sanitize_source` uses `str.isalnum`, so `ѕrc-…` (Cyrillic) or full-width characters pass, and nothing bounds the length. Homoglyph sources can mimic a real one in `fetch-crops.sh review`'s listing, which is exactly where the promote decision is made. An over-long one just fails the S3 put (swallowed). Not a traversal. | `harvest.py:53-61`. Fix: ASCII `[A-Za-z0-9_-]{1,64}`; the client sends a UUID. |
 | **N65** | Info | Docs | **A stale comment carries a security argument.** `ratelimit.py`'s docstring says deploy.sh "turns off API Gateway's direct execute-api URL" (N42). It doesn't. The origin secret is what makes `CloudFront-Viewer-Address` trustworthy, and a future reader weighing that trust should see the real reason. | `ratelimit.py:333-334`. |
 
-#### Fixed 2026-10-09 — code-done, NOT yet deployed
+#### Fixed 2026-10-09 — deployed 2026-11-02
 
-All in the working tree, tested. **None of it is live** until `./deploy.sh`
-runs, and **N60 needs two admin steps first** (aws/README.md, "The execution
-role's boundary"); until they're done `deploy.sh backend` stops at the
-execution-role step with the exact command to run.
+Committed in `951ebbd`. The owner applied N60's admin steps in the console
+(boundary policy, boundary on the role, new deploy-policy version), then
+`./deploy.sh backend` ran clean: "permissions boundary in place", both routes
+created, smoke scan 200, direct call without the origin secret 403. Checked
+afterwards through the live CloudFront URL: a scan (200) and a `test-`-tagged
+harvest (200) whose 13 crops landed in S3 under `unverified/test-boundary-check/`
+(Q1 correctly refused as unmatched), and CloudWatch logging both — so the
+boundary leaves logs and the crops `PutObject` working.
 
 | # | Fix | Verified |
 |---|---|---|
 | **N51** | Base image `python:3.12-slim` and the Lambda Web Adapter both pinned **by digest**. The image runs as a non-root `app` user. | The full backend suite inside the image: 441 passed, 2 skipped (Tesseract, absent by design). A real scan on a `--read-only` root as `app`. Both CNN harnesses give **identical** output on 3.11 (laptop) and 3.12 (image): 92.3%/58.6% ID with 1 confidently wrong; 98.3% per-question, 0 confidently wrong. `preflight.sh` now checks Python ≥ 3.12 and non-root. |
 | **N15** | `pytest` and `python-docx` moved to the new `requirements-dev.txt` (which `-r`s `requirements.txt`); the image installs only `requirements.txt`. `httpx`'s pin moved too, but it stays in the image through `google-genai`, which requires it at runtime. | `preflight.sh` checks `pytest`/`docx` are absent from the image. |
-| **N58** | `deploy.sh` adds explicit `POST /api/scan` and `POST /api/harvest` routes with their own throttles: scan 2/s (burst 10, unchanged), **harvest 0.2/s (burst 5)**, anything else 1/s. That bounds harvest PUTs near $4/day, and a harvest flood can no longer starve scans. All rates are overridable (`HARVEST_RATE_LIMIT`, …). | JSON validated. **Not exercised against AWS yet.** |
+| **N58** | `deploy.sh` adds explicit `POST /api/scan` and `POST /api/harvest` routes with their own throttles: scan 2/s (burst 10, unchanged), **harvest 0.2/s (burst 5)**, anything else 1/s. That bounds harvest PUTs near $4/day, and a harvest flood can no longer starve scans. All rates are overridable (`HARVEST_RATE_LIMIT`, …). | Live 2026-11-02: stage shows `POST /api/scan` 2/s burst 10, `POST /api/harvest` 0.2/s burst 5, default 1/s; all three routes target the Lambda integration. |
 | **N59** | Partly: the route split above. A scan flood from one caller can still use up the 2/s; a per-IP WAF rule remains the owner's cost decision. | — |
-| **N60** | `aws/lambda-role-boundary.json` (logs for this function, X-Ray writes, `s3:PutObject` on the crops bucket). `deploy-policy.json` allows `CreateRole`/`PutRolePolicy`/`AttachRolePolicy` only while the role carries that boundary, and `AttachRolePolicy` only for the two managed policies `deploy.sh` uses. `deploy.sh` creates new roles with the boundary and refuses an existing one without it; `preflight.sh` warns. | JSON validated, 4.8 KB (limit 6 KB). **Needs the admin steps.** |
+| **N60** | `aws/lambda-role-boundary.json` (logs for this function, X-Ray writes, `s3:PutObject` on the crops bucket). `deploy-policy.json` allows `CreateRole`/`PutRolePolicy`/`AttachRolePolicy` only while the role carries that boundary, and `AttachRolePolicy` only for the two managed policies `deploy.sh` uses. `deploy.sh` creates new roles with the boundary and refuses an existing one without it; `preflight.sh` warns. | Applied 2026-11-02 (console). `preflight.sh`'s IAM probes all pass under the new policy; deploy and a live harvest confirm nothing the function does was cut off. |
 | **N55** | `deploy.sh` puts a deny-non-TLS bucket policy on the crops bucket every deploy. | JSON validated. |
 | **N53** | `workbookLimits.ts`: a 5 MB file cap, plus the zip directory's declared unpacked total capped at 50 MB, checked before ExcelJS unzips anything. ZIP64 is refused. | 7 tests (a declared-4 GB bomb, many medium parts, ZIP64, garbage, over-cap). The real CSE211L marksheet passes. Residual: a zip that lies about its sizes is bounded only by deflate's ~1032:1 ratio. |
 | **N56** | `BodyCapMiddleware` counts body bytes as they arrive and answers 413, with CORS headers, once they pass the cap, even with no Content-Length. | 3 tests using a real chunked request. |

@@ -349,10 +349,12 @@ identical output on 3.11 and 3.12. **Install with `pip install -r
 requirements-dev.txt` on a laptop**: `requirements.txt` is what the image
 installs, so pytest and python-docx live in the dev file (N15).
 
-**Before the next `./deploy.sh backend`**: the execution role needs its
-permissions boundary from an admin profile (aws/README.md, "The execution
-role's boundary", issues.md N60). Without it `deploy.sh` stops at the role
-step, by design, and prints the command.
+**The execution role carries a permissions boundary** (issues.md N60, applied
+by the owner in the console 2026-11-02). `deploy.sh` refuses a role without
+it, and the deploy user cannot create, change or remove it — a new action the
+backend needs (another AWS service, another bucket) must be added to
+`aws/lambda-role-boundary.json` AND to the live boundary policy by an admin,
+or it is silently denied.
 
 **Tesseract only matters on the `remote` path now** (step 3r.6e made the CNN
 the default, and it uses neither Tesseract nor Gemini). The note below still
