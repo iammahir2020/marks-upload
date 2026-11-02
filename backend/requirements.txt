@@ -8,10 +8,10 @@ fastapi==0.141.1
 uvicorn[standard]==0.52.4
 python-multipart==0.0.32
 pydantic==2.13.4
-pytest==9.1.1
-httpx==0.28.1
-python-docx==1.2.0  # step 0's marks-grid-template.docx row-height fix, and
-                      # step 3r.6a's collection-sheet generator
+# pytest and python-docx moved to requirements-dev.txt (issues.md N15):
+# nothing under app/ imports them, and this file is what the production
+# image installs. httpx's pin moved with them (the test client needs it),
+# though the image still gets httpx through google-genai, which requires it.
 
 # The local CNN recognizer is the default path as of 2026-08-30 (step 3r.6e),
 # so its *inference* dependencies belong here rather than in

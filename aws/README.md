@@ -174,3 +174,45 @@ which gets only:
 That asymmetry is deliberate: the function appends harvested crops and
 never needs to read them back, so a compromised function cannot be used to
 download what it has already collected.
+
+### The execution role's boundary (issues.md N60)
+
+Without a boundary, the deploy keys were effectively **account admin**:
+`iam:AttachRolePolicy` on this role had no condition, so they could attach
+`AdministratorAccess` to it and then `lambda:UpdateFunctionCode` an image
+that uses it. Now:
+
+- `lambda-role-boundary.json` is a **permissions boundary** on the role:
+  its own log group, X-Ray writes, `s3:PutObject` on the crops bucket, and
+  nothing else, whatever gets attached to the role later.
+- `deploy-policy.json` lets the deploy user create or write to the role
+  **only while it carries that boundary**, and attach only the two managed
+  policies `deploy.sh` uses. The user has no `iam:CreatePolicy`,
+  `CreatePolicyVersion`, `PutRolePermissionsBoundary` or
+  `DeleteRolePermissionsBoundary`, so it cannot loosen or remove the
+  boundary itself.
+
+Apply it once from an **admin profile**, **in this order**. If the deploy
+policy is updated first, every deploy stops until the boundary is on the
+role (`deploy.sh` says so and exits; nothing breaks in production):
+
+```bash
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+
+# 1. The boundary policy itself
+sed "s/ACCOUNT_ID/$ACCOUNT_ID/g" aws/lambda-role-boundary.json > /tmp/marks-boundary.json
+aws iam create-policy --policy-name marks-scanner-lambda-boundary \
+  --policy-document file:///tmp/marks-boundary.json
+
+# 2. Put it on the existing role
+aws iam put-role-permissions-boundary --role-name marks-scanner-lambda-role \
+  --permissions-boundary "arn:aws:iam::$ACCOUNT_ID:policy/marks-scanner-lambda-boundary"
+
+# 3. Only now, the tightened deploy policy ("Updating the policy later" above)
+```
+
+Then check that nothing the function does was cut off: run
+`AWS_PROFILE=marks-scanner ./deploy.sh backend`, whose smoke test does a real
+scan, and confirm a fresh line appears in the function's CloudWatch log
+group. If logging or tracing ever stops after this, the boundary is the
+first suspect: an action missing from it is denied silently.

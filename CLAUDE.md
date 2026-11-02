@@ -340,8 +340,19 @@ defaults to revisit casually.
 | Database | none | |
 | Tests | `pytest` (backend), `vitest` (frontend), Playwright (frontend, real browser) | Playwright added 2026-09-25 (step 16): `frontend/e2e/`, for what jsdom can't do — layout, the camera flow |
 
-Local toolchain: Python 3.10.12, Node 20.20.2, npm 10.8.2. Nothing is pinned
-yet — `requirements.txt` gets written at step 0.2.
+Local toolchain: Python 3.10.12, Node 20.20.2, npm 10.8.2 on the original
+Ubuntu machine; the Windows laptop's venv is Python **3.11.1** (checked
+2026-10-09). **The deployed image is Python 3.12** (issues.md N51,
+2026-10-09), pinned by digest in `backend/Dockerfile`, as a non-root `app`
+user — 3.10 reached end of life in October 2026. Both CNN harnesses give
+identical output on 3.11 and 3.12. **Install with `pip install -r
+requirements-dev.txt` on a laptop**: `requirements.txt` is what the image
+installs, so pytest and python-docx live in the dev file (N15).
+
+**Before the next `./deploy.sh backend`**: the execution role needs its
+permissions boundary from an admin profile (aws/README.md, "The execution
+role's boundary", issues.md N60). Without it `deploy.sh` stops at the role
+step, by design, and prints the command.
 
 **Tesseract only matters on the `remote` path now** (step 3r.6e made the CNN
 the default, and it uses neither Tesseract nor Gemini). The note below still

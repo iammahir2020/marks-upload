@@ -165,6 +165,22 @@ deploy_backend() {
       "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
   }
 
+  # issues.md N55 — refuse every request that isn't over TLS. Re-applied on
+  # every deploy because it is idempotent and the deploy user already holds
+  # s3:PutBucketPolicy on this bucket. Deny-only: it grants nothing, and the
+  # Lambda's own write (boto3, always HTTPS) is unaffected.
+  aws s3api put-bucket-policy --bucket "$CROPS_BUCKET" --policy "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [{
+      \"Sid\": \"DenyInsecureTransport\",
+      \"Effect\": \"Deny\",
+      \"Principal\": \"*\",
+      \"Action\": \"s3:*\",
+      \"Resource\": [\"arn:aws:s3:::$CROPS_BUCKET\", \"arn:aws:s3:::$CROPS_BUCKET/*\"],
+      \"Condition\": {\"Bool\": {\"aws:SecureTransport\": \"false\"}}
+    }]}"
+  echo "    crops bucket refuses non-TLS access (N55)"
+
   # Crops retention (issues.md N8) is deliberately NOT set here.
   #
   # It is one-time bucket configuration, not per-deploy state — the same
@@ -182,14 +198,33 @@ deploy_backend() {
   # retention to the instructor.
 
   say "Execution role"
+  # issues.md N60 — the role carries a permissions boundary
+  # (aws/lambda-role-boundary.json), and the deploy policy only lets this
+  # user write to the role while it does. Without it, AttachRolePolicy +
+  # UpdateFunctionCode made these keys account admin: attach
+  # AdministratorAccess, push an image that uses it. The boundary policy is
+  # created by an admin, once (aws/README.md); this user cannot create,
+  # change or remove it.
+  local boundary_arn="arn:aws:iam::$ACCOUNT:policy/$PROJECT-lambda-boundary"
   if ! have aws iam get-role --role-name "$ROLE_NAME"; then
-    aws iam create-role --role-name "$ROLE_NAME" --assume-role-policy-document '{
+    aws iam create-role --role-name "$ROLE_NAME" --permissions-boundary "$boundary_arn" \
+      --assume-role-policy-document '{
       "Version":"2012-10-17",
       "Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},
                     "Action":"sts:AssumeRole"}]}' >/dev/null
     aws iam attach-role-policy --role-name "$ROLE_NAME" \
       --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
   fi
+  local current_boundary
+  current_boundary="$(aws iam get-role --role-name "$ROLE_NAME" \
+    --query 'Role.PermissionsBoundary.PermissionsBoundaryArn' --output text 2>/dev/null || true)"
+  if [ "$current_boundary" != "$boundary_arn" ]; then
+    echo "    ✗ $ROLE_NAME has no permissions boundary (issues.md N60)." >&2
+    echo "      From an ADMIN profile, once — see aws/README.md, \"The execution role's boundary\":" >&2
+    echo "        aws iam put-role-permissions-boundary --role-name $ROLE_NAME --permissions-boundary $boundary_arn" >&2
+    exit 1
+  fi
+  echo "    permissions boundary in place"
   # Step 11.8 — lets the function write its own trace segments/subsegments
   # to X-Ray. An AWS-managed policy rather than a hand-written inline one:
   # unlike the crops bucket, there is no single ARN to scope this to (an
@@ -320,10 +355,42 @@ deploy_backend() {
   # instructor (a scan plus a harvest per script), so 2/s covers a dozen or
   # more grading at once. Above it API Gateway answers 429 without ever
   # invoking — or billing — the function.
+  #
+  # issues.md N58 — /api/harvest gets its OWN, much lower limit. One harvest
+  # request can mean up to 47 billed S3 PUTs (15 ID digits, a serial, 30
+  # questions, a total), so under the shared 2/s a scripted caller could run
+  # up ~$40/day in PUTs alone. Harvest is best-effort by design — a 429
+  # there costs a few training crops, never a mark — so it can be throttled
+  # hard: at the 0.2/s default the PUT bill is bounded near $4/day, while a
+  # grading instructor confirms roughly one script every 10-20 s. Scans keep
+  # their own 2/s, so a harvest flood can no longer starve them.
+  #
+  # Route settings need real routes: `create-api --target` made only the
+  # `$default` catch-all. These two are added pointing at the same
+  # integration, and the auto-deployed $default stage picks them up.
+  # Whether the stage default is one bucket or one per route isn't stated
+  # in AWS's docs, so every real route carries an explicit limit and the
+  # catch-all (anything else under /api/*, which the app answers 404) a
+  # small one — the ceiling is bounded under either reading.
+  local integration_id
+  integration_id="$(aws apigatewayv2 get-integrations --api-id "$API_ID" --region "$REGION" \
+    --query 'Items[0].IntegrationId' --output text)"
+  local route_key
+  for route_key in "POST /api/scan" "POST /api/harvest"; do
+    if [ -z "$(aws apigatewayv2 get-routes --api-id "$API_ID" --region "$REGION" \
+        --query "Items[?RouteKey=='$route_key'].RouteId | [0]" --output text | grep -v '^None$' || true)" ]; then
+      aws apigatewayv2 create-route --api-id "$API_ID" --region "$REGION" \
+        --route-key "$route_key" --target "integrations/$integration_id" >/dev/null
+      echo "    created route $route_key"
+    fi
+  done
+  local scan_rate="${API_RATE_LIMIT:-2}" scan_burst="${API_BURST_LIMIT:-10}"
+  local harvest_rate="${HARVEST_RATE_LIMIT:-0.2}" harvest_burst="${HARVEST_BURST_LIMIT:-5}"
   aws apigatewayv2 update-stage --api-id "$API_ID" --stage-name '$default' --region "$REGION" \
-    --default-route-settings "ThrottlingBurstLimit=${API_BURST_LIMIT:-10},ThrottlingRateLimit=${API_RATE_LIMIT:-2}" \
+    --default-route-settings "ThrottlingBurstLimit=${OTHER_BURST_LIMIT:-5},ThrottlingRateLimit=${OTHER_RATE_LIMIT:-1}" \
+    --route-settings "{\"POST /api/scan\":{\"ThrottlingBurstLimit\":$scan_burst,\"ThrottlingRateLimit\":$scan_rate},\"POST /api/harvest\":{\"ThrottlingBurstLimit\":$harvest_burst,\"ThrottlingRateLimit\":$harvest_rate}}" \
     >/dev/null
-  echo "    API Gateway: ${API_RATE_LIMIT:-2} requests/s, bursts of ${API_BURST_LIMIT:-10}"
+  echo "    API Gateway: scans ${scan_rate}/s (bursts of ${scan_burst}), harvests ${harvest_rate}/s (bursts of ${harvest_burst}), anything else ${OTHER_RATE_LIMIT:-1}/s"
   # How many scans may run at once, which bounds compute cost directly.
   # Needs lambda:PutFunctionConcurrency (added to aws/deploy-policy.json
   # 2026-09-25); applying that policy takes an admin profile, so a denial is

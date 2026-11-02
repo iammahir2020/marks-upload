@@ -457,7 +457,7 @@ does not add itself to PATH by default, so `app/id_ocr.py` looks in
 # Backend
 cd backend
 python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # the app, plus pytest/httpx/python-docx
 cp .env.example .env        # only needed for RECOGNIZER=remote — fill in GEMINI_API_KEY
 python gen_dev_cert.py      # self-signed HTTPS cert; re-run if the LAN IP changes
 
@@ -470,7 +470,7 @@ cd frontend && npm install
 cd backend
 py -m venv venv
 .\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # the app, plus pytest/httpx/python-docx
 copy .env.example .env      # only needed for RECOGNIZER=remote
 python gen_dev_cert.py      # finds openssl inside Git for Windows automatically
 

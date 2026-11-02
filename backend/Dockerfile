@@ -14,18 +14,29 @@
 # keeps it out) and any `apt install`. The no-apt property is earned by step
 # 3r.6e's CNN default: the remote path needed the Tesseract binary, the
 # default path needs nothing outside pip.
-FROM public.ecr.aws/docker/library/python:3.10-slim
+#
+# Python 3.12, pinned by digest (issues.md N51). 3.10 reached end of life in
+# October 2026, so its base image stops getting security fixes; 3.12 is
+# supported until October 2028 and every pinned wheel in requirements.txt
+# ships for it. The digest, not the tag, is what is pulled: a tag can be
+# re-pointed at different bytes, a digest cannot. To move to a newer patch
+# release, look the digest up and change it here deliberately:
+#   docker buildx imagetools inspect public.ecr.aws/docker/library/python:3.12-slim
+FROM public.ecr.aws/docker/library/python:3.12-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f
 
 # The adapter runs as a Lambda extension: it starts, waits for the web
 # server below to accept connections, then translates Lambda invocations
 # into ordinary HTTP requests against it. On a laptop it simply isn't
 # activated, so the same image runs under plain `docker run`.
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 /lambda-adapter /opt/extensions/lambda-adapter
+# Pinned by digest for the same reason as the base image.
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1@sha256:46d6625e68cbbdd2efab4a20245977664513f13ffef47915b000d431adcea0b4 /lambda-adapter /opt/extensions/lambda-adapter
 
 WORKDIR /var/task
 
 # Dependencies first, as their own layer — they change far less often than
 # the application code, so an app edit rebuilds in seconds.
+# requirements.txt, not requirements-dev.txt: no test runner or test client
+# in the image that serves the public URL (issues.md N15).
 COPY requirements.txt requirements-deploy.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-deploy.txt
 
@@ -56,5 +67,12 @@ EXPOSE 8000
 # should behave identically to the laptop app unless told otherwise, and
 # `docker run --read-only` is exactly how that mistake gets caught before
 # it reaches CloudWatch.
+
+# Not root (issues.md N51). Lambda runs the image as its own unprivileged
+# user whatever this says, so this is for every OTHER place the image runs:
+# preflight.sh, local-stack.sh, a plain `docker run`. The app writes nothing
+# outside /tmp (see above), so it needs no write access to /var/task.
+RUN useradd --system --no-create-home --shell /usr/sbin/nologin app
+USER app
 
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]

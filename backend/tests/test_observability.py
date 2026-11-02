@@ -186,6 +186,23 @@ def test_the_deploy_smoke_test_is_marked_so_the_dashboard_can_leave_it_out(clien
     assert "origin" not in _scan_events(capsys)[0]
 
 
+def test_a_viewer_naming_their_quiz_smoke_is_not_hidden_from_the_dashboard(client, capsys):
+    """issues.md N63. The dashboard's real-scan table leaves smoke tests out,
+    so the quiz name alone let anyone opt their traffic out of it. Everything
+    a viewer sends arrives through CloudFront, which adds
+    CloudFront-Viewer-Address; deploy.sh's smoke test calls API Gateway
+    directly and has none."""
+    photo = TESTSET / "images" / "filled_file.jpeg"
+    if not photo.exists():
+        pytest.skip("filled_file.jpeg not present")
+    smoke = dict(CONFIG, quizName="smoke")
+    with open(photo, "rb") as f:
+        client.post("/api/scan", files={"image": (photo.name, f, "image/jpeg")},
+                    data={"config": json.dumps(smoke)},
+                    headers={"cloudfront-viewer-address": "203.0.113.9:443"})
+    assert "origin" not in _scan_events(capsys)[0]
+
+
 def test_a_failed_dark_scan_logs_its_lighting_label(client, capsys):
     import cv2
     import numpy as np

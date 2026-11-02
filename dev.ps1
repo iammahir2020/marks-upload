@@ -57,7 +57,7 @@ Set-Location -LiteralPath $PSScriptRoot
 
 $venvPython = Join-Path $PSScriptRoot 'backend\venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $venvPython)) {
-    Write-Error "No backend venv at $venvPython. Create one first:`n  py -m venv backend\venv`n  backend\venv\Scripts\python.exe -m pip install -r backend\requirements.txt"
+    Write-Error "No backend venv at $venvPython. Create one first:`n  py -m venv backend\venv`n  backend\venv\Scripts\python.exe -m pip install -r backend\requirements-dev.txt"
 }
 if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'frontend\node_modules'))) {
     Write-Error "frontend\node_modules is missing. Run:`n  cd frontend; npm install"

@@ -108,9 +108,27 @@ def test_the_source_port_is_dropped_so_new_connections_share_a_bucket():
     assert client_ip(a, "cloudfront") == client_ip(b, "cloudfront")
 
 
-def test_an_ipv6_viewer_address_is_parsed():
+def test_an_ipv6_viewer_address_is_keyed_on_its_64():
     req = _request({"cloudfront-viewer-address": "2001:db8::1:46532"})
-    assert client_ip(req, "cloudfront") == "2001:db8::1"
+    assert client_ip(req, "cloudfront") == "2001:db8::/64"
+
+
+def test_rotating_addresses_inside_one_ipv6_64_shares_one_bucket():
+    """issues.md N61. One connection is routinely given a whole /64; keyed on
+    the full address, every one of its 2^64 addresses was a fresh budget."""
+    a = _request({"cloudfront-viewer-address": "2001:db8:1:2::1:443"})
+    b = _request({"cloudfront-viewer-address": "2001:db8:1:2:ffff:ee:dd:cc:443"})
+    other = _request({"cloudfront-viewer-address": "2001:db8:1:3::1:443"})
+    assert client_ip(a, "cloudfront") == client_ip(b, "cloudfront")
+    assert client_ip(a, "cloudfront") != client_ip(other, "cloudfront")
+
+
+def test_an_ipv4_mapped_ipv6_address_is_keyed_as_its_ipv4():
+    """Otherwise every IPv4 viewer written in mapped form would share one /64."""
+    a = _request({"cloudfront-viewer-address": "::ffff:198.51.100.10:443"})
+    b = _request({"cloudfront-viewer-address": "::ffff:198.51.100.11:443"})
+    assert client_ip(a, "cloudfront") == "198.51.100.10"
+    assert client_ip(a, "cloudfront") != client_ip(b, "cloudfront")
 
 
 def test_a_missing_or_malformed_viewer_address_falls_back_to_the_socket():
@@ -240,6 +258,54 @@ def test_an_oversized_upload_is_refused_with_413(client, monkeypatch):
     monkeypatch.setattr(config_module, "MAX_UPLOAD_BYTES", 1024)
     resp = _scan(client, image=b"x" * 4096)
     assert resp.status_code == 413
+
+
+def _chunked_multipart(image: bytes, chunk: int = 512):
+    """A multipart body sent with Transfer-Encoding: chunked, so it carries
+    no Content-Length for `guard` to check."""
+    boundary = "capboundary"
+    body = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"config\"\r\n\r\n"
+        f"{json.dumps(CONFIG)}\r\n"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"c.jpg\"\r\n"
+        f"Content-Type: image/jpeg\r\n\r\n"
+    ).encode() + image + f"\r\n--{boundary}--\r\n".encode()
+
+    def stream():
+        for i in range(0, len(body), chunk):
+            yield body[i:i + chunk]
+
+    return stream(), {"content-type": f"multipart/form-data; boundary={boundary}",
+                      "cloudfront-viewer-address": "203.0.113.9:443"}
+
+
+def test_a_chunked_upload_with_no_content_length_is_still_capped(client, monkeypatch):
+    """issues.md N56. Content-Length is the only thing `guard` can check
+    before reading, and a chunked upload doesn't send one — it used to be
+    parsed in full first. The cap now counts bytes as they arrive."""
+    monkeypatch.setattr(config_module, "MAX_UPLOAD_BYTES", 1024)
+    content, headers = _chunked_multipart(b"x" * 8192)
+    resp = client.post("/api/scan", content=content, headers=headers)
+    assert "content-length" not in {k.lower() for k in resp.request.headers}
+    assert resp.status_code == 413
+    assert resp.json() == {"detail": "Image too large."}
+
+
+def test_a_chunked_upload_under_the_cap_still_scans(client):
+    content, headers = _chunked_multipart(TINY_JPEG)
+    resp = client.post("/api/scan", content=content, headers=headers)
+    assert resp.status_code == 200
+
+
+def test_a_chunked_413_still_carries_cors_headers(client, monkeypatch):
+    """Same rule as a 429: without CORS headers the browser reports an
+    opaque failure instead of the real status."""
+    monkeypatch.setattr(config_module, "MAX_UPLOAD_BYTES", 1024)
+    content, headers = _chunked_multipart(b"x" * 8192)
+    resp = client.post("/api/scan", content=content,
+                       headers={**headers, "origin": "http://localhost:5173"})
+    assert resp.status_code == 413
+    assert resp.headers.get("access-control-allow-origin") == "http://localhost:5173"
 
 
 def test_a_real_capture_is_comfortably_under_the_default_cap():

@@ -324,6 +324,32 @@ def test_a_hostile_source_cannot_escape_the_harvest_root(tmp_path):
     assert key.startswith("etcpasswd/id_digits/")
 
 
+def test_a_lookalike_unicode_source_cannot_pass_for_a_real_one(tmp_path):
+    """issues.md N64. A Cyrillic "ѕ" or full-width digits used to survive
+    sanitising (`str.isalnum` is Unicode-aware), so a forged source could
+    look identical to a real one in `fetch-crops.sh review`'s listing."""
+    store = FakeStore()
+    _harvest_one_id_digit(tmp_path, "ѕrc-１２３abc", store)
+    key = store.puts[0][0]
+    assert key.isascii()
+    assert key.startswith("rc-abc/id_digits/")
+
+
+def test_an_overlong_source_is_cut_to_a_usable_key(tmp_path):
+    """A browser sends a 36-char UUID; nothing else needs more than 64, and
+    an unbounded one could push an S3 key past its 1024-byte limit."""
+    store = FakeStore()
+    _harvest_one_id_digit(tmp_path, "a" * 5000, store)
+    assert store.puts[0][0].split("/")[0] == "a" * 64
+
+
+def test_a_real_browser_source_id_is_kept_exactly(tmp_path):
+    store = FakeStore()
+    uuid = "3f2b8c1e-9a4d-4e7b-8c2a-1d5e6f7a8b9c"
+    _harvest_one_id_digit(tmp_path, uuid, store)
+    assert store.puts[0][0].startswith(f"{uuid}/id_digits/")
+
+
 def test_every_crop_in_one_request_shares_the_source_but_not_the_name(tmp_path):
     """The source tag is per-faculty by design. It must NOT become a
     per-scan handle that regroups one student's digits — that would undo

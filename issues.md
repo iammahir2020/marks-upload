@@ -74,8 +74,12 @@ Where a finding was proven by execution it says so.
 **Audit 4 (2026-09-24)**: a pre-sharing security audit of the whole
 system (frontend, backend, infrastructure and the live AWS deployment),
 done before the app is handed to other faculty. Its findings, **N38–N57**,
-are in their own section directly below, all **open**. Nothing has been
-fixed yet, by request.
+are in their own section directly below; most were fixed 2026-09-25.
+
+**Audit 5 (2026-10-09)**: a whole-project security audit covering
+everything changed since audit 4, plus a fresh read of the public surface.
+Findings **N58–N65**, all open, are under "Audit 5" inside audit 4's
+section. Nothing was fixed in that pass.
 
 ---
 
@@ -216,6 +220,91 @@ These are recorded so that "not listed" isn't mistaken for "not checked":
 - **Lambda endpoints:** no Function URL exists.
 - **Cross-user isolation:** no server-side store of marks, so there's
   nothing to read across users.
+
+### Audit 5 — whole-project security audit (2026-10-09)
+
+**Scope.** Everything changed since audit 4 (the 2026-09-25 security pass,
+step 16's layout B, step 17's partial scans/half marks, step 18's lighting,
+the dashboard), plus a fresh read of the public attack surface: `main.py`,
+`imagecheck.py`, `ratelimit.py`, `harvest.py`, `stores.py`,
+`observability.py`, `models.py`, `config.py`, the Dockerfile and
+requirements, `deploy.sh`, `fetch-crops.sh`, `aws/*.py`,
+`aws/deploy-policy.json`, the frontend's sinks, CSP builder and Vite server
+config. Tools: `pip-audit` (clean), `npm audit`, a secrets grep over every
+commit since audit 4 (clean), `git check-ignore` on the new local-only
+paths (all ignored, including the real class marksheet in the repo root),
+and **read-only** probes of the live site (headers, docs URLs, AAAA record,
+TLS 1.0). No scan or harvest was sent to production.
+
+**Audit 4's fixes hold.** Verified in code and live: the JPEG/PNG and
+pixel-count gate runs before OpenCV on both endpoints (N39/N47);
+`X-Forwarded-For` is never read (N41); `/api/*` without the origin secret is
+refused first, `/docs` and `/openapi.json` 404 live (N42); all six security
+headers are live and the build CSP has no `unsafe-inline` or outside host
+(N43); N1's allowlist plus the store-root assertion are intact; logs carry
+no values.
+
+| # | Sev | Area | Finding | Evidence / fix |
+|---|---|---|---|---|
+| **N58** | **Med** | Cost | **Throttled, but not capped: sustained abuse costs roughly $20–50/day, and the budget only sends an email.** `/api/harvest` needs no secret beyond what CloudFront adds, accepts the repo's own public `testset/images/filled_file.jpeg`, and turns one request into up to 15+1+30+1 = **47 S3 PUTs** (a crafted 15-digit/30-question grid) or 14 with the testset photo. The content-hash key dedupes storage, but every PUT is billed. At the 2 req/s stage ceiling: 172,800 req/day × 47 ≈ 8.1M PUTs ≈ **$40/day** at $0.005/1k, plus ~3 GB-s per request of Lambda (≈ $8–11/day once the free tier is gone). With the testset photo, about $12/day in PUTs. The `marks-scanner-guard` budget alerts and does nothing else. | Code: `harvest.py:233-269`, `deploy.sh:323`. Fix options, cheapest first: a **route-level** throttle on `POST /api/harvest` far below scan's (e.g. 0.2 req/s; harvest is best-effort); a budget action or alarm that sets `HARVEST_ENABLED=false`; `MEMORY_MB` 2048 → measured need. |
+| **N59** | **Med** | Availability | **One caller can lock every faculty member out.** API Gateway's 2 req/s (burst 10) is one bucket shared by everyone, and it is spent *before* the Lambda's per-IP limit or origin check runs. A single `curl` loop, even straight at the execute-api URL with no secret (which the Lambda then 403s), uses the whole budget, and every real scan gets 429 mid-class. N38's cost fix traded cost for availability, and that trade was never written down. | `deploy.sh:323-325`, `main.py:125`. Fix: a CloudFront WAF rate-based rule per IP (~$6–8/month), or at least split route throttles so a harvest flood can't starve `/api/scan`. Otherwise record it as accepted. |
+| **N60** | **Med** | IAM | **The deploy keys are effectively account admin.** N50 says leaked keys "can replace the live backend". It's worse: `iam:AttachRolePolicy` and `iam:PutRolePolicy` on `marks-scanner-lambda-role` have **no condition**, so the deploy user can attach `arn:aws:iam::aws:policy/AdministratorAccess` to that role, then `lambda:UpdateFunctionCode` an image that uses it. That's the whole account. | `aws/deploy-policy.json:63-75`. Fix: an admin sets a **permissions boundary** on the role (S3 PutObject on the crops bucket + logs + X-Ray). Then add an `iam:PolicyARN` condition limiting `AttachRolePolicy` to the two managed policies `deploy.sh` actually attaches. Or drop both IAM writes from the steady-state user, since the role already exists. |
+| **N61** | Low | Backend | **The per-IP limit is per IPv6 address, not per /64.** The distribution serves IPv6 (live AAAA record), and `_viewer_address` keys on the full /128. Any IPv6 client gets ~2⁶⁴ buckets. The global stage throttle still caps the total, so this only removes the per-IP layer. | `ratelimit.py:351-359`. Fix: key IPv6 on its /64 network. |
+| **N62** | Low | Frontend deps | **New `npm audit` high: `brace-expansion`** (GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p, GHSA-q2hr-2g5m-vwhr), via exceljs → archiver → readdir-glob and workbox-build. Not reachable with user input: the glob patterns are library and build constants. | `npm audit --omit=dev`: 3 (1 high, 2 moderate, the other being N52). Fix: `npm audit fix` (non-breaking). Not `--force`, which downgrades exceljs. |
+| **N63** | Low | Monitoring | **Any caller can hide from the dashboard by naming their quiz `smoke`.** `_log_scan` tags `quizName == "smoke"` as `origin: smoke`, and the dashboard's real-scan table excludes it. Abuse traffic can opt itself out of the one view that would show it. Overlaps N49. | `main.py:193`, `deploy.sh:836`. Fix: mark smoke tests with something only `deploy.sh` holds, or show smoke traffic separately rather than dropping it. |
+| **N64** | Low | Backend / data | **`source` has no length cap and accepts any Unicode letter or digit.** `_sanitize_source` uses `str.isalnum`, so `ѕrc-…` (Cyrillic) or full-width characters pass, and nothing bounds the length. Homoglyph sources can mimic a real one in `fetch-crops.sh review`'s listing, which is exactly where the promote decision is made. An over-long one just fails the S3 put (swallowed). Not a traversal. | `harvest.py:53-61`. Fix: ASCII `[A-Za-z0-9_-]{1,64}`; the client sends a UUID. |
+| **N65** | Info | Docs | **A stale comment carries a security argument.** `ratelimit.py`'s docstring says deploy.sh "turns off API Gateway's direct execute-api URL" (N42). It doesn't. The origin secret is what makes `CloudFront-Viewer-Address` trustworthy, and a future reader weighing that trust should see the real reason. | `ratelimit.py:333-334`. |
+
+#### Fixed 2026-10-09 — code-done, NOT yet deployed
+
+All in the working tree, tested. **None of it is live** until `./deploy.sh`
+runs, and **N60 needs two admin steps first** (aws/README.md, "The execution
+role's boundary"); until they're done `deploy.sh backend` stops at the
+execution-role step with the exact command to run.
+
+| # | Fix | Verified |
+|---|---|---|
+| **N51** | Base image `python:3.12-slim` and the Lambda Web Adapter both pinned **by digest**. The image runs as a non-root `app` user. | The full backend suite inside the image: 441 passed, 2 skipped (Tesseract, absent by design). A real scan on a `--read-only` root as `app`. Both CNN harnesses give **identical** output on 3.11 (laptop) and 3.12 (image): 92.3%/58.6% ID with 1 confidently wrong; 98.3% per-question, 0 confidently wrong. `preflight.sh` now checks Python ≥ 3.12 and non-root. |
+| **N15** | `pytest` and `python-docx` moved to the new `requirements-dev.txt` (which `-r`s `requirements.txt`); the image installs only `requirements.txt`. `httpx`'s pin moved too, but it stays in the image through `google-genai`, which requires it at runtime. | `preflight.sh` checks `pytest`/`docx` are absent from the image. |
+| **N58** | `deploy.sh` adds explicit `POST /api/scan` and `POST /api/harvest` routes with their own throttles: scan 2/s (burst 10, unchanged), **harvest 0.2/s (burst 5)**, anything else 1/s. That bounds harvest PUTs near $4/day, and a harvest flood can no longer starve scans. All rates are overridable (`HARVEST_RATE_LIMIT`, …). | JSON validated. **Not exercised against AWS yet.** |
+| **N59** | Partly: the route split above. A scan flood from one caller can still use up the 2/s; a per-IP WAF rule remains the owner's cost decision. | — |
+| **N60** | `aws/lambda-role-boundary.json` (logs for this function, X-Ray writes, `s3:PutObject` on the crops bucket). `deploy-policy.json` allows `CreateRole`/`PutRolePolicy`/`AttachRolePolicy` only while the role carries that boundary, and `AttachRolePolicy` only for the two managed policies `deploy.sh` uses. `deploy.sh` creates new roles with the boundary and refuses an existing one without it; `preflight.sh` warns. | JSON validated, 4.8 KB (limit 6 KB). **Needs the admin steps.** |
+| **N55** | `deploy.sh` puts a deny-non-TLS bucket policy on the crops bucket every deploy. | JSON validated. |
+| **N53** | `workbookLimits.ts`: a 5 MB file cap, plus the zip directory's declared unpacked total capped at 50 MB, checked before ExcelJS unzips anything. ZIP64 is refused. | 7 tests (a declared-4 GB bomb, many medium parts, ZIP64, garbage, over-cap). The real CSE211L marksheet passes. Residual: a zip that lies about its sizes is bounded only by deflate's ~1032:1 ratio. |
+| **N56** | `BodyCapMiddleware` counts body bytes as they arrive and answers 413, with CORS headers, once they pass the cap, even with no Content-Length. | 3 tests using a real chunked request. |
+| **N57** | The trace header is copied into `os.environ` only if it matches X-Ray's `Root=1-…` shape. | 9 tests. |
+| **N61** | IPv6 viewers are keyed on their /64; IPv4-mapped addresses on the IPv4. | 3 tests. |
+| **N62** | `npm audit fix` (lockfile only): the high `brace-expansion` advisory is gone; N52's moderate `uuid` one remains. | Vitest, build, both Playwright suites. |
+| **N63** | `origin: smoke` only when the quiz is named `smoke` **and** there is no `CloudFront-Viewer-Address`, i.e. only `deploy.sh`'s direct, secret-bearing call. | 1 test. |
+| **N64** | `source` is ASCII `[A-Za-z0-9_-]` only, cut at 64 characters. | 3 tests. |
+| **N65** | Comment corrected: the origin secret, not a disabled URL, is what makes the viewer-address header trustworthy. | — |
+
+Suites after: backend 443 (laptop, 3.11), frontend 490 + 3 skipped, Playwright
+11 + 3 (prod CSP). Also found: the laptop venv is Python **3.11.1**, not the
+3.10 CLAUDE.md records.
+
+**Changed since audit 4.** **N51** is now due rather than upcoming: Python
+3.10 reaches end of life this month (October 2026), and the base image is
+still `python:3.10-slim` by mutable tag. **N48** re-verified live: a TLS
+1.0-only handshake still gets 200.
+
+**Re-confirmed still open:** N46, N48, N49, N50 (now read with N60), N51,
+N52, N53 (`SectionForm.tsx:136` still has no size check), N54, N55, N56,
+N57.
+
+**Residual, not tested:** a progressive JPEG with very many scans can cost
+far more CPU to decode than its pixel count suggests, and the N39 gate
+checks only dimensions. This is bounded by the 60 s timeout and the
+throttle, and was not attempted. The origin secret has never been rotated,
+and `deploy.sh`'s smoke test passes it on the `curl` command line (visible
+in the laptop's process list). Info only.
+
+**Checked and clean this pass:** Python dependencies (`pip-audit`: none);
+no secrets in commits since audit 4; every new local-only path is ignored;
+frontend sinks unchanged (no `innerHTML`/`eval`, every `href` a constant or
+`blob:`); `_is_partial`/`TableMismatch` cannot be driven into a 500 (a
+partial requires every table found); `fetch-crops.sh promote` refuses `/`
+and `..`; S3 keys come from server-sanitized segments only.
 
 ### Not covered
 

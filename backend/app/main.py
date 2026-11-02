@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import re
 import tempfile
 import time
 import traceback
@@ -157,6 +158,89 @@ async def guard(request: Request, call_next):
     return await call_next(request)
 
 
+class _BodyTooLarge(Exception):
+    pass
+
+
+class BodyCapMiddleware:
+    """The size cap for a body that never declared its size (issues.md N56).
+
+    `guard` refuses on Content-Length before the body is read, but a chunked
+    upload carries no Content-Length at all, so it was parsed in full —
+    every byte held by the multipart parser — before `_reject_oversized`
+    ever saw it. On AWS, API Gateway's and Lambda's own payload limits bound
+    that; on the laptop nothing did. This counts the bytes as they arrive
+    and stops reading the moment they pass MAX_UPLOAD_BYTES.
+
+    Plain ASGI rather than an `@app.middleware`, because only a wrapper
+    around `receive` can see the body as it streams. Answering 413 needs
+    one more step: FastAPI catches any exception raised while it parses a
+    form and turns it into its own 400 "error parsing the body", so the
+    exception alone would surface as the wrong status. The `send` wrapper
+    swaps that response for the real 413 whenever this cap is what stopped
+    the read. Registered before CORSMiddleware so CORS wraps it, and a 413
+    still carries the headers a browser needs to read it.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] not in _LIMITED_PATHS:
+            await self.app(scope, receive, send)
+            return
+
+        received = 0
+        exceeded = False
+        responded = False
+
+        async def capped_receive():
+            nonlocal received, exceeded
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > config_module.MAX_UPLOAD_BYTES:
+                    exceeded = True
+                    raise _BodyTooLarge()
+            return message
+
+        async def send_413() -> None:
+            nonlocal responded
+            responded = True
+            body = b'{"detail":"Image too large."}'
+            await send({
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [(b"content-type", b"application/json"),
+                            (b"content-length", str(len(body)).encode())],
+            })
+            await send({"type": "http.response.body", "body": body})
+
+        async def guarded_send(message) -> None:
+            nonlocal responded
+            if exceeded:
+                # Whatever the app was about to answer (FastAPI's 400, most
+                # likely), the real reason is the size: answer that instead,
+                # once, and drop the rest of the app's response.
+                if not responded:
+                    obs.log_event("rejected_oversize", path=scope["path"], streamed=True)
+                    await send_413()
+                return
+            if message["type"] == "http.response.start":
+                responded = True
+            await send(message)
+
+        try:
+            await self.app(scope, capped_receive, guarded_send)
+        except _BodyTooLarge:
+            if not responded:
+                obs.log_event("rejected_oversize", path=scope["path"], streamed=True)
+                await send_413()
+
+
+app.add_middleware(BodyCapMiddleware)
+
+
 def _log_scan(
     status: str,
     failure_reason: str | None,
@@ -166,6 +250,7 @@ def _log_scan(
     image_bytes: bytes,
     low_confidence_fields: list[str],
     lighting: str | None = None,
+    smoke: bool = False,
 ) -> None:
     """One line per scan, carrying facts about the request and never its
     content. `low_confidence_fields` is a list of FIELD NAMES ("q1",
@@ -188,10 +273,26 @@ def _log_scan(
         flagged=low_confidence_fields,
         # A label, never content (the dashboard counts dark/shadowed photos).
         lighting=lighting,
-        # The deploy's own smoke test sends quizName "smoke": marked so the
-        # dashboard can leave it out of real-use numbers. Absent otherwise.
-        **({"origin": "smoke"} if quiz.quizName == "smoke" else {}),
+        # The deploy's own smoke test: marked so the dashboard can leave it
+        # out of real-use numbers. Absent otherwise. See _is_smoke for why
+        # the quiz name alone is not enough.
+        **({"origin": "smoke"} if smoke else {}),
     )
+
+
+def _is_smoke(request: Request, quiz: QuizConfig) -> bool:
+    """deploy.sh's smoke test, and nothing else (issues.md N63).
+
+    The quiz name alone used to decide this, and the dashboard's real-scan
+    table leaves smoke tests out, so any caller could hide from the one
+    view that would show abuse just by naming their quiz "smoke". The smoke
+    test calls API Gateway DIRECTLY, with the origin secret; everything a
+    viewer sends goes through CloudFront, which always adds
+    CloudFront-Viewer-Address (the rate limit relies on the same header).
+    So a smoke test is "smoke" with no viewer address — something only a
+    holder of ORIGIN_SECRET can send on the hosted app. On the laptop there
+    is no CloudFront and no dashboard, so the name is all there is."""
+    return quiz.quizName == "smoke" and "cloudfront-viewer-address" not in request.headers
 
 
 def _parse(model, raw: str, field: str):
@@ -271,6 +372,13 @@ else:
     )
 
 
+# What an X-Ray trace header looks like: "Root=1-<8 hex>-<24 hex>", then
+# ";Key=value" pairs (Parent, Sampled, Lineage, ...). Anything else is not
+# copied into the process environment (issues.md N57) — the header can come
+# from the caller, and only a well-formed trace id has any business there.
+_TRACE_HEADER = re.compile(r"^Root=1-[0-9a-f]{8}-[0-9a-f]{24}(;[A-Za-z]+=[A-Za-z0-9:|_.\-]{0,128}){0,8}\Z")
+
+
 @app.middleware("http")
 async def trace(request: Request, call_next):
     """Wraps every request in an X-Ray subsegment (step 11.8, the
@@ -342,7 +450,7 @@ async def trace(request: Request, call_next):
         from aws_xray_sdk.core.models import http as xray_http
 
         incoming_trace_header = request.headers.get("x-amzn-trace-id")
-        if incoming_trace_header:
+        if incoming_trace_header and _TRACE_HEADER.match(incoming_trace_header):
             os.environ["_X_AMZN_TRACE_ID"] = incoming_trace_header
         segment = xray_recorder.begin_subsegment(request.url.path)
     except Exception:  # noqa: BLE001 - tracing must never break a request
@@ -370,12 +478,14 @@ async def trace(request: Request, call_next):
 
 @app.post("/api/scan")
 async def scan(
+    request: Request,
     image: Annotated[UploadFile, File()],
     config: Annotated[str, Form()],
 ) -> ScanResult:
     # HTTP encodes a body as multipart or JSON, never both — QuizConfig
     # rides as a JSON string in a form field (stack-reference.md).
     quiz = _parse(QuizConfig, config, "config")
+    smoke = _is_smoke(request, quiz)
     image_bytes = await image.read()
     _reject_oversized(image_bytes)
 
@@ -428,7 +538,7 @@ async def scan(
         # path. Only a matched marks table is ever sent.
         if det["status"] != "ok" and not _is_partial(det, quiz):
             _log_scan("failed", det["failure_reason"], ms, started, quiz, image_bytes, [],
-                      lighting=det.get("lighting"))
+                      lighting=det.get("lighting"), smoke=smoke)
             return ScanResult(status="failed", failure_reason=det["failure_reason"],
                               lighting=det.get("lighting"))
 
@@ -468,7 +578,7 @@ async def scan(
                 marks_result.low_confidence_fields = ["serial", *marks_result.low_confidence_fields]
 
         if marks_result.status != "ok":
-            _log_scan("failed", marks_result.failure_reason, ms, started, quiz, image_bytes, [])
+            _log_scan("failed", marks_result.failure_reason, ms, started, quiz, image_bytes, [], smoke=smoke)
             return ScanResult(status="failed", failure_reason=marks_result.failure_reason)
 
         low_confidence_fields = list(id_result.low_confidence_fields) + list(marks_result.low_confidence_fields)
@@ -485,9 +595,9 @@ async def scan(
 
         if mismatches:
             _log_scan("partial", det["failure_reason"], ms, started, quiz, image_bytes, low_confidence_fields,
-                      lighting=det.get("lighting"))
+                      lighting=det.get("lighting"), smoke=smoke)
         else:
-            _log_scan("ok", None, ms, started, quiz, image_bytes, low_confidence_fields)
+            _log_scan("ok", None, ms, started, quiz, image_bytes, low_confidence_fields, smoke=smoke)
 
         return ScanResult(
             status="ok",

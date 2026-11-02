@@ -105,6 +105,14 @@ if [ -n "$ACCOUNT" ]; then
   probe "lambda"     blocking aws lambda get-function --function-name "$PROJECT-api" --region "$REGION"
   probe "s3"         blocking aws s3api list-buckets
   probe "iam role"   blocking aws iam get-role --role-name "$PROJECT-lambda-role"
+  # issues.md N60 — deploy.sh refuses to touch the role without its boundary.
+  BOUNDARY="$(aws iam get-role --role-name "$PROJECT-lambda-role" \
+    --query 'Role.PermissionsBoundary.PermissionsBoundaryArn' --output text 2>/dev/null || true)"
+  case "$BOUNDARY" in
+    *":policy/$PROJECT-lambda-boundary") pass "execution role carries its permissions boundary" ;;
+    ""|None) warn "execution role has no permissions boundary yet — deploy.sh will stop; see aws/README.md (N60)" ;;
+    *) fail "execution role has an unexpected permissions boundary: $BOUNDARY" ;;
+  esac
   probe "cloudfront" optional aws cloudfront list-distributions
 fi
 
@@ -176,6 +184,28 @@ if docker build --platform linux/amd64 --provenance=false -q -t "$PROJECT-prefli
     fail "torch is in the image — it is training-only (requirements-cnn.txt)"
   else
     pass "torch correctly absent"
+  fi
+  # issues.md N15 — dev-only packages (requirements-dev.txt) stay out of the
+  # image that serves the public URL. Not httpx: requirements-dev.txt pins it
+  # for the test client, but google-genai needs it at runtime, so it is in
+  # the image either way.
+  for mod in pytest docx; do
+    if docker run --rm "$PROJECT-preflight" python -c "import $mod" >/dev/null 2>&1; then
+      fail "$mod is in the image — it is dev-only (requirements-dev.txt)"
+    else
+      pass "$mod correctly absent"
+    fi
+  done
+  # issues.md N51 — off Python 3.10 (end of life), and not running as root.
+  if docker run --rm "$PROJECT-preflight" python -c "import sys; sys.exit(sys.version_info < (3, 12))"; then
+    pass "image runs Python $(docker run --rm "$PROJECT-preflight" python -c 'import platform; print(platform.python_version())')"
+  else
+    fail "image Python is older than 3.12"
+  fi
+  if [ "$(docker run --rm --entrypoint id "$PROJECT-preflight" -u)" != "0" ]; then
+    pass "image does not run as root"
+  else
+    fail "image runs as root — the Dockerfile's USER line is missing"
   fi
   for mod in onnxruntime scipy cv2 boto3; do
     if docker run --rm "$PROJECT-preflight" python -c "import $mod" >/dev/null 2>&1; then

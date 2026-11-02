@@ -580,6 +580,29 @@ def test_xray_enabled_does_not_force_boto3_to_import_at_cold_start():
     assert "botocore=False" in result.stdout, result.stdout
 
 
+@pytest.mark.parametrize("header", [
+    "Root=1-5759e988-bd862e3fe1be46a994272793",
+    "Root=1-5759e988-bd862e3fe1be46a994272793;Parent=53995c3f42cd8ad8;Sampled=1",
+    "Root=1-5759e988-bd862e3fe1be46a994272793;Parent=53995c3f42cd8ad8;Sampled=1;Lineage=a87bd80c:1|68fd508a:5",
+])
+def test_a_real_trace_header_shape_is_accepted(header):
+    assert main_module._TRACE_HEADER.match(header)
+
+
+@pytest.mark.parametrize("header", [
+    "",
+    "anything at all",
+    "Root=1-5759e988-bd862e3fe1be46a994272793;Parent=x\nInjected=1",
+    "Root=1-ZZZZZZZZ-bd862e3fe1be46a994272793",
+    "Root=1-5759e988-bd862e3fe1be46a994272793;" + "A=b;" * 20,
+    "Root=1-5759e988-bd862e3fe1be46a994272793;Parent=" + "a" * 5000,
+])
+def test_a_malformed_trace_header_is_not_copied_into_the_environment(header):
+    """issues.md N57. The header can come from the caller; only a
+    well-formed X-Ray trace id has any business in os.environ."""
+    assert not main_module._TRACE_HEADER.match(header)
+
+
 @requires_xray_sdk
 def test_xray_syncs_the_trace_env_var_from_the_incoming_header(monkeypatch):
     """The second real incident (step 11.8): every subsegment this

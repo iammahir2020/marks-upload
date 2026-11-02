@@ -43,8 +43,18 @@ def client_ip(request: Request, source: str = "socket") -> str:
     "cloudfront" (the hosted app): CloudFront-Viewer-Address, which
     CloudFront sets itself from the TCP connection ("198.51.100.10:46532")
     and forwards through the managed AllViewerExceptHostHeader policy. It is
-    only trustworthy while CloudFront is the ONLY way in — deploy.sh turns
-    off API Gateway's direct execute-api URL for exactly that reason (N42).
+    only trustworthy while CloudFront is the ONLY way in. API Gateway's
+    execute-api URL stays reachable (it is CloudFront's origin), so what
+    closes that path is ORIGIN_SECRET (N42): main.py's guard refuses any
+    /api/* request without CloudFront's secret header BEFORE this runs, so
+    a direct caller never gets to choose this header's value. Remove that
+    secret and this header becomes caller-controlled again.
+
+    An IPv6 viewer is keyed on its /64, not its full address (issues.md
+    N61). The distribution serves IPv6, and one home or phone connection
+    is routinely handed a whole /64 — 2^64 addresses, each of which would
+    otherwise be a fresh budget.
+
     Missing or malformed, it falls back to the socket (the proxy's address):
     one shared bucket, which fails safe — throttled, never unlimited.
 
@@ -64,12 +74,18 @@ def client_ip(request: Request, source: str = "socket") -> str:
 def _viewer_address(value: str) -> str | None:
     """"198.51.100.10:46532" or "2001:db8::1:46532" -> the IP, dropping the
     source port (a new port per connection would otherwise be a new bucket).
+    An IPv6 address comes back as its /64 network ("2001:db8::/64").
     None for anything that isn't an IP address."""
     host = value.strip().rsplit(":", 1)[0].strip("[]")
     try:
-        return str(ipaddress.ip_address(host))
+        address = ipaddress.ip_address(host)
     except ValueError:
         return None
+    if address.version == 6:
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{address}/64", strict=False))
+    return str(address)
 
 
 class SlidingWindowLimiter:

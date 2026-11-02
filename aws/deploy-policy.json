@@ -60,18 +60,46 @@
       "Resource": "*"
     },
     {
-      "Sid": "ManageOnlyThisProjectsExecutionRole",
+      "Sid": "ReadThisProjectsExecutionRole",
       "Effect": "Allow",
       "Action": [
-        "iam:CreateRole",
         "iam:GetRole",
-        "iam:AttachRolePolicy",
-        "iam:PutRolePolicy",
         "iam:GetRolePolicy",
         "iam:ListRolePolicies",
         "iam:ListAttachedRolePolicies"
       ],
       "Resource": "arn:aws:iam::ACCOUNT_ID:role/marks-scanner-lambda-role"
+    },
+    {
+      "Sid": "WriteTheRoleOnlyWhileItCarriesTheBoundary",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:PutRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::ACCOUNT_ID:role/marks-scanner-lambda-role",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::ACCOUNT_ID:policy/marks-scanner-lambda-boundary"
+        }
+      }
+    },
+    {
+      "Sid": "AttachOnlyTheTwoManagedPoliciesDeployShUses",
+      "Effect": "Allow",
+      "Action": "iam:AttachRolePolicy",
+      "Resource": "arn:aws:iam::ACCOUNT_ID:role/marks-scanner-lambda-role",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::ACCOUNT_ID:policy/marks-scanner-lambda-boundary"
+        },
+        "ArnEquals": {
+          "iam:PolicyARN": [
+            "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+            "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+          ]
+        }
+      }
     },
     {
       "Sid": "PassRoleOnlyToLambdaAndOnlyThisRole",

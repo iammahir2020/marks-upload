@@ -31,7 +31,14 @@ import {
 } from './sections';
 import type { Section } from './types';
 import { MAX_ID_DIGITS } from './validateConfig';
+import { checkWorkbookSize, MAX_WORKBOOK_BYTES, type WorkbookSizeProblem } from './workbookLimits';
 import type { Workbook } from 'exceljs';
+
+const WORKBOOK_SIZE_MESSAGES: Record<WorkbookSizeProblem, string> = {
+  too_large: 'This file is over 5 MB — far bigger than a class list. Is it the right file?',
+  unpacks_too_large: "This file unpacks to far more than a class list would, so it wasn't opened. Is it the right file?",
+  not_a_zip: "Couldn't read this file — is it a valid .xlsx workbook?",
+};
 
 const ROSTER_PREVIEW_COUNT = 3;
 
@@ -133,7 +140,18 @@ export default function SectionForm({ editing = null, onSave, onCancel }: Sectio
     setPickerOpen(false);
     setLoadingWorkbook(true);
     try {
+      // issues.md N53 — checked before ExcelJS unzips anything. file.size is
+      // free and spares reading a huge file into memory at all.
+      if (file.size > MAX_WORKBOOK_BYTES) {
+        setWorkbookError(WORKBOOK_SIZE_MESSAGES.too_large);
+        return;
+      }
       const buffer = await file.arrayBuffer();
+      const sizeProblem = checkWorkbookSize(buffer);
+      if (sizeProblem) {
+        setWorkbookError(WORKBOOK_SIZE_MESSAGES[sizeProblem]);
+        return;
+      }
       const ExcelJS = (await import('exceljs')).default;
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.load(buffer);
